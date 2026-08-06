@@ -302,6 +302,111 @@ resolve_gerrit_user() {
     GERRIT_USER="${user}"
 }
 
+# Look up a Gerrit account anonymously. Accounts are world-readable on review.typo3.org,
+# so no credentials are needed.
+# $1: query, e.g. "username:jdoe" or "email:jdoe@example.com"
+# Sets GERRIT_ACCOUNT_ID / GERRIT_ACCOUNT_EMAIL / GERRIT_ACCOUNT_NAME on a single match.
+# Returns 1 when the lookup failed (offline), 2 when nothing matched.
+query_gerrit_account() {
+    local query="$1"
+    GERRIT_ACCOUNT_ID=""
+    GERRIT_ACCOUNT_EMAIL=""
+    GERRIT_ACCOUNT_NAME=""
+
+    local response
+    response=$(curl -sf -G "${GERRIT_API}/accounts/" \
+        --data-urlencode "q=${query}" \
+        --data-urlencode "o=DETAILS") || return 1
+
+    # Strip the Gerrit XSSI prefix )]}'
+    local json
+    json=$(echo "${response}" | tail -n +2)
+
+    [ "$(echo "${json}" | jq -r 'length' 2>/dev/null)" = "1" ] || return 2
+
+    GERRIT_ACCOUNT_ID=$(echo "${json}" | jq -r '.[0]._account_id // empty')
+    GERRIT_ACCOUNT_EMAIL=$(echo "${json}" | jq -r '.[0].email // empty')
+    GERRIT_ACCOUNT_NAME=$(echo "${json}" | jq -r '.[0].name // empty')
+}
+
+# Make sure commits are authored with an address the Gerrit account owns.
+#
+# The project allows "forgeCommitter" but not "forgeAuthor", so the author address of every
+# commit must be a registered email of the account that pushes. Without a repository-local
+# user.email, commits silently inherit the global git identity, which is a different account
+# for anyone separating business and open source work. Gerrit then rejects the push.
+configure_author_identity() {
+    local user="$1"
+
+    if ! query_gerrit_account "username:${user}"; then
+        warn "Could not look up Gerrit account '${user}' — skipping author identity check"
+        return 0
+    fi
+    if [ -z "${GERRIT_ACCOUNT_EMAIL}" ]; then
+        warn "Gerrit account '${user}' exposes no preferred email — set one manually:"
+        warn "  git -C typo3-core config user.email <your-gerrit-email>"
+        return 0
+    fi
+
+    git -C "${CORE_DIR}" config tryout.gerritEmail "${GERRIT_ACCOUNT_EMAIL}"
+
+    local current
+    current=$(git -C "${CORE_DIR}" config --local --get user.email 2>/dev/null || true)
+    if [ "${current}" = "${GERRIT_ACCOUNT_EMAIL}" ]; then
+        success "Author identity already set to ${GERRIT_ACCOUNT_EMAIL}"
+        return 0
+    fi
+
+    git -C "${CORE_DIR}" config user.email "${GERRIT_ACCOUNT_EMAIL}"
+    [ -n "${GERRIT_ACCOUNT_NAME}" ] && git -C "${CORE_DIR}" config user.name "${GERRIT_ACCOUNT_NAME}"
+    success "Author identity set to ${GERRIT_ACCOUNT_EMAIL} (repository-local)"
+
+    if [ -n "${current}" ]; then
+        warn "Previous value was ${current} — amend commits made before this with:"
+        warn "  git -C typo3-core commit --amend --reset-author --no-edit"
+    fi
+}
+
+# Check the configured author email against Gerrit.
+# Sets CS_AUTHOR_EMAIL, CS_AUTHOR_SCOPE (local|inherited|none) and
+# CS_AUTHOR_STATUS (ok|mismatch|unregistered|unknown|no-email).
+inspect_author_identity() {
+    CS_AUTHOR_EMAIL=$(git -C "${CORE_DIR}" config --get user.email 2>/dev/null || true)
+    CS_AUTHOR_SCOPE="none"
+    CS_AUTHOR_STATUS="no-email"
+    [ -z "${CS_AUTHOR_EMAIL}" ] && return 0
+
+    if [ -n "$(git -C "${CORE_DIR}" config --local --get user.email 2>/dev/null || true)" ]; then
+        CS_AUTHOR_SCOPE="local"
+    else
+        CS_AUTHOR_SCOPE="inherited"
+    fi
+
+    local user="${CS_USER:-}"
+    if [ -z "${user}" ]; then
+        CS_AUTHOR_STATUS="unknown"
+        return 0
+    fi
+
+    # Resolve both sides to account ids: an account may have several registered addresses and
+    # only the preferred one is visible anonymously, so comparing email strings is not enough.
+    local expected_id
+    if ! query_gerrit_account "username:${user}"; then
+        CS_AUTHOR_STATUS="unknown"
+        return 0
+    fi
+    expected_id="${GERRIT_ACCOUNT_ID}"
+
+    local rc=0
+    query_gerrit_account "email:${CS_AUTHOR_EMAIL}" || rc=$?
+    case "${rc}" in
+        0) [ "${GERRIT_ACCOUNT_ID}" = "${expected_id}" ] \
+               && CS_AUTHOR_STATUS="ok" || CS_AUTHOR_STATUS="mismatch" ;;
+        2) CS_AUTHOR_STATUS="unregistered" ;;
+        *) CS_AUTHOR_STATUS="unknown" ;;
+    esac
+}
+
 # Install the Gerrit commit-msg hook (Change-Id) from TYPO3 Core's copy.
 install_commit_msg_hook() {
     local src="${CORE_DIR}/Build/git-hooks/commit-msg"

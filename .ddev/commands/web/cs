@@ -22,27 +22,31 @@ cmd_cs_setup() {
     echo "─────────────────────────────────────"
     echo ""
 
-    info "[1/5] Resolving Gerrit username..."
+    info "[1/6] Resolving Gerrit username..."
     if ! resolve_gerrit_user "${1:-}"; then
         exit 1
     fi
     echo -e "       ${DIM}user: ${GERRIT_USER}${NC}"
     echo ""
 
-    info "[2/5] Installing commit-msg hook (Change-Id)..."
+    info "[2/6] Installing commit-msg hook (Change-Id)..."
     install_commit_msg_hook || warn "commit-msg hook install skipped"
     echo ""
 
-    info "[3/5] Installing pre-commit hook (CGL checks)..."
+    info "[3/6] Installing pre-commit hook (CGL checks)..."
     install_pre_commit_hook || warn "pre-commit hook install skipped"
     echo ""
 
-    info "[4/5] Installing commit-message template..."
+    info "[4/6] Installing commit-message template..."
     install_commit_template || warn "template install skipped"
     echo ""
 
-    info "[5/5] Configuring Gerrit push URL..."
+    info "[5/6] Configuring Gerrit push URL..."
     configure_gerrit_push_url "${GERRIT_USER}"
+    echo ""
+
+    info "[6/6] Configuring commit author identity..."
+    configure_author_identity "${GERRIT_USER}"
     echo ""
 
     # Optional SSH probe — informational only
@@ -113,6 +117,33 @@ cmd_cs_doctor() {
     else
         echo -e "  Push URL:        ${FAIL} origin missing"
     fi
+
+    inspect_author_identity
+    case "${CS_AUTHOR_STATUS}" in
+        ok)
+            echo -e "  Author identity: ${OK} ${CS_AUTHOR_EMAIL}"
+            if [ "${CS_AUTHOR_SCOPE}" != "local" ]; then
+                echo -e "                   ${WARN} inherited from your global git config"
+                echo -e "                   ${DIM}→ ddev cs setup ${CS_USER}${NC}"
+            fi
+            ;;
+        mismatch)
+            echo -e "  Author identity: ${FAIL} ${CS_AUTHOR_EMAIL} belongs to another Gerrit account"
+            echo -e "                   ${DIM}→ ddev cs setup ${CS_USER}${NC}"
+            ;;
+        unregistered)
+            echo -e "  Author identity: ${FAIL} ${CS_AUTHOR_EMAIL} is not registered on Gerrit"
+            echo -e "                   ${DIM}pushes are rejected as \"invalid author\"${NC}"
+            echo -e "                   ${DIM}→ ddev cs setup ${CS_USER}${NC}"
+            ;;
+        no-email)
+            echo -e "  Author identity: ${FAIL} no user.email configured"
+            echo -e "                   ${DIM}→ ddev cs setup ${CS_USER}${NC}"
+            ;;
+        *)
+            echo -e "  Author identity: ${WARN} ${CS_AUTHOR_EMAIL} (could not verify)"
+            ;;
+    esac
 
     # Live SSH check (only if we have a user)
     if [ -n "${CS_USER}" ]; then
