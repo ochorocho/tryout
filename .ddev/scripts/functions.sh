@@ -363,13 +363,29 @@ configure_author_identity() {
     fi
 }
 
+# Fall back to the address cs setup cached when Gerrit cannot be reached.
+# Only an exact match is conclusive: the cache holds the account's preferred address,
+# while an account may legitimately author with any of its registered addresses. A
+# differing address is therefore left unknown rather than reported as a mismatch.
+author_status_from_cache() {
+    local cached
+    cached=$(git -C "${CORE_DIR}" config --get tryout.gerritEmail 2>/dev/null || true)
+    [ -n "${cached}" ] || return 1
+    [ "${cached}" = "${CS_AUTHOR_EMAIL}" ] || return 1
+
+    CS_AUTHOR_STATUS="ok"
+    CS_AUTHOR_SOURCE="cache"
+}
+
 # Check the configured author email against Gerrit.
-# Sets CS_AUTHOR_EMAIL, CS_AUTHOR_SCOPE (local|inherited|none) and
-# CS_AUTHOR_STATUS (ok|mismatch|unregistered|unknown|no-email).
+# Sets CS_AUTHOR_EMAIL, CS_AUTHOR_SCOPE (local|inherited|none),
+# CS_AUTHOR_STATUS (ok|mismatch|unregistered|unknown|no-email) and
+# CS_AUTHOR_SOURCE (live|cache), which tells where an "ok" verdict came from.
 inspect_author_identity() {
     CS_AUTHOR_EMAIL=$(git -C "${CORE_DIR}" config --get user.email 2>/dev/null || true)
     CS_AUTHOR_SCOPE="none"
     CS_AUTHOR_STATUS="no-email"
+    CS_AUTHOR_SOURCE="live"
     [ -z "${CS_AUTHOR_EMAIL}" ] && return 0
 
     if [ -n "$(git -C "${CORE_DIR}" config --local --get user.email 2>/dev/null || true)" ]; then
@@ -388,7 +404,7 @@ inspect_author_identity() {
     # only the preferred one is visible anonymously, so comparing email strings is not enough.
     local expected_id
     if ! query_gerrit_account "username:${user}"; then
-        CS_AUTHOR_STATUS="unknown"
+        author_status_from_cache || CS_AUTHOR_STATUS="unknown"
         return 0
     fi
     expected_id="${GERRIT_ACCOUNT_ID}"
@@ -399,7 +415,7 @@ inspect_author_identity() {
         0) [ "${GERRIT_ACCOUNT_ID}" = "${expected_id}" ] \
                && CS_AUTHOR_STATUS="ok" || CS_AUTHOR_STATUS="mismatch" ;;
         2) CS_AUTHOR_STATUS="unregistered" ;;
-        *) CS_AUTHOR_STATUS="unknown" ;;
+        *) author_status_from_cache || CS_AUTHOR_STATUS="unknown" ;;
     esac
 }
 

@@ -122,6 +122,9 @@ cmd_cs_doctor() {
     case "${CS_AUTHOR_STATUS}" in
         ok)
             echo -e "  Author identity: ${OK} ${CS_AUTHOR_EMAIL}"
+            if [ "${CS_AUTHOR_SOURCE}" = "cache" ]; then
+                echo -e "                   ${DIM}(from cache — Gerrit unreachable)${NC}"
+            fi
             if [ "${CS_AUTHOR_SCOPE}" != "local" ]; then
                 echo -e "                   ${WARN} inherited from your global git config"
                 echo -e "                   ${DIM}→ ddev cs setup ${CS_USER}${NC}"
