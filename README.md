@@ -31,7 +31,7 @@ On the first run this will:
 
 Once finished, open the backend:
 
-- **URL:** https://tryout.ddev.site/typo3/
+- **URL:** `https://<your-folder-name>.ddev.site/typo3/` (e.g. https://my-typo3-site.ddev.site/typo3/)
 - **User:** `admin` / `Password.1`
 
 ## Commands
@@ -256,7 +256,7 @@ into `vendor/` and behave as if they were installed from Packagist.
 ### DDEV Configuration
 
 - **`config.yaml`** — tracked in git, contains all shared settings:
-  PHP 8.4, MariaDB 10.11, Apache, Node 22, environment variables,
+  PHP 8.5, MariaDB 10.11, Apache, Node 22, environment variables,
   and the post-start hook. The `name` field is omitted so DDEV derives
   the project name from the folder — this is what makes worktrees work.
 - **`config.patches.yaml`** — tracked in git, defines `TRYOUT_PATCHES` for
