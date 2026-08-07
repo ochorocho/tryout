@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-source /var/www/html/.ddev/scripts/functions.sh
+source "${DDEV_APPROOT}/.ddev/scripts/functions.sh"
 
 echo ""
 echo -e "${BOLD}TYPO3 tryout — Post-Start Setup${NC}"
@@ -45,7 +45,7 @@ fi
 
 # --- Step 3: Composer install ---
 info "[3/5] Running composer install..."
-if ! composer install --working-dir="${PROJECT_ROOT}"; then
+if ! ddev composer install; then
     error "Composer install failed"
     error "  → Try: ddev tryout download --reset && ddev restart"
     exit 1
@@ -68,9 +68,9 @@ if [ ! -f "${PROJECT_ROOT}/config/system/settings.php" ]; then
     esac
 
     info "[4/5] Running TYPO3 setup (first time, server-type=${SERVER_TYPE})..."
-    if ! vendor/bin/typo3 setup --no-interaction --force --server-type="${SERVER_TYPE}"; then
+    if ! ddev exec env TYPO3_DB_DRIVER="${TYPO3_DB_DRIVER}" vendor/bin/typo3 setup --no-interaction --force --server-type="${SERVER_TYPE}"; then
         error "TYPO3 setup failed"
-        error "  → Try: ddev exec vendor/bin/typo3 setup --no-interaction --force --server-type=${SERVER_TYPE}"
+        error "  → Try: ddev exec env TYPO3_DB_DRIVER=${TYPO3_DB_DRIVER} vendor/bin/typo3 setup --no-interaction --force --server-type=${SERVER_TYPE}"
         exit 1
     fi
     success "TYPO3 setup complete"
@@ -80,8 +80,8 @@ fi
 
 # --- Step 5: Extension setup + cache flush ---
 info "[5/5] Setting up extensions and flushing caches..."
-vendor/bin/typo3 extension:setup 2>/dev/null || warn "extension:setup had warnings"
-vendor/bin/typo3 cache:flush 2>/dev/null || warn "cache:flush had warnings"
+ddev typo3 extension:setup 2>/dev/null || warn "extension:setup had warnings"
+ddev typo3 cache:flush 2>/dev/null || warn "cache:flush had warnings"
 success "Extensions ready, caches flushed"
 
 # --- Done ---

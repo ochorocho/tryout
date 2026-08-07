@@ -23,4 +23,4 @@ web_environment:
 
 hooks:
   post-start:
-    - exec: bash /var/www/html/.ddev/scripts/post-start.sh
+    - exec-host: bash .ddev/scripts/post-start.sh

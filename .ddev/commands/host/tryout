@@ -6,7 +6,8 @@
 
 set -euo pipefail
 
-source /var/www/html/.ddev/scripts/functions.sh
+
+source "${DDEV_APPROOT}/.ddev/scripts/functions.sh"
 
 ACTION="${1:-help}"
 shift || true
@@ -258,10 +259,10 @@ cmd_delete() {
     info "[1/5] Dropping and recreating database..."
     local ddev_db="${DDEV_DATABASE:-mariadb}"
     if [[ "${ddev_db}" == postgres* ]]; then
-        PGPASSWORD=db dropdb -U db -h db --if-exists db 2>/dev/null || true
-        PGPASSWORD=db createdb -U db -h db db || { error "Failed to reset database"; exit 1; }
+        ddev exec -s db sh -c 'PGPASSWORD=db dropdb -U db --if-exists db' 2>/dev/null || true
+        ddev exec -s db sh -c 'PGPASSWORD=db createdb -U db db' || { error "Failed to reset database"; exit 1; }
     else
-        mysql -uroot -proot -e "DROP DATABASE IF EXISTS db; CREATE DATABASE db;" || {
+        ddev mysql -e "DROP DATABASE IF EXISTS db; CREATE DATABASE db;" || {
             error "Failed to reset database"
             exit 1
         }
@@ -292,15 +293,15 @@ cmd_delete() {
     esac
 
     info "[4/5] Running TYPO3 setup (server-type=${server_type})..."
-    if ! vendor/bin/typo3 setup --no-interaction --force --server-type="${server_type}"; then
+    if ! ddev exec env TYPO3_DB_DRIVER="${TYPO3_DB_DRIVER}" vendor/bin/typo3 setup --no-interaction --force --server-type="${server_type}"; then
         error "TYPO3 setup failed"
         exit 1
     fi
     success "TYPO3 setup complete"
 
     info "[5/5] Setting up extensions and flushing caches..."
-    vendor/bin/typo3 extension:setup 2>/dev/null || warn "extension:setup had warnings"
-    vendor/bin/typo3 cache:flush 2>/dev/null || warn "cache:flush had warnings"
+    ddev typo3 extension:setup 2>/dev/null || warn "extension:setup had warnings"
+    ddev typo3 cache:flush 2>/dev/null || warn "cache:flush had warnings"
     success "Extensions ready, caches flushed"
 
     echo ""
@@ -364,7 +365,7 @@ cmd_checkout() {
         || git -C "${CORE_DIR}" checkout -b "${target_branch}" "origin/${target_branch}"
     git -C "${CORE_DIR}" reset --hard "origin/${target_branch}"
     git -C "${CORE_DIR}" clean -fd
-    rm -rf var/cache/*
+    rm -rf "${PROJECT_ROOT}/var/cache"/*
 
     success "Core switched to ${target_branch}"
 
@@ -383,7 +384,7 @@ cmd_checkout() {
 cmd_composer() {
     require_core
     info "Syncing composer.json with available system extensions..."
-    php /var/www/html/.ddev/scripts/sync-composer.php
+    ddev php /var/www/html/.ddev/scripts/sync-composer.php
 }
 
 # ─────────────────────────────────────────────────────────────────────

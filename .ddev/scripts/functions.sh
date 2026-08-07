@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
 # Shared functions for TYPO3 tryout DDEV commands.
-# Source this file: source /var/www/html/.ddev/scripts/functions.sh
+# Source this file: source "${DDEV_APPROOT}/.ddev/scripts/functions.sh"
 
-PROJECT_ROOT="/var/www/html"
+PROJECT_ROOT="${DDEV_APPROOT}"
 CORE_DIR="${PROJECT_ROOT}/typo3-core"
+CORE_GIT_DIR="${CORE_DIR}/.git"
 CORE_REPO="https://github.com/typo3/typo3.git"
 GERRIT_REMOTE="https://review.typo3.org/Packages/TYPO3.CMS"
 GERRIT_API="https://review.typo3.org"
@@ -18,7 +19,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/templates/gitmessage.txt"
 # from the Core clone, falling back to "main".
 if [ -n "${TRYOUT_BRANCH:-}" ]; then
     BRANCH="${TRYOUT_BRANCH}"
-elif [ -d "${CORE_DIR}/.git" ]; then
+elif [ -d "${CORE_GIT_DIR}" ]; then
     BRANCH=$(git -C "${CORE_DIR}" branch --show-current 2>/dev/null || echo "main")
 else
     BRANCH="main"
@@ -39,6 +40,15 @@ success() { echo -e "${GREEN}==>${NC} $*"; }
 warn()    { echo -e "${YELLOW}==>${NC} $*"; }
 error()   { echo -e "${RED}✗${NC} $*" >&2; }
 
+if [ -f "${CORE_GIT_DIR}" ]; then
+    CORE_GIT_DIR="$(git -C "${CORE_DIR}" rev-parse --git-common-dir)"
+
+    if [ ! -d "$CORE_GIT_DIR" ]; then
+        error "Could not detect valid TYPO3 Git directory, git rev-parse --git-common-dir returned '$CORE_GIT_DIR'"
+        exit 1
+    fi
+fi
+
 # --- Git helpers ---
 
 ensure_gerrit_remote() {
@@ -49,7 +59,7 @@ ensure_gerrit_remote() {
 }
 
 require_core() {
-    if [ ! -d "${CORE_DIR}/.git" ]; then
+    if [ ! -d "${CORE_GIT_DIR}" ] && [ ! -f "${CORE_GIT_DIR}" ]; then
         error "TYPO3 Core not found at typo3-core/"
         error "  → Run: ddev tryout download"
         exit 1
@@ -58,12 +68,12 @@ require_core() {
 
 rebuild_typo3() {
     info "Running composer install..."
-    composer install --working-dir="${PROJECT_ROOT}" || { error "Composer install failed"; return 1; }
+    ddev composer install || { error "Composer install failed"; return 1; }
     info "Running extension:setup..."
-    vendor/bin/typo3 extension:setup 2>/dev/null || true
+    ddev typo3 extension:setup 2>/dev/null || true
     info "Flushing caches..."
-    rm -rf var/cache/* 2>/dev/null || true
-    vendor/bin/typo3 cache:flush 2>/dev/null || true
+    rm -rf "${PROJECT_ROOT}/var/cache"/* 2>/dev/null || true
+    ddev typo3 cache:flush 2>/dev/null || true
     success "Rebuild complete"
 }
 
@@ -72,7 +82,7 @@ reset_core_to_main() {
     git -C "${CORE_DIR}" checkout "${BRANCH}" 2>/dev/null || git -C "${CORE_DIR}" checkout -b "${BRANCH}" "origin/${BRANCH}"
     git -C "${CORE_DIR}" reset --hard "origin/${BRANCH}"
     git -C "${CORE_DIR}" clean -fd
-    rm -rf var/cache/*
+    rm -rf "${PROJECT_ROOT}/var/cache"/*
 }
 
 # --- Gerrit patch functions ---
@@ -83,30 +93,19 @@ resolve_patch_ref() {
     local change_id="$1"
     local api_url="${GERRIT_API}/changes/${change_id}?o=CURRENT_REVISION"
 
-    local response
-    response=$(curl -sf "${api_url}") || {
+    local result
+    local exit_code=0
+    result=$(ddev exec bash /var/www/html/.ddev/scripts/resolve-patch-ref.sh "${api_url}" 2>/dev/null) || exit_code=$?
+
+    if [ "${exit_code}" -eq 2 ]; then
         error "Failed to fetch change ${change_id} from Gerrit (HTTP error)"
         error "  → Verify: ${GERRIT_URL}${change_id}"
         return 1
-    }
-
-    # Strip the Gerrit XSSI prefix )]}'
-    local json
-    json=$(echo "${response}" | tail -n +2)
-
-    local result
-    result=$(echo "${json}" | jq -r '
-        .current_revision as $rev |
-        .revisions[$rev] as $r |
-        (.subject // "No subject" | gsub("\n"; " ") | ltrimstr(" ") | rtrimstr(" ")),
-        $r.ref,
-        ($r._number | tostring),
-        (.status // "UNKNOWN")
-    ' 2>/dev/null) || {
+    elif [ "${exit_code}" -ne 0 ]; then
         error "Failed to parse Gerrit response for change ${change_id}"
         error "  → Verify: ${GERRIT_URL}${change_id}"
         return 1
-    }
+    fi
 
     PATCH_SUBJECT=$(echo "${result}" | sed -n '1p')
     PATCH_REF=$(echo "${result}" | sed -n '2p')
@@ -313,20 +312,17 @@ query_gerrit_account() {
     GERRIT_ACCOUNT_EMAIL=""
     GERRIT_ACCOUNT_NAME=""
 
-    local response
-    response=$(curl -sf -G "${GERRIT_API}/accounts/" \
-        --data-urlencode "q=${query}" \
-        --data-urlencode "o=DETAILS") || return 1
+    local result
+    local exit_code=0
+    result=$(ddev exec bash /var/www/html/.ddev/scripts/resolve-gerrit-account.sh \
+        "${GERRIT_API}" "${query}" 2>/dev/null) || exit_code=$?
 
-    # Strip the Gerrit XSSI prefix )]}'
-    local json
-    json=$(echo "${response}" | tail -n +2)
+    [ "${exit_code}" -eq 3 ] && return 2
+    [ "${exit_code}" -ne 0 ] && return 1
 
-    [ "$(echo "${json}" | jq -r 'length' 2>/dev/null)" = "1" ] || return 2
-
-    GERRIT_ACCOUNT_ID=$(echo "${json}" | jq -r '.[0]._account_id // empty')
-    GERRIT_ACCOUNT_EMAIL=$(echo "${json}" | jq -r '.[0].email // empty')
-    GERRIT_ACCOUNT_NAME=$(echo "${json}" | jq -r '.[0].name // empty')
+    GERRIT_ACCOUNT_ID=$(echo "${result}" | sed -n '1p')
+    GERRIT_ACCOUNT_EMAIL=$(echo "${result}" | sed -n '2p')
+    GERRIT_ACCOUNT_NAME=$(echo "${result}" | sed -n '3p')
 }
 
 # Make sure commits are authored with an address the Gerrit account owns.
@@ -410,7 +406,7 @@ inspect_author_identity() {
 # Install the Gerrit commit-msg hook (Change-Id) from TYPO3 Core's copy.
 install_commit_msg_hook() {
     local src="${CORE_DIR}/Build/git-hooks/commit-msg"
-    local dst="${CORE_DIR}/.git/hooks/commit-msg"
+    local dst="${CORE_GIT_DIR}/hooks/commit-msg"
 
     if [ ! -f "${src}" ]; then
         warn "commit-msg hook not found at ${src} — Core may be too old."
@@ -424,7 +420,7 @@ install_commit_msg_hook() {
 # Install the TYPO3 Core pre-commit hook (CGL / PHP-CS-Fixer checks).
 install_pre_commit_hook() {
     local src="${CORE_DIR}/Build/git-hooks/unix+mac/pre-commit"
-    local dst="${CORE_DIR}/.git/hooks/pre-commit"
+    local dst="${CORE_GIT_DIR}/hooks/pre-commit"
 
     if [ ! -f "${src}" ]; then
         warn "pre-commit hook not found at ${src}"
@@ -437,7 +433,7 @@ install_pre_commit_hook() {
 
 # Remove installed hooks.
 remove_hooks() {
-    rm -f "${CORE_DIR}/.git/hooks/commit-msg" "${CORE_DIR}/.git/hooks/pre-commit"
+    rm -f "${CORE_GIT_DIR}/hooks/commit-msg" "${CORE_GIT_DIR}/hooks/pre-commit"
     success "Removed commit-msg and pre-commit hooks"
 }
 
@@ -455,7 +451,7 @@ install_commit_template() {
     git -C "${CORE_DIR}" config commit.template "${tmpl_path}"
     # Drop any leftover copy from an older setup; the canonical file lives
     # in .ddev/templates/ now.
-    rm -f "${CORE_DIR}/.gitmessage.txt"
+    rm -f "${CORE_GIT_DIR}message.txt"
     success "Commit template wired to ${DIM}${tmpl_path}${NC}"
 }
 
@@ -523,7 +519,7 @@ gerrit_ssh_hint() {
         unreachable)
             echo "→ check firewall/VPN for ${GERRIT_SSH_HOST}:${GERRIT_SSH_PORT}" ;;
         no-agent-key)
-            echo "→ run on host: ddev auth ssh   (loads your SSH key into ddev-ssh-agent)" ;;
+            echo "→ load your key into your host SSH agent, e.g.: ssh-add ~/.ssh/id_ed25519" ;;
         denied)
             echo "→ upload your public key at https://review.typo3.org/settings/#SSHKeys" ;;
         *)
@@ -540,8 +536,8 @@ inspect_contribution_setup() {
     CS_PUSH_URL=""
     CS_USER=""
 
-    [ -x "${CORE_DIR}/.git/hooks/commit-msg" ] && CS_HOOK_COMMIT_MSG=1
-    [ -x "${CORE_DIR}/.git/hooks/pre-commit" ]  && CS_HOOK_PRE_COMMIT=1
+    [ -x "${CORE_GIT_DIR}/hooks/commit-msg" ] && CS_HOOK_COMMIT_MSG=1
+    [ -x "${CORE_GIT_DIR}/hooks/pre-commit" ]  && CS_HOOK_PRE_COMMIT=1
 
     local tmpl
     tmpl=$(git -C "${CORE_DIR}" config --get commit.template 2>/dev/null || true)

@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-source /var/www/html/.ddev/scripts/functions.sh
+source "${DDEV_APPROOT}/.ddev/scripts/functions.sh"
 
 ACTION="${1:-setup}"
 shift || true
@@ -189,6 +189,7 @@ cmd_cs_uninstall() {
     fi
 
     git -C "${CORE_DIR}" config --unset tryout.gerritUser 2>/dev/null || true
+    git -C "${CORE_DIR}" config --unset tryout.gerritEmail 2>/dev/null || true
     success "Contribution setup removed"
 }
 
