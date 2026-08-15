@@ -3,6 +3,7 @@
 ## Description: Prepare the instance for TYPO3 Core contribution (Gerrit hooks, push URL, commit template)
 ## Usage: cs [setup|doctor|uninstall] [username]
 ## Example: "ddev cs\nddev cs setup jdoe\nddev cs doctor\nddev cs uninstall"
+## AutocompleteTerms: ["setup","doctor","uninstall","help"]
 
 set -euo pipefail
 

@@ -3,6 +3,7 @@
 ## Description: TYPO3 development toolkit — manage Core, patches, and extensions
 ## Usage: tryout [command] [args]
 ## Example: "ddev tryout status\nddev tryout download\nddev tryout patch 56947\nddev tryout reset\nddev tryout delete"
+## AutocompleteTerms: ["status","download","checkout","composer","patch","reset","delete","help"]
 
 set -euo pipefail
 
