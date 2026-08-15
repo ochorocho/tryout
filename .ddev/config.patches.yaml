@@ -1,3 +1,5 @@
+#ddev-silent-no-warn
+#
 # Gerrit Patches
 #
 # Add Gerrit change IDs (comma-separated) to automatically apply on ddev start.

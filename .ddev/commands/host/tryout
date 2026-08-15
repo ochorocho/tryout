@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#ddev-silent-no-warn
 
 ## Description: TYPO3 development toolkit — manage Core, patches, and extensions
 ## Usage: tryout [command] [args]

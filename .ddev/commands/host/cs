@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#ddev-silent-no-warn
 
 ## Description: Prepare the instance for TYPO3 Core contribution (Gerrit hooks, push URL, commit template)
 ## Usage: cs [setup|doctor|uninstall] [username]
