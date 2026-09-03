@@ -1,4 +1,5 @@
 [![add-on registry](https://img.shields.io/badge/DDEV-Add--on_Registry-blue)](https://addons.ddev.com)
+[![tests](https://github.com/bmack/tryout/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/bmack/tryout/actions/workflows/tests.yml?query=branch%3Amain)
 [![last commit](https://img.shields.io/github/last-commit/bmack/tryout)](https://github.com/bmack/tryout/commits)
 [![release](https://img.shields.io/github/v/release/bmack/tryout)](https://github.com/bmack/tryout/releases/latest)
 
@@ -508,7 +509,7 @@ git -C ~/typo3-core-shared worktree prune
 
 ## Requirements
 
-- [DDEV](https://ddev.readthedocs.io/en/stable/) v1.24.6+ (enforced by the add-on)
+- [DDEV](https://ddev.readthedocs.io/en/stable/) v1.24.10+ (enforced by the add-on)
 - Docker Desktop or Colima
 - Git
 - A `bash` shell on the host — the `ddev tryout`/`ddev tryout cs` commands and the
@@ -534,7 +535,42 @@ ddev start
 ```
 
 The payload lives at the repo root (`install.yaml`, `commands/`, `tryout/`,
-`config.tryout*.yaml`) and is copied into the project's `.ddev/` on install.
+`config.tryout.yaml`) and is copied into the project's `.ddev/` on install.
+
+### Tests
+
+The suite is [bats](https://bats-core.readthedocs.io/). Install it and the helper
+libraries once:
+
+```bash
+brew tap bats-core/bats-core
+brew install bats-core bats-assert bats-file bats-support
+```
+
+It is split by cost, because every DDEV-backed test builds and destroys a whole
+project:
+
+```bash
+bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no containers
+bats tests/test.bats --filter-tags '!release'
+                          # minutes — install, config, overlay, guarded files, removal
+bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
+bats tests --filter-tags '!release,!lifecycle'   # the 42 fast tests
+bats tests --filter-tags '!release'              # everything runnable locally
+```
+
+`tests/test.bats` carries an `install from release` test tagged `release`; it needs
+a published GitHub release, so exclude it locally with `--filter-tags '!release'`.
+CI runs the fast suites on every push and the lifecycle and release suites nightly.
+
+For debugging: `bats tests/test.bats --show-output-of-passing-tests --verbose-run
+--print-output-on-failure`.
+
+This repo also tracks DDEV's add-on conventions, which are machine-checkable:
+
+```bash
+curl -fsSL https://ddev.com/s/addon-update-checker.sh | bash
+```
 
 Note that contributions to **TYPO3 Core** itself do not go through this repo.
 Core development happens on [review.typo3.org](https://review.typo3.org) via Gerrit.

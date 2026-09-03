@@ -1,4 +1,8 @@
 #ddev-silent-no-warn
+#ddev-generated
+# This is the TEMPLATE. It is copied to .ddev/config.tryout-patches.yaml on
+# install, once — that copy is yours to edit and is never overwritten by an
+# update, nor removed on uninstall unless it is still empty.
 #
 # Gerrit Patches
 #

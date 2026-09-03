@@ -1,50 +1,102 @@
 name: tests
 on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
   push:
     branches: [ main ]
-  pull_request:
+    paths-ignore:
+      - "**.md"
+
   schedule:
-    - cron: '25 08 * * 001'
+    - cron: '25 08 * * *'
+
   workflow_dispatch:
     inputs:
       debug_enabled:
-        description: 'Run with tmate enabled'
+        type: boolean
+        description: Enable remote debugging session
         required: false
         default: false
-        type: boolean
 
-defaults:
-  run:
-    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
+  # Fast suites: pure helpers, then install/config/removal. Every test in the
+  # install suite costs a full DDEV project lifecycle, so the slow tests that
+  # clone TYPO3 Core are sharded into their own job below.
   tests:
+    name: ${{ matrix.suite }} (${{ matrix.ddev_version }})
+    strategy:
+      matrix:
+        ddev_version: [stable, HEAD]
+        suite: [unit, install]
+      fail-fast: false
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: ddev/github-action-add-on-test@v2
+        with:
+          ddev_version: ${{ matrix.ddev_version }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          debug_enabled: ${{ github.event.inputs.debug_enabled }}
+          addon_repository: ${{ env.GITHUB_REPOSITORY }}
+          addon_ref: ${{ env.GITHUB_REF }}
+          # An explicit test_command bypasses the action's automatic
+          # `--filter-tags !release`, so exclude the release test here. It is
+          # covered by the nightly schedule job below.
+          test_command: |
+            case "${{ matrix.suite }}" in
+              unit)    bats tests/unit.bats ;;
+              install) bats tests/test.bats --filter-tags '!release' ;;
+            esac
+
+  # Slow: clones TYPO3 Core, runs composer install and sets up a real TYPO3.
+  # Minutes per test, so it is kept off the every-push path.
+  lifecycle:
+    name: lifecycle (${{ matrix.ddev_version }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         ddev_version: [stable, HEAD]
       fail-fast: false
-    runs-on: ubuntu-24.04
+
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install DDEV
-        run: |
-          set -eu -o pipefail
-          curl -fsSL https://ddev.com/install.sh | bash -s -- -v ${{ matrix.ddev_version }}
-          ddev config global --omit-containers=ddev-router --instrumentation-opt-in=false
-
-      - name: Install bats
-        uses: bats-core/bats-action@3.0.1
+      - uses: ddev/github-action-add-on-test@v2
         with:
-          support-install: false
-          assert-install: false
-          detik-install: false
-          file-install: false
+          ddev_version: ${{ matrix.ddev_version }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          debug_enabled: ${{ github.event.inputs.debug_enabled }}
+          addon_repository: ${{ env.GITHUB_REPOSITORY }}
+          addon_ref: ${{ env.GITHUB_REF }}
+          test_command: bats tests/lifecycle.bats
 
-      - name: Run tests
-        run: bats tests
+  # The published release, checked nightly so a broken tag is caught even when
+  # nobody pushes.
+  release:
+    name: install from release (${{ matrix.ddev_version }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      matrix:
+        ddev_version: [stable, HEAD]
+      fail-fast: false
 
-      - name: Debug with tmate on failure
-        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-        uses: mxschmitt/action-tmate@v3
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: ddev/github-action-add-on-test@v2
+        with:
+          ddev_version: ${{ matrix.ddev_version }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          debug_enabled: ${{ github.event.inputs.debug_enabled }}
+          addon_repository: ${{ env.GITHUB_REPOSITORY }}
+          addon_ref: ${{ env.GITHUB_REF }}
+          test_command: bats tests/test.bats --filter-tags release
