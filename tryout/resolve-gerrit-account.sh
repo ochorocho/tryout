@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#ddev-generated
 
 # Runs inside the web container, where curl/jq are always available.
 # Usage: resolve-gerrit-account.sh <gerrit-api-base> <query>

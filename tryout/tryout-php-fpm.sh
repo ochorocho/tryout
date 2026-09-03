@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#ddev-generated
 
 # Runs INSIDE the web container, launched by a web_extra_daemons entry that
 # .ddev/config.worktrees.yaml declares (DDEV supervises and restarts it).

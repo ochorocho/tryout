@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #ddev-silent-no-warn
+#ddev-generated
 
 ## Description: TYPO3 development toolkit — manage Core, patches, and extensions
 ## Usage: tryout [command] [args]
 ## Example: "ddev tryout status\nddev tryout download\nddev tryout patch 56947\nddev tryout reset\nddev tryout delete"
-## AutocompleteTerms: ["status","download","checkout","composer","patch","worktree","serve","unserve","exec","reset","delete","help"]
+## AutocompleteTerms: ["status","download","checkout","composer","patch","worktree","serve","unserve","cs","exec","reset","delete","help"]
 
 set -euo pipefail
 
 
-source "${DDEV_APPROOT}/.ddev/scripts/functions.sh"
+source "${DDEV_APPROOT}/.ddev/tryout/functions.sh"
 
 ACTION="${1:-help}"
 shift || true
@@ -131,10 +132,10 @@ cmd_status() {
         echo -e "  Contrib:   ${OK} ready (${CS_USER:-?})"
     elif [ ${#cs_parts[@]} -gt 0 ]; then
         echo -e "  Contrib:   ${WARN} partial (${cs_parts[*]})"
-        echo -e "             ${DIM}→ ddev cs doctor${NC}"
+        echo -e "             ${DIM}→ ddev tryout cs doctor${NC}"
     else
         echo -e "  Contrib:   ${DIM}not configured${NC}"
-        echo -e "             ${DIM}→ ddev cs${NC}"
+        echo -e "             ${DIM}→ ddev tryout cs${NC}"
     fi
 
     # Site URL
@@ -243,7 +244,7 @@ cmd_patch() {
             echo "  ddev tryout patch <change-id>   Apply a single Gerrit patch"
             echo "  ddev tryout patch               Apply all from config"
             echo ""
-            echo "Configure in .ddev/config.patches.yaml:"
+            echo "Configure in .ddev/config.tryout-patches.yaml:"
             echo "  TRYOUT_PATCHES=56947,12345"
             return
         fi
@@ -431,10 +432,10 @@ cmd_checkout() {
     if site_is_primary "${site}"; then
         cmd_composer
     else
-        info "Syncing sites/${site}/composer.json..."
+        info "Syncing sites/${site}/composer.tryout.json..."
         ddev exec env PROJECT_ROOT="/var/www/html/sites/${site}" \
             TRYOUT_CORE_DIR="/var/www/html/typo3-core-${site}" \
-            php /var/www/html/.ddev/scripts/sync-composer.php
+            php /var/www/html/.ddev/tryout/sync-composer.php
     fi
     rebuild_typo3 "${site}"
 
@@ -448,8 +449,8 @@ cmd_checkout() {
 # ─────────────────────────────────────────────────────────────────────
 cmd_composer() {
     require_core
-    info "Syncing composer.json with available system extensions..."
-    ddev php /var/www/html/.ddev/scripts/sync-composer.php
+    info "Syncing composer.tryout.json with available system extensions..."
+    ddev php /var/www/html/.ddev/tryout/sync-composer.php
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -622,7 +623,7 @@ cmd_worktree() {
             echo "  Adding or removing a served site needs 'ddev restart' so DDEV"
             echo "  registers the hostname and issues its TLS certificate."
             echo ""
-            echo "  All worktrees share one git object store, so ddev cs hooks and"
+            echo "  All worktrees share one git object store, so ddev tryout cs hooks and"
             echo "  Gerrit config are set up once and apply to every one of them."
             echo ""
             ;;
@@ -630,6 +631,26 @@ cmd_worktree() {
         *)
             error "Unknown worktree command: ${sub}"
             cmd_worktree help
+            return 1
+            ;;
+    esac
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# cs — Contribution setup (Gerrit hooks, template, push URL)
+# ─────────────────────────────────────────────────────────────────────
+cmd_cs() {
+    local sub="${1:-setup}"
+    shift || true
+
+    case "${sub}" in
+        setup)     cmd_cs_setup "$@" ;;
+        doctor)    cmd_cs_doctor ;;
+        uninstall) cmd_cs_uninstall ;;
+        help|-h|--help) cmd_cs_help ;;
+        *)
+            error "Unknown cs command: ${sub}"
+            cmd_cs_help
             return 1
             ;;
     esac
@@ -647,11 +668,12 @@ cmd_help() {
     echo -e "  ${BOLD}download${NC}            Clone or update TYPO3 Core"
     echo -e "  ${BOLD}download --reset${NC}    Hard reset Core to current branch"
     echo -e "  ${BOLD}checkout <branch>${NC}   Switch TYPO3 version (main, 13.4, 12.4, ...)"
-    echo -e "  ${BOLD}composer${NC}            Regenerate composer.json from Core sysexts"
+    echo -e "  ${BOLD}composer${NC}            Regenerate the Composer overlay from Core sysexts"
     echo -e "  ${BOLD}patch <change-id>${NC}   Apply a Gerrit patch by change ID"
     echo -e "  ${BOLD}exec <site> <cmd>${NC}   Run a command in a site's PHP/root/database"
     echo -e "  ${BOLD}patch${NC}               Apply all patches from config"
     echo -e "  ${BOLD}worktree${NC}            Manage side-by-side Core checkouts"
+    echo -e "  ${BOLD}cs [setup|doctor]${NC}   Prepare this instance for Core contribution"
     echo -e "  ${BOLD}reset${NC}               Reset Core to current branch + rebuild"
     echo -e "  ${BOLD}delete [<site>]${NC}     Wipe DB + fileadmin, fresh setup (--all for every site)"
     echo -e "  ${BOLD}help${NC}                Show this help"
@@ -661,7 +683,7 @@ cmd_help() {
     echo "    ddev composer require vendor/my-extension:@dev"
     echo ""
     echo "Gerrit patches (auto-apply on start):"
-    echo "  Edit .ddev/config.patches.yaml:"
+    echo "  Edit .ddev/config.tryout-patches.yaml:"
     echo "    TRYOUT_PATCHES=56947,12345"
     echo ""
 }
@@ -676,6 +698,7 @@ case "${ACTION}" in
     composer) cmd_composer "$@" ;;
     patch)    cmd_patch "$@" ;;
     worktree) cmd_worktree "$@" ;;
+    cs)       cmd_cs "$@" ;;
     exec)     cmd_exec "$@" ;;
     reset)    cmd_reset "$@" ;;
     delete)   cmd_delete "$@" ;;

@@ -1,9 +1,11 @@
 <?php
 
+// #ddev-generated
+
 /**
  * Creates sites/<name>/composer.json for a served worktree.
  *
- * Runs inside the web container. Copies the root composer.json and repoints its
+ * Runs inside the web container. Copies the root tryout overlay and repoints its
  * path repositories: Core comes from that worktree, packages/ stays shared so one
  * extension can be developed against several TYPO3 versions at once.
  *
@@ -27,7 +29,10 @@ if ($sitePhp !== '' && !preg_match('/^\d+\.\d+$/', $sitePhp)) {
 }
 
 $root = getenv('DDEV_APPROOT') ?: '/var/www/html';
-$rootComposer = $root . '/composer.json';
+
+// The tryout overlay, not the project's own composer.json — see sync-composer.php.
+$composerName = getenv('TRYOUT_COMPOSER_FILE') ?: 'composer.tryout.json';
+$rootComposer = $root . '/' . $composerName;
 
 if (!file_exists($rootComposer)) {
     fwrite(STDERR, "site-composer: $rootComposer not found\n");
@@ -52,6 +57,16 @@ foreach (($data['repositories'] ?? []) as $i => $repo) {
     }
 }
 
+// The merge-plugin include is relative to this overlay, which now sits two levels
+// down in sites/<name>/. Repoint it at the project root's composer.json so a served
+// site still picks up the user's own dependencies.
+if (isset($data['extra']['merge-plugin']['include'])) {
+    $data['extra']['merge-plugin']['include'] = array_map(
+        static fn (string $path): string => str_starts_with($path, '..') ? $path : '../../' . $path,
+        $data['extra']['merge-plugin']['include']
+    );
+}
+
 // A site's vendor/bin must exist for `ddev tryout exec <site>` to work.
 $data['config']['vendor-dir'] = 'vendor';
 
@@ -67,8 +82,8 @@ if (!is_dir($dir) && !mkdir($dir, 0777, true) && !is_dir($dir)) {
 }
 
 file_put_contents(
-    $dir . '/composer.json',
+    $dir . '/' . $composerName,
     json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n"
 );
 
-echo "sites/$name/composer.json written\n";
+echo "sites/$name/$composerName written\n";

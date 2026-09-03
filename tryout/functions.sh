@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+#ddev-generated
 
 # Shared functions for TYPO3 tryout DDEV commands.
-# Source this file: source "${DDEV_APPROOT}/.ddev/scripts/functions.sh"
+# Source this file: source "${DDEV_APPROOT}/.ddev/tryout/functions.sh"
 
 PROJECT_ROOT="${DDEV_APPROOT}"
 CORE_DIR="${PROJECT_ROOT}/typo3-core"
@@ -13,7 +14,7 @@ GERRIT_URL="https://review.typo3.org/c/Packages/TYPO3.CMS/+/"
 GERRIT_SSH_HOST="review.typo3.org"
 GERRIT_SSH_PORT="29418"
 GERRIT_PROJECT="Packages/TYPO3.CMS"
-COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/templates/gitmessage.txt"
+COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -26,7 +27,7 @@ DEFAULT_CORE_WORKTREE="main"
 SITES_DIR="${PROJECT_ROOT}/sites"
 PRIMARY_SITE="@primary"
 WORKTREE_CONFIG="${PROJECT_ROOT}/.ddev/config.worktrees.yaml"
-FPM_WRAPPER="${PROJECT_ROOT}/.ddev/scripts/tryout-php-fpm.sh"
+FPM_WRAPPER="${PROJECT_ROOT}/.ddev/tryout/tryout-php-fpm.sh"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -160,6 +161,17 @@ reset_core_to_main() {
 
 core_worktree_dir() { echo "${CORE_WORKTREE_PREFIX}$1"; }
 
+# With Mutagen (the default performance mode on macOS) a directory just created on
+# the host is not yet visible in the container, so anything that runs in there —
+# sync-composer.php, composer install — fails with a confusing "not found". Flush
+# the sync before handing a new tree over to container-side work. A no-op when
+# Mutagen is off.
+sync_to_container() {
+    [ "${DDEV_MUTAGEN_ENABLED:-false}" = "true" ] || return 0
+    info "Syncing to container..."
+    ddev mutagen sync >/dev/null 2>&1 || true
+}
+
 # A name becomes a directory, so keep it strictly harmless (no slashes, no ..).
 validate_worktree_name() {
     local name="${1:-}"
@@ -262,6 +274,7 @@ add_core_worktree() {
     else
         git -C "${main_dir}" worktree add --detach "${dir}" "origin/${branch}" || return 1
     fi
+    sync_to_container
     success "Worktree '${name}' created"
 }
 
@@ -299,8 +312,8 @@ use_core_worktree() {
     success "Active Core: ${name}"
 
     # Sysext sets differ between versions, so regenerate before installing.
-    info "Syncing composer.json..."
-    ddev php /var/www/html/.ddev/scripts/sync-composer.php || warn "composer sync had warnings"
+    info "Syncing composer.tryout.json..."
+    ddev php /var/www/html/.ddev/tryout/sync-composer.php || warn "composer sync had warnings"
     rebuild_typo3
 }
 
@@ -549,7 +562,7 @@ write_worktree_config() {
             echo "web_extra_daemons:"
             printf '%s\n' "${phps[@]}" | sort -u | while read -r v; do
                 echo "  - name: tryout-php-${v}"
-                echo "    command: \"bash /var/www/html/.ddev/scripts/tryout-php-fpm.sh ${v}\""
+                echo "    command: \"bash /var/www/html/.ddev/tryout/tryout-php-fpm.sh ${v}\""
                 echo "    directory: /var/www/html"
             done
         fi
@@ -664,9 +677,9 @@ delete_site() {
 # at that worktree. jq is not on the host, so this runs in the container.
 generate_site_composer() {
     local name="$1" php="${2:-}"
-    info "Generating sites/${name}/composer.json..."
-    ddev exec php /var/www/html/.ddev/scripts/site-composer.php "${name}" "${php}" >/dev/null \
-        || { error "Failed to generate composer.json for ${name}"; return 1; }
+    info "Generating sites/${name}/composer.tryout.json..."
+    ddev exec php /var/www/html/.ddev/tryout/site-composer.php "${name}" "${php}" >/dev/null \
+        || { error "Failed to generate the Composer overlay for ${name}"; return 1; }
 }
 
 # Make a worktree into a live site: own tree, composer.json, DB, vhost and daemon.
@@ -696,11 +709,15 @@ serve_worktree() {
 
     generate_site_composer "${name}" "${php}" || return 1
 
+    # sites/<name>/ was just created on the host; the container must see it before
+    # composer runs in there.
+    sync_to_container
+
     # Sysext set is version-specific, so sync against this worktree.
-    info "Syncing sites/${name}/composer.json with its Core sysexts..."
+    info "Syncing sites/${name}/composer.tryout.json with its Core sysexts..."
     ddev exec env PROJECT_ROOT="/var/www/html/sites/${name}" \
         TRYOUT_CORE_DIR="/var/www/html/typo3-core-${name}" \
-        php /var/www/html/.ddev/scripts/sync-composer.php \
+        php /var/www/html/.ddev/tryout/sync-composer.php \
         || { error "composer sync failed for ${name}"; return 1; }
 
     ensure_site_database "${name}" || return 1
@@ -756,7 +773,7 @@ resolve_patch_ref() {
 
     local result
     local exit_code=0
-    result=$(ddev exec bash /var/www/html/.ddev/scripts/resolve-patch-ref.sh "${api_url}" 2>/dev/null) || exit_code=$?
+    result=$(ddev exec bash /var/www/html/.ddev/tryout/resolve-patch-ref.sh "${api_url}" 2>/dev/null) || exit_code=$?
 
     if [ "${exit_code}" -eq 2 ]; then
         error "Failed to fetch change ${change_id} from Gerrit (HTTP error)"
@@ -955,7 +972,7 @@ resolve_gerrit_user() {
     fi
     if [ -z "${user}" ]; then
         error "No Gerrit username provided."
-        error "  → ddev cs setup <username>   or   export TRYOUT_GERRIT_USER=<username>"
+        error "  → ddev tryout cs setup <username>   or   export TRYOUT_GERRIT_USER=<username>"
         return 1
     fi
     git -C "${CORE_DIR}" config tryout.gerritUser "${user}"
@@ -975,7 +992,7 @@ query_gerrit_account() {
 
     local result
     local exit_code=0
-    result=$(ddev exec bash /var/www/html/.ddev/scripts/resolve-gerrit-account.sh \
+    result=$(ddev exec bash /var/www/html/.ddev/tryout/resolve-gerrit-account.sh \
         "${GERRIT_API}" "${query}" 2>/dev/null) || exit_code=$?
 
     [ "${exit_code}" -eq 3 ] && return 2
@@ -1120,14 +1137,14 @@ install_commit_template() {
         warn "Commit template not found at ${COMMIT_TEMPLATE_SRC}"
         return 1
     fi
-    # Point git directly at the canonical template under .ddev/templates/.
+    # Point git directly at the canonical template under .ddev/tryout/.
     # The path is given relative to the typo3-core working tree so it resolves
     # correctly both on the host (when running `git commit` from typo3-core/)
     # and inside the DDEV container.
-    local tmpl_path="../.ddev/templates/gitmessage.txt"
+    local tmpl_path="../.ddev/tryout/gitmessage.txt"
     git -C "${CORE_DIR}" config commit.template "${tmpl_path}"
     # Drop any leftover copy from an older setup; the canonical file lives
-    # in .ddev/templates/ now.
+    # in .ddev/tryout/ now.
     rm -f "${CORE_GIT_DIR}message.txt"
     success "Commit template wired to ${DIM}${tmpl_path}${NC}"
 }
@@ -1192,7 +1209,7 @@ verify_gerrit_ssh() {
 gerrit_ssh_hint() {
     case "${CS_SSH_REASON:-}" in
         no-user)
-            echo "→ set a username: ddev cs setup <gerrit-user>" ;;
+            echo "→ set a username: ddev tryout cs setup <gerrit-user>" ;;
         unreachable)
             echo "→ check firewall/VPN for ${GERRIT_SSH_HOST}:${GERRIT_SSH_PORT}" ;;
         no-agent-key)
@@ -1224,4 +1241,211 @@ inspect_contribution_setup() {
 
     CS_PUSH_URL=$(git -C "${CORE_DIR}" remote get-url --push origin 2>/dev/null || true)
     CS_USER=$(git -C "${CORE_DIR}" config --get tryout.gerritUser 2>/dev/null || true)
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Contribution setup (ddev tryout cs)
+# ─────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────
+# setup — Wire up hooks, template, push URL
+# ─────────────────────────────────────────────────────────────────────
+cmd_cs_setup() {
+    require_core
+
+    echo ""
+    echo -e "${BOLD}TYPO3 Core — Contribution Setup${NC}"
+    echo "─────────────────────────────────────"
+    echo ""
+
+    info "[1/6] Resolving Gerrit username..."
+    if ! resolve_gerrit_user "${1:-}"; then
+        exit 1
+    fi
+    echo -e "       ${DIM}user: ${GERRIT_USER}${NC}"
+    echo ""
+
+    info "[2/6] Installing commit-msg hook (Change-Id)..."
+    install_commit_msg_hook || warn "commit-msg hook install skipped"
+    echo ""
+
+    info "[3/6] Installing pre-commit hook (CGL checks)..."
+    install_pre_commit_hook || warn "pre-commit hook install skipped"
+    echo ""
+
+    info "[4/6] Installing commit-message template..."
+    install_commit_template || warn "template install skipped"
+    echo ""
+
+    info "[5/6] Configuring Gerrit push URL..."
+    configure_gerrit_push_url "${GERRIT_USER}"
+    echo ""
+
+    info "[6/6] Configuring commit author identity..."
+    configure_author_identity "${GERRIT_USER}"
+    echo ""
+
+    # Optional SSH probe — informational only
+    info "Probing Gerrit SSH (${GERRIT_USER}@${GERRIT_SSH_HOST}:${GERRIT_SSH_PORT})..."
+    if diagnose_gerrit_ssh "${GERRIT_USER}"; then
+        success "SSH reachable — you can push to Gerrit"
+    else
+        warn "SSH probe failed (${CS_SSH_REASON})"
+        echo -e "       ${DIM}$(gerrit_ssh_hint)${NC}"
+    fi
+
+    echo ""
+    echo "─────────────────────────────────────"
+    success "Contribution setup complete!"
+    echo ""
+    echo -e "  ${BOLD}Push a change for review:${NC}"
+    echo -e "    ${DIM}cd typo3-core && git push origin HEAD:refs/for/${BRANCH}${NC}"
+    echo ""
+    echo -e "  ${BOLD}Diagnose state:${NC} ddev tryout cs doctor"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# doctor — Diagnose current contribution setup
+# ─────────────────────────────────────────────────────────────────────
+cmd_cs_doctor() {
+    require_core
+    inspect_contribution_setup
+
+    local OK="${GREEN}✓${NC}"
+    local FAIL="${RED}✗${NC}"
+    local WARN="${YELLOW}!${NC}"
+
+    echo ""
+    echo -e "${BOLD}Contribution Setup — Doctor${NC}"
+    echo "─────────────────────────────────────"
+
+    if [ -n "${CS_USER}" ]; then
+        echo -e "  Gerrit user:     ${OK} ${CS_USER}"
+    else
+        echo -e "  Gerrit user:     ${FAIL} not set"
+        echo -e "                   ${DIM}→ ddev tryout cs setup <username>${NC}"
+    fi
+
+    if [ "${CS_HOOK_COMMIT_MSG}" = "1" ]; then
+        echo -e "  commit-msg hook: ${OK} installed"
+    else
+        echo -e "  commit-msg hook: ${FAIL} missing"
+    fi
+
+    if [ "${CS_HOOK_PRE_COMMIT}" = "1" ]; then
+        echo -e "  pre-commit hook: ${OK} installed"
+    else
+        echo -e "  pre-commit hook: ${FAIL} missing"
+    fi
+
+    if [ "${CS_TEMPLATE}" = "1" ]; then
+        echo -e "  Commit template: ${OK} configured"
+    else
+        echo -e "  Commit template: ${FAIL} not set"
+    fi
+
+    if echo "${CS_PUSH_URL}" | grep -q "^ssh://.*@${GERRIT_SSH_HOST}"; then
+        echo -e "  Push URL:        ${OK} ${CS_PUSH_URL}"
+    elif [ -n "${CS_PUSH_URL}" ]; then
+        echo -e "  Push URL:        ${WARN} ${CS_PUSH_URL}"
+        echo -e "                   ${DIM}(not pointing at Gerrit SSH)${NC}"
+    else
+        echo -e "  Push URL:        ${FAIL} origin missing"
+    fi
+
+    inspect_author_identity
+    case "${CS_AUTHOR_STATUS}" in
+        ok)
+            echo -e "  Author identity: ${OK} ${CS_AUTHOR_EMAIL}"
+            if [ "${CS_AUTHOR_SOURCE}" = "cache" ]; then
+                echo -e "                   ${DIM}(from cache — Gerrit unreachable)${NC}"
+            fi
+            if [ "${CS_AUTHOR_SCOPE}" != "local" ]; then
+                echo -e "                   ${WARN} inherited from your global git config"
+                echo -e "                   ${DIM}→ ddev tryout cs setup ${CS_USER}${NC}"
+            fi
+            ;;
+        mismatch)
+            echo -e "  Author identity: ${FAIL} ${CS_AUTHOR_EMAIL} belongs to another Gerrit account"
+            echo -e "                   ${DIM}→ ddev tryout cs setup ${CS_USER}${NC}"
+            ;;
+        unregistered)
+            echo -e "  Author identity: ${FAIL} ${CS_AUTHOR_EMAIL} is not registered on Gerrit"
+            echo -e "                   ${DIM}pushes are rejected as \"invalid author\"${NC}"
+            echo -e "                   ${DIM}→ ddev tryout cs setup ${CS_USER}${NC}"
+            ;;
+        no-email)
+            echo -e "  Author identity: ${FAIL} no user.email configured"
+            echo -e "                   ${DIM}→ ddev tryout cs setup ${CS_USER}${NC}"
+            ;;
+        *)
+            echo -e "  Author identity: ${WARN} ${CS_AUTHOR_EMAIL} (could not verify)"
+            ;;
+    esac
+
+    # Live SSH check (only if we have a user)
+    if [ -n "${CS_USER}" ]; then
+        if diagnose_gerrit_ssh "${CS_USER}"; then
+            echo -e "  Gerrit SSH:      ${OK} reachable (authenticated)"
+        else
+            case "${CS_SSH_REASON}" in
+                unreachable)
+                    echo -e "  Gerrit SSH:      ${FAIL} network unreachable" ;;
+                no-agent-key)
+                    echo -e "  Gerrit SSH:      ${WARN} no key in ddev-ssh-agent" ;;
+                denied)
+                    echo -e "  Gerrit SSH:      ${FAIL} auth denied by Gerrit" ;;
+                *)
+                    echo -e "  Gerrit SSH:      ${FAIL} probe failed (${CS_SSH_REASON})" ;;
+            esac
+            echo -e "                   ${DIM}$(gerrit_ssh_hint)${NC}"
+        fi
+    fi
+
+    echo "─────────────────────────────────────"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# uninstall — Revert contribution setup
+# ─────────────────────────────────────────────────────────────────────
+cmd_cs_uninstall() {
+    require_core
+
+    info "Removing git hooks..."
+    remove_hooks
+
+    info "Unsetting commit template..."
+    git -C "${CORE_DIR}" config --unset commit.template 2>/dev/null || true
+    rm -f "${CORE_DIR}/.gitmessage.txt"
+
+    info "Resetting origin push URL to fetch URL..."
+    local fetch_url
+    fetch_url=$(git -C "${CORE_DIR}" remote get-url origin 2>/dev/null || echo "")
+    if [ -n "${fetch_url}" ]; then
+        git -C "${CORE_DIR}" remote set-url --push origin "${fetch_url}"
+    fi
+
+    git -C "${CORE_DIR}" config --unset tryout.gerritUser 2>/dev/null || true
+    git -C "${CORE_DIR}" config --unset tryout.gerritEmail 2>/dev/null || true
+    success "Contribution setup removed"
+}
+
+cmd_cs_help() {
+    echo ""
+    echo -e "${BOLD}ddev tryout cs${NC} — TYPO3 Core contribution setup"
+    echo ""
+    echo "Commands:"
+    echo -e "  ${BOLD}setup [user]${NC}   Install hooks, template, and Gerrit push URL (default)"
+    echo -e "  ${BOLD}doctor${NC}         Diagnose the current contribution setup"
+    echo -e "  ${BOLD}uninstall${NC}      Remove hooks, template, and reset push URL"
+    echo -e "  ${BOLD}help${NC}           Show this help"
+    echo ""
+    echo "Username resolution order:"
+    echo "  1. argument:   ddev tryout cs setup jdoe"
+    echo "  2. env:        TRYOUT_GERRIT_USER=jdoe"
+    echo "  3. git config: tryout.gerritUser (cached from previous setup)"
+    echo "  4. prompt      (interactive)"
+    echo ""
 }

@@ -1,5 +1,8 @@
 <?php
 
+// #ddev-generated — provided by the tryout DDEV add-on.
+// Remove the line above if you want to own and edit this file yourself.
+
 if (getenv('IS_DDEV_PROJECT') == 'true') {
     // Derive DB driver from DDEV_DATABASE (e.g. "mariadb:10.11", "postgres:16")
     $ddevDatabase = getenv('DDEV_DATABASE') ?: 'mariadb:10.11';

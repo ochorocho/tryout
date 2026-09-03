@@ -1,5 +1,7 @@
 <?php
 
+// #ddev-generated
+
 /**
  * Regenerates composer.json to match the system extensions available
  * in typo3-core/typo3/sysext/. Run after switching Core branches.
@@ -14,8 +16,14 @@
 // sites/<name> tree). TRYOUT_CORE_DIR names the Core checkout to read sysexts from,
 // which for a served site is a sibling worktree outside that root.
 $projectRoot = getenv('PROJECT_ROOT') ?: '/var/www/html';
-$composerFile = $projectRoot . '/composer.json';
-$composerLockFile = $projectRoot . '/composer.lock';
+
+// The overlay, not the project's own composer.json. DDEV points Composer at it via
+// COMPOSER=composer.tryout.json, and composer-merge-plugin pulls the user's
+// composer.json in as an include — so their dependencies survive untouched and we
+// only ever rewrite a file the add-on owns.
+$composerName = getenv('TRYOUT_COMPOSER_FILE') ?: 'composer.tryout.json';
+$composerFile = $projectRoot . '/' . $composerName;
+$composerLockFile = $projectRoot . '/' . preg_replace('/\.json$/', '.lock', $composerName);
 $coreDir = getenv('TRYOUT_CORE_DIR') ?: $projectRoot . '/typo3-core';
 $sysextDir = $coreDir . '/typo3/sysext';
 
@@ -108,4 +116,4 @@ file_put_contents($composerFile, $json);
 // The lock file needs to be removed so that the next "composer install" step will use
 // current versions. This is e.g. required when Core removes an extension like EXT:setup
 @unlink($composerLockFile);
-echo count($sysextNames) . " system extensions written to composer.json\n";
+echo count($sysextNames) . " system extensions written to $composerName\n";
