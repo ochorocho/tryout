@@ -7,13 +7,18 @@ if (getenv('IS_DDEV_PROJECT') == 'true') {
     $dbDriver = $isPostgres ? 'pdo_pgsql' : 'mysqli';
     $dbPort = $isPostgres ? 5432 : 3306;
 
+    // A served worktree site gets its own database, injected by its vhost
+    // (Apache SetEnv / nginx fastcgi_param). The primary site has no such
+    // variable and keeps plain 'db'.
+    $dbName = getenv('TYPO3_DB_DBNAME') ?: 'db';
+
     $GLOBALS['TYPO3_CONF_VARS'] = array_replace_recursive(
         $GLOBALS['TYPO3_CONF_VARS'],
         [
             'DB' => [
                 'Connections' => [
                     'Default' => [
-                        'dbname' => 'db',
+                        'dbname' => $dbName,
                         'driver' => $dbDriver,
                         'host' => 'db',
                         'password' => 'db',

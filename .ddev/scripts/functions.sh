@@ -15,15 +15,18 @@ GERRIT_SSH_PORT="29418"
 GERRIT_PROJECT="Packages/TYPO3.CMS"
 COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/templates/gitmessage.txt"
 
-# Resolve the active branch: use TRYOUT_BRANCH env if set, otherwise detect
-# from the Core clone, falling back to "main".
-if [ -n "${TRYOUT_BRANCH:-}" ]; then
-    BRANCH="${TRYOUT_BRANCH}"
-elif [ -d "${CORE_GIT_DIR}" ]; then
-    BRANCH=$(git -C "${CORE_DIR}" branch --show-current 2>/dev/null || echo "main")
-else
-    BRANCH="main"
-fi
+# Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
+# symlink to whichever one is active. See `ddev tryout worktree`.
+CORE_WORKTREE_PREFIX="${PROJECT_ROOT}/typo3-core-"
+DEFAULT_CORE_WORKTREE="main"
+
+# Served sites. The PRIMARY site is the project root (public/, vendor/, config/)
+# serving whichever worktree typo3-core points at; every other served worktree gets
+# its own tree under sites/<name>/. See `ddev tryout worktree serve`.
+SITES_DIR="${PROJECT_ROOT}/sites"
+PRIMARY_SITE="@primary"
+WORKTREE_CONFIG="${PROJECT_ROOT}/.ddev/config.worktrees.yaml"
+FPM_WRAPPER="${PROJECT_ROOT}/.ddev/scripts/tryout-php-fpm.sh"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -40,13 +43,47 @@ success() { echo -e "${GREEN}==>${NC} $*"; }
 warn()    { echo -e "${YELLOW}==>${NC} $*"; }
 error()   { echo -e "${RED}✗${NC} $*" >&2; }
 
+# In a linked worktree .git is a file pointing at the shared object store, so
+# resolve it to the common dir — hooks and config live there, not per worktree.
+# Must run before branch detection, which needs a usable git dir.
 if [ -f "${CORE_GIT_DIR}" ]; then
-    CORE_GIT_DIR="$(git -C "${CORE_DIR}" rev-parse --git-common-dir)"
+    CORE_GIT_DIR="$(git -C "${CORE_DIR}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null \
+        || git -C "${CORE_DIR}" rev-parse --git-common-dir)"
 
     if [ ! -d "$CORE_GIT_DIR" ]; then
         error "Could not detect valid TYPO3 Git directory, git rev-parse --git-common-dir returned '$CORE_GIT_DIR'"
         exit 1
     fi
+fi
+
+# For a detached HEAD, derive the base branch from the remote branches containing
+# it. A release branch wins over main: when a commit sits on both, it is the more
+# specific answer, and the newest release branch is the likeliest base. Only when
+# nothing but main contains it do we say main.
+detect_detached_base_branch() {
+    local refs found
+    # Drop origin/HEAD, which for-each-ref reports as a bare "origin".
+    refs=$(git -C "${CORE_DIR}" for-each-ref --format='%(refname:short)' \
+               --contains HEAD refs/remotes/origin 2>/dev/null \
+           | sed 's|^origin/||' \
+           | grep -Ex 'main|[0-9]+\.[0-9]+')
+
+    found=$(echo "${refs}" | grep -Ex '[0-9]+\.[0-9]+' | sort -V | tail -1)
+    [ -z "${found}" ] && found=$(echo "${refs}" | grep -Fx main)
+    echo "${found:-main}"
+}
+
+# Resolve the active branch: use TRYOUT_BRANCH env if set, otherwise detect from
+# the Core clone, falling back to "main".
+# Note -e, not -d: in a worktree .git is a file. And `branch --show-current`
+# exits 0 with empty output on a detached HEAD, so test the value, not $?.
+if [ -n "${TRYOUT_BRANCH:-}" ]; then
+    BRANCH="${TRYOUT_BRANCH}"
+elif [ -e "${CORE_GIT_DIR}" ]; then
+    BRANCH=$(git -C "${CORE_DIR}" branch --show-current 2>/dev/null || true)
+    [ -z "${BRANCH}" ] && BRANCH="$(detect_detached_base_branch)"
+else
+    BRANCH="main"
 fi
 
 # --- Git helpers ---
@@ -66,23 +103,647 @@ require_core() {
     fi
 }
 
+# Rebuild a site. Called with no argument it targets the primary, exactly as before,
+# so the existing call sites keep their behaviour; pass a served site name to rebuild
+# that one under its own PHP, composer root and database.
 rebuild_typo3() {
-    info "Running composer install..."
-    ddev composer install || { error "Composer install failed"; return 1; }
-    info "Running extension:setup..."
-    ddev typo3 extension:setup 2>/dev/null || true
-    info "Flushing caches..."
-    rm -rf "${PROJECT_ROOT}/var/cache"/* 2>/dev/null || true
-    ddev typo3 cache:flush 2>/dev/null || true
-    success "Rebuild complete"
+    local name="${1:-${PRIMARY_SITE}}"
+
+    if site_is_primary "${name}"; then
+        info "Running composer install..."
+        ddev composer install || { error "Composer install failed"; return 1; }
+        info "Running extension:setup..."
+        ddev typo3 extension:setup 2>/dev/null || true
+        info "Flushing caches..."
+        rm -rf "${PROJECT_ROOT}/var/cache"/* 2>/dev/null || true
+        ddev typo3 cache:flush 2>/dev/null || true
+        success "Rebuild complete"
+        return
+    fi
+
+    local php
+    php=$(site_php_version "${name}")
+    info "Running composer install for '${name}' on PHP ${php}..."
+    ddev exec "php${php}" /usr/local/bin/composer install \
+        --working-dir="/var/www/html/sites/${name}" --no-interaction \
+        || { error "Composer install failed for ${name}"; return 1; }
+    info "Running extension:setup for '${name}'..."
+    site_exec "${name}" "vendor/bin/typo3 extension:setup" >/dev/null 2>&1 || true
+    info "Flushing caches for '${name}'..."
+    rm -rf "$(site_dir "${name}")/var/cache"/* 2>/dev/null || true
+    site_exec "${name}" "vendor/bin/typo3 cache:flush" >/dev/null 2>&1 || true
+    success "Rebuild complete for '${name}'"
 }
 
 reset_core_to_main() {
     git -C "${CORE_DIR}" fetch origin
-    git -C "${CORE_DIR}" checkout "${BRANCH}" 2>/dev/null || git -C "${CORE_DIR}" checkout -b "${BRANCH}" "origin/${BRANCH}"
+    # A detached worktree has no local branch to check out; reset in place.
+    if git -C "${CORE_DIR}" symbolic-ref -q HEAD >/dev/null 2>&1 || \
+       git -C "${CORE_DIR}" show-ref -q --verify "refs/heads/${BRANCH}" 2>/dev/null; then
+        git -C "${CORE_DIR}" checkout "${BRANCH}" 2>/dev/null \
+            || git -C "${CORE_DIR}" checkout -b "${BRANCH}" "origin/${BRANCH}"
+    fi
     git -C "${CORE_DIR}" reset --hard "origin/${BRANCH}"
     git -C "${CORE_DIR}" clean -fd
-    rm -rf "${PROJECT_ROOT}/var/cache"/*
+    # ${1} names the site whose cache to drop; defaults to the primary's.
+    rm -rf "$(site_dir "${1:-${PRIMARY_SITE}}")/var/cache"/* 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Core worktrees
+#
+# typo3-core is a symlink to the active typo3-core-<name>. Keeping the path
+# stable means composer.json's path repository, sync-composer.php and CORE_DIR
+# all keep working untouched. Composer resolves the symlink when it writes
+# vendor/ links, so a switch MUST be followed by a rebuild — see use_core_worktree.
+# ─────────────────────────────────────────────────────────────────────
+
+core_worktree_dir() { echo "${CORE_WORKTREE_PREFIX}$1"; }
+
+# A name becomes a directory, so keep it strictly harmless (no slashes, no ..).
+validate_worktree_name() {
+    local name="${1:-}"
+    if [ -z "${name}" ]; then
+        error "Missing worktree name"
+        error "  → ddev tryout worktree add <name> [<branch>]"
+        return 1
+    fi
+    if ! echo "${name}" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+        error "Invalid worktree name '${name}' (allowed: letters, digits, . _ -)"
+        return 1
+    fi
+    if [ "${name}" = "." ] || [ "${name}" = ".." ]; then
+        error "Invalid worktree name '${name}'"
+        return 1
+    fi
+}
+
+core_is_symlinked() { [ -L "${CORE_DIR}" ]; }
+
+# Name of the active worktree, empty on the legacy plain-clone layout.
+active_worktree_name() {
+    core_is_symlinked || return 0
+    basename "$(readlink "${CORE_DIR}")" | sed "s|^$(basename "${CORE_WORKTREE_PREFIX}")||"
+}
+
+# The worktree that owns the object store; git lists it first. worktree add must
+# run against a real worktree, and it can never be removed.
+main_core_worktree_dir() {
+    git -C "${CORE_DIR}" worktree list --porcelain 2>/dev/null \
+        | awk '/^worktree /{print substr($0,10); exit}'
+}
+
+core_worktree_is_dirty() {
+    local dir="$1"
+    ! git -C "${dir}" diff --quiet 2>/dev/null \
+        || ! git -C "${dir}" diff --cached --quiet 2>/dev/null
+}
+
+# One-time move to the symlink layout: the real clone becomes typo3-core-<branch>
+# and typo3-core becomes a symlink to it. Idempotent; never runs unless a
+# worktree command asks for it, so existing installs stay untouched.
+migrate_core_to_worktree_layout() {
+    core_is_symlinked && return 0
+
+    local name target
+    name=$(git -C "${CORE_DIR}" branch --show-current 2>/dev/null || true)
+    [ -z "${name}" ] && name="${DEFAULT_CORE_WORKTREE}"
+    validate_worktree_name "${name}" || name="${DEFAULT_CORE_WORKTREE}"
+    target=$(core_worktree_dir "${name}")
+
+    if [ -e "${target}" ]; then
+        error "Cannot migrate: ${target} already exists"
+        error "  → Move it aside, then retry"
+        return 1
+    fi
+    if core_worktree_is_dirty "${CORE_DIR}"; then
+        error "TYPO3 Core has uncommitted changes — refusing to migrate"
+        error "  → Commit or stash them in typo3-core/, then retry"
+        return 1
+    fi
+
+    info "Migrating typo3-core/ to the worktree layout..."
+    mv "${CORE_DIR}" "${target}"
+    ln -sfn "$(basename "${target}")" "${CORE_DIR}"
+    success "typo3-core -> $(basename "${target}")"
+}
+
+# Create a sibling worktree. Detached by default: git refuses one branch in two
+# worktrees, and the common case is several worktrees on the same tip carrying
+# different Gerrit patches. Pushes go to refs/for/<branch>, never from a local
+# branch, so a detached HEAD is the normal working state here.
+add_core_worktree() {
+    local name="$1" branch="${2:-${BRANCH}}" attach="${3:-false}" dir
+    validate_worktree_name "${name}" || return 1
+    dir=$(core_worktree_dir "${name}")
+
+    if [ -e "${dir}" ]; then
+        error "Worktree '${name}' already exists at $(basename "${dir}")"
+        error "  → ddev tryout worktree use ${name}"
+        return 1
+    fi
+
+    local main_dir
+    main_dir=$(main_core_worktree_dir)
+    [ -z "${main_dir}" ] && main_dir="${CORE_DIR}"
+
+    info "Fetching origin..."
+    git -C "${main_dir}" fetch origin || { error "Fetch failed"; return 1; }
+
+    if ! git -C "${main_dir}" rev-parse --verify --quiet "origin/${branch}" >/dev/null; then
+        error "Branch '${branch}' does not exist on origin"
+        error "  → ddev tryout checkout   (lists available branches)"
+        return 1
+    fi
+
+    info "Creating worktree '${name}' at origin/${branch}..."
+    if [ "${attach}" = "true" ]; then
+        git -C "${main_dir}" worktree add -B "${branch}" "${dir}" "origin/${branch}" || return 1
+    else
+        git -C "${main_dir}" worktree add --detach "${dir}" "origin/${branch}" || return 1
+    fi
+    success "Worktree '${name}' created"
+}
+
+set_active_core() {
+    ln -sfn "$(basename "$(core_worktree_dir "$1")")" "${CORE_DIR}"
+}
+
+# Switch the active Core. The rebuild is mandatory, never optional: Composer
+# binds vendor/ to the resolved real path, so without it the site silently keeps
+# serving the previous Core.
+use_core_worktree() {
+    local name="$1" force="${2:-false}" dir
+    validate_worktree_name "${name}" || return 1
+    dir=$(core_worktree_dir "${name}")
+
+    if [ ! -d "${dir}" ]; then
+        error "No worktree '${name}'"
+        error "  → ddev tryout worktree list"
+        return 1
+    fi
+
+    local active
+    active=$(active_worktree_name)
+    if [ "${active}" = "${name}" ]; then
+        info "'${name}' is already active — rebuilding anyway"
+    elif [ -n "${active}" ] && [ "${force}" != "true" ] \
+         && core_worktree_is_dirty "$(core_worktree_dir "${active}")"; then
+        error "Active worktree '${active}' has uncommitted changes"
+        error "  Switching would hide them from typo3-core/."
+        error "  → Commit or stash them, or: ddev tryout worktree use ${name} --force"
+        return 1
+    fi
+
+    set_active_core "${name}"
+    success "Active Core: ${name}"
+
+    # Sysext sets differ between versions, so regenerate before installing.
+    info "Syncing composer.json..."
+    ddev php /var/www/html/.ddev/scripts/sync-composer.php || warn "composer sync had warnings"
+    rebuild_typo3
+}
+
+remove_core_worktree() {
+    local name="$1" force="${2:-false}" dir
+    validate_worktree_name "${name}" || return 1
+    dir=$(core_worktree_dir "${name}")
+
+    if [ ! -d "${dir}" ]; then
+        error "No worktree '${name}'"
+        return 1
+    fi
+    if [ "$(active_worktree_name)" = "${name}" ]; then
+        error "Cannot remove the active worktree '${name}'"
+        error "  → ddev tryout worktree use <other>   first"
+        return 1
+    fi
+
+    local main_dir
+    main_dir=$(main_core_worktree_dir)
+    if [ "${dir}" = "${main_dir}" ]; then
+        error "Cannot remove '${name}': it owns the shared git object store"
+        return 1
+    fi
+
+    local args=("worktree" "remove")
+    [ "${force}" = "true" ] && args+=("--force")
+    if ! git -C "${CORE_DIR}" "${args[@]}" "${dir}"; then
+        error "Failed to remove worktree '${name}'"
+        error "  → Uncommitted changes? Retry with --force"
+        return 1
+    fi
+    git -C "${CORE_DIR}" worktree prune 2>/dev/null || true
+    success "Removed worktree '${name}'"
+}
+
+# Emit "name<TAB>head<TAB>branch<TAB>dirty<TAB>active" per worktree.
+list_core_worktrees() {
+    local active dir name head branch dirty
+    active=$(active_worktree_name)
+    for dir in "${CORE_WORKTREE_PREFIX}"*; do
+        [ -d "${dir}" ] || continue
+        name="${dir#"${CORE_WORKTREE_PREFIX}"}"
+        head=$(git -C "${dir}" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+        branch=$(git -C "${dir}" branch --show-current 2>/dev/null || true)
+        [ -z "${branch}" ] && branch="(detached)"
+        dirty="clean"
+        core_worktree_is_dirty "${dir}" && dirty="dirty"
+        printf '%s\t%s\t%s\t%s\t%s\n' "${name}" "${head}" "${branch}" "${dirty}" \
+            "$([ "${name}" = "${active}" ] && echo active || echo "")"
+    done
+}
+
+# True when vendor/ was built from a different Core than the active one. This is
+# the silent failure mode of a symlink swap without a reinstall.
+vendor_core_mismatch() {
+    local link resolved active
+    link="${PROJECT_ROOT}/vendor/typo3/cms-core"
+    [ -L "${link}" ] || return 1
+    active=$(active_worktree_name)
+    [ -n "${active}" ] || return 1
+    resolved=$(cd "$(dirname "${link}")" && cd "$(readlink "${link}")" 2>/dev/null && pwd -P) || return 1
+    case "${resolved}" in
+        "$(cd "$(core_worktree_dir "${active}")" && pwd -P)"/*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Served sites
+#
+# The primary site is asymmetric on purpose: it stays at the project root so every
+# existing command, composer.json and single-Core install keeps working untouched.
+# The primary/extra distinction lives in these four path helpers ONLY — callers pass
+# a site name and never branch themselves.
+# ─────────────────────────────────────────────────────────────────────
+
+site_is_primary() { [ "${1:-}" = "${PRIMARY_SITE}" ] || [ -z "${1:-}" ]; }
+
+# Root of a site's TYPO3 instance (composer root).
+site_dir() {
+    if site_is_primary "${1:-}"; then echo "${PROJECT_ROOT}"; else echo "${SITES_DIR}/$1"; fi
+}
+
+site_docroot() { echo "$(site_dir "${1:-}")/public"; }
+site_vendor()  { echo "$(site_dir "${1:-}")/vendor"; }
+
+# The Core checkout a site serves: the symlink for the primary, the named worktree
+# otherwise — so the primary keeps following `worktree use`.
+site_core_dir() {
+    if site_is_primary "${1:-}"; then echo "${CORE_DIR}"; else core_worktree_dir "$1"; fi
+}
+
+# Hostname: <name>.<project>.ddev.site for extras, the bare project URL for primary.
+# DDEV appends .ddev.site itself, so additional_hostnames gets the un-suffixed form.
+site_hostname_short() {
+    site_is_primary "${1:-}" && { echo "${DDEV_SITENAME:-}"; return; }
+    echo "$1.${DDEV_SITENAME:-}"
+}
+site_hostname() { echo "$(site_hostname_short "${1:-}").ddev.site"; }
+
+# Database name. The primary keeps plain `db` so existing installs are untouched.
+site_database() {
+    site_is_primary "${1:-}" && { echo "db"; return; }
+    # printf, not echo: tr -c would turn echo's trailing newline into an underscore.
+    echo "db_$(printf '%s' "$1" | tr -c '[:alnum:]_' '_')"
+}
+
+# A site is "served" when its generated marker exists (extras only).
+site_is_served() {
+    site_is_primary "${1:-}" && return 0
+    [ -f "$(site_dir "$1")/.tryout-site" ]
+}
+
+# PHP version a site runs, from its marker; falls back to the project default.
+site_php_version() {
+    local f
+    site_is_primary "${1:-}" && { echo "${DDEV_PHP_VERSION:-}"; return; }
+    f="$(site_dir "$1")/.tryout-site"
+    [ -f "${f}" ] && grep -E '^php=' "${f}" | head -1 | cut -d= -f2 || echo "${DDEV_PHP_VERSION:-}"
+}
+
+# Names of all served extra sites (primary excluded).
+served_site_names() {
+    [ -d "${SITES_DIR}" ] || return 0
+    local d name
+    for d in "${SITES_DIR}"/*; do
+        [ -d "${d}" ] || continue
+        name="$(basename "${d}")"
+        site_is_served "${name}" && echo "${name}"
+    done
+}
+
+# --- Site generators ---
+
+# Where a site's generated vhost goes, per webserver_type. DDEV copies both dirs
+# into the container; ours deliberately omit the #ddev-generated marker so DDEV
+# never overwrites them, and are prefixed so they cannot collide with its own
+# apache-site.conf / nginx-site.conf.
+site_vhost_file() {
+    local name="$1"
+    case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
+        nginx*) echo "${PROJECT_ROOT}/.ddev/nginx_full/tryout-site-${name}.conf" ;;
+        *)      echo "${PROJECT_ROOT}/.ddev/apache/tryout-site-${name}.conf" ;;
+    esac
+}
+
+generate_site_vhost() {
+    local name="$1" php="$2" file docroot host db sock
+    file=$(site_vhost_file "${name}")
+    docroot="/var/www/html/sites/${name}/public"
+    host=$(site_hostname "${name}")
+    db=$(site_database "${name}")
+    sock="/run/php-fpm-${php}.sock"
+    [ "${php}" = "${DDEV_PHP_VERSION:-}" ] && sock="/run/php-fpm.sock"
+
+    mkdir -p "$(dirname "${file}")"
+    if [ "${DDEV_WEBSERVER_TYPE:-apache-fpm}" = "nginx-fpm" ]; then
+        cat > "${file}" <<NGINX_EOF
+# Generated by ddev tryout worktree serve ${name} — edits will be overwritten.
+server {
+    listen 80;
+    listen 443 ssl;
+    http2 on;
+    server_name ${host};
+    ssl_certificate /etc/ssl/certs/master.crt;
+    ssl_certificate_key /etc/ssl/certs/master.key;
+    root ${docroot};
+    index index.php index.html;
+
+    location / {
+        try_files \$uri \$uri/ /index.php\$is_args\$args;
+    }
+    location ~ [^/]\.php(/|\$) {
+        try_files \$uri =404;
+        fastcgi_split_path_info ^(.+?\.php)(/.*)\$;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param PATH_INFO \$fastcgi_path_info;
+        fastcgi_param TRYOUT_SITE ${name};
+        fastcgi_param TYPO3_DB_DBNAME ${db};
+        fastcgi_pass unix:${sock};
+    }
+}
+NGINX_EOF
+    else
+        cat > "${file}" <<APACHE_EOF
+# Generated by ddev tryout worktree serve ${name} — edits will be overwritten.
+<VirtualHost *:80 *:443>
+    ServerName ${host}
+    DocumentRoot ${docroot}
+
+    SSLEngine on
+    SSLCertificateFile /etc/ssl/certs/master.crt
+    SSLCertificateKeyFile /etc/ssl/certs/master.key
+
+    SetEnvIf X-Forwarded-Proto "https" HTTPS=on
+    SetEnv TRYOUT_SITE ${name}
+    SetEnv TYPO3_DB_DBNAME ${db}
+
+    <Directory "${docroot}/">
+        AllowOverride All
+        Require all granted
+    </Directory>
+
+    # Overrides the global conf-enabled/php*-fpm.conf handler: sites-enabled is
+    # read later and a FilesMatch inside a VirtualHost is more specific.
+    <FilesMatch ".+\.ph(?:ar|p|tml)\$">
+        SetHandler "proxy:unix:${sock}|fcgi://localhost"
+    </FilesMatch>
+
+    ErrorLog /dev/stdout
+    CustomLog /dev/stdout combined
+</VirtualHost>
+APACHE_EOF
+    fi
+}
+
+# Rewrite .ddev/config.worktrees.yaml from the served sites: hostnames (so mkcert
+# covers them) plus one supervised daemon per extra PHP version.
+write_worktree_config() {
+    local names hosts=() phps=() name php
+    names=$(served_site_names)
+
+    for name in ${names}; do
+        hosts+=("$(site_hostname_short "${name}")")
+        php=$(site_php_version "${name}")
+        [ -n "${php}" ] && [ "${php}" != "${DDEV_PHP_VERSION:-}" ] && phps+=("${php}")
+    done
+
+    if [ ${#hosts[@]} -eq 0 ]; then
+        rm -f "${WORKTREE_CONFIG}"
+        return 0
+    fi
+
+    {
+        echo "#ddev-silent-no-warn"
+        echo "# Generated by ddev tryout worktree serve — do not edit."
+        echo "# Hostnames must be registered here so mkcert includes them in the cert."
+        echo ""
+        echo "additional_hostnames:"
+        printf '  - %s\n' "${hosts[@]}"
+        # De-duplicate: several sites may share one PHP version.
+        if [ ${#phps[@]} -gt 0 ]; then
+            echo ""
+            echo "web_extra_daemons:"
+            printf '%s\n' "${phps[@]}" | sort -u | while read -r v; do
+                echo "  - name: tryout-php-${v}"
+                echo "    command: \"bash /var/www/html/.ddev/scripts/tryout-php-fpm.sh ${v}\""
+                echo "    directory: /var/www/html"
+            done
+        fi
+    } > "${WORKTREE_CONFIG}"
+}
+
+# Create the site's database and grant the DDEV db user access.
+ensure_site_database() {
+    local db
+    db=$(site_database "$1")
+    [ "${db}" = "db" ] && return 0
+    info "Ensuring database ${db}..."
+    if [[ "${DDEV_DATABASE:-mariadb}" == postgres* ]]; then
+        ddev exec -s db sh -c "PGPASSWORD=db psql -U db -tc \"SELECT 1 FROM pg_database WHERE datname='${db}'\" | grep -q 1 || PGPASSWORD=db createdb -U db ${db}" \
+            || { error "Failed to create database ${db}"; return 1; }
+    else
+        ddev mysql -uroot -proot -e \
+            "CREATE DATABASE IF NOT EXISTS \`${db}\`; GRANT ALL ON \`${db}\`.* TO 'db'@'%';" \
+            || { error "Failed to create database ${db}"; return 1; }
+    fi
+}
+
+# Run a command in a site's context: its PHP version, its composer root, its
+# database. Without this every caller has to remember the php<version> binary and
+# the TYPO3_DB_DBNAME the vhost would otherwise inject.
+site_exec() {
+    local name="$1"; shift
+    local php dir db bin="php"
+    php=$(site_php_version "${name}")
+    dir=$(site_dir "${name}")
+    db=$(site_database "${name}")
+    [ -n "${php}" ] && [ "${php}" != "${DDEV_PHP_VERSION:-}" ] && bin="php${php}"
+
+    # Paths must be container-side.
+    local cdir="/var/www/html${dir#${PROJECT_ROOT}}"
+    # shellcheck disable=SC2086 # TRYOUT_EXTRA_ENV is deliberately word-split
+    ddev exec env TYPO3_DB_DBNAME="${db}" TRYOUT_SITE="${name}" ${TRYOUT_EXTRA_ENV:-} \
+        sh -c "cd '${cdir}' && ${bin} $*"
+}
+
+# First-run TYPO3 setup for a served site, mirroring what post-start.sh does for
+# the primary but against that site's docroot, vendor and database.
+setup_site_typo3() {
+    local name="$1" db php driver server_type
+    site_is_served "${name}" || { error "Site '${name}' is not served"; return 1; }
+    db=$(site_database "${name}")
+    php=$(site_php_version "${name}")
+
+    if [ -f "$(site_dir "${name}")/config/system/settings.php" ]; then
+        info "Site '${name}' already configured"
+        return 0
+    fi
+
+    driver="mysqli"
+    [[ "${DDEV_DATABASE:-mariadb}" == postgres* ]] && driver="postgres"
+    server_type="other"
+    case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in apache*) server_type="apache" ;; esac
+
+    info "Running TYPO3 setup for '${name}' (db ${db}, PHP ${php})..."
+    TRYOUT_EXTRA_ENV="TYPO3_DB_DRIVER=${driver}" \
+        site_exec "${name}" "vendor/bin/typo3 setup --no-interaction --force --server-type=${server_type}" \
+        || { error "TYPO3 setup failed for ${name}"; return 1; }
+    success "Site '${name}' set up"
+}
+
+# Wipe one site back to a fresh TYPO3 install: its own database, its own
+# fileadmin, its own settings.php. Works for the primary and for served sites.
+delete_site() {
+    local name="$1" db docroot dir driver server_type
+    db=$(site_database "${name}")
+    docroot=$(site_docroot "${name}")
+    dir=$(site_dir "${name}")
+
+    info "[1/4] Recreating database ${db}..."
+    if [[ "${DDEV_DATABASE:-mariadb}" == postgres* ]]; then
+        ddev exec -s db sh -c "PGPASSWORD=db dropdb -U db --if-exists ${db}" 2>/dev/null || true
+        ddev exec -s db sh -c "PGPASSWORD=db createdb -U db ${db}" \
+            || { error "Failed to reset database ${db}"; return 1; }
+    else
+        # Re-grant: DROP removes the privileges along with the schema.
+        ddev mysql -uroot -proot -e \
+            "DROP DATABASE IF EXISTS \`${db}\`; CREATE DATABASE \`${db}\`; GRANT ALL ON \`${db}\`.* TO 'db'@'%';" \
+            || { error "Failed to reset database ${db}"; return 1; }
+    fi
+    success "Database ${db} recreated"
+
+    info "[2/4] Clearing ${docroot#"${PROJECT_ROOT}/"}/fileadmin..."
+    [ -d "${docroot}/fileadmin" ] && find "${docroot}/fileadmin" -mindepth 1 -delete 2>/dev/null || true
+    success "fileadmin cleared"
+
+    info "[3/4] Removing settings.php..."
+    rm -f "${dir}/config/system/settings.php"
+    success "Configuration removed"
+
+    driver="mysqli"
+    [[ "${DDEV_DATABASE:-mariadb}" == postgres* ]] && driver="postgres"
+    server_type="other"
+    case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in apache*) server_type="apache" ;; esac
+
+    info "[4/4] Running TYPO3 setup + extension:setup..."
+    TRYOUT_EXTRA_ENV="TYPO3_DB_DRIVER=${driver}" \
+        site_exec "${name}" "vendor/bin/typo3 setup --no-interaction --force --server-type=${server_type}" \
+        || { error "TYPO3 setup failed for ${name}"; return 1; }
+    site_exec "${name}" "vendor/bin/typo3 extension:setup" >/dev/null 2>&1 || warn "extension:setup had warnings"
+    site_exec "${name}" "vendor/bin/typo3 cache:flush" >/dev/null 2>&1 || warn "cache:flush had warnings"
+    success "Setup complete"
+}
+
+# --- Serve / unserve ---
+
+# Build a site's own composer.json from the root one, repointing the Core path repo
+# at that worktree. jq is not on the host, so this runs in the container.
+generate_site_composer() {
+    local name="$1" php="${2:-}"
+    info "Generating sites/${name}/composer.json..."
+    ddev exec php /var/www/html/.ddev/scripts/site-composer.php "${name}" "${php}" >/dev/null \
+        || { error "Failed to generate composer.json for ${name}"; return 1; }
+}
+
+# Make a worktree into a live site: own tree, composer.json, DB, vhost and daemon.
+serve_worktree() {
+    local name="$1" php="${2:-}" dir
+    validate_worktree_name "${name}" || return 1
+    site_is_primary "${name}" && { error "'${name}' is reserved"; return 1; }
+
+    if [ ! -d "$(core_worktree_dir "${name}")" ]; then
+        error "No worktree '${name}'"
+        error "  → ddev tryout worktree add ${name} <branch>"
+        return 1
+    fi
+
+    php="${php:-${DDEV_PHP_VERSION:-8.5}}"
+    dir=$(site_dir "${name}")
+    mkdir -p "${dir}/config/system" "${dir}/var"
+
+    printf 'php=%s\n' "${php}" > "${dir}/.tryout-site"
+
+    # TYPO3 loads config/system/additional.php relative to its OWN root, so a
+    # served site would otherwise miss the DDEV overrides — including
+    # trustedHostsPattern, without which its hostname is rejected outright.
+    # Symlink rather than copy so there stays one source of truth.
+    # Four levels up: system -> config -> <name> -> sites -> project root.
+    ln -sfn ../../../../config/system/additional.php "${dir}/config/system/additional.php"
+
+    generate_site_composer "${name}" "${php}" || return 1
+
+    # Sysext set is version-specific, so sync against this worktree.
+    info "Syncing sites/${name}/composer.json with its Core sysexts..."
+    ddev exec env PROJECT_ROOT="/var/www/html/sites/${name}" \
+        TRYOUT_CORE_DIR="/var/www/html/typo3-core-${name}" \
+        php /var/www/html/.ddev/scripts/sync-composer.php \
+        || { error "composer sync failed for ${name}"; return 1; }
+
+    ensure_site_database "${name}" || return 1
+
+    # Run composer under the site's own PHP so the lock file and the generated
+    # platform_check match what its vhost will actually serve.
+    info "Installing dependencies for ${name} on PHP ${php} (this takes a moment)..."
+    ddev exec "php${php}" /usr/local/bin/composer install \
+        --working-dir="/var/www/html/sites/${name}" --no-interaction \
+        || { error "composer install failed for ${name}"; return 1; }
+
+    generate_site_vhost "${name}" "${php}"
+    write_worktree_config
+
+    setup_site_typo3 "${name}" || return 1
+
+    success "Site '${name}' prepared — PHP ${php}, db $(site_database "${name}")"
+    warn "Run 'ddev restart' to register $(site_hostname "${name}") and issue its certificate."
+    echo -e "  ${DIM}then: https://$(site_hostname "${name}")/typo3/  (admin / Password.1)${NC}"
+}
+
+# Remove the site but keep the worktree and its git state.
+unserve_worktree() {
+    local name="$1" keep_db="${2:-true}" db
+    validate_worktree_name "${name}" || return 1
+    site_is_served "${name}" || { error "Site '${name}' is not served"; return 1; }
+
+    rm -f "$(site_vhost_file "${name}")"
+    rm -rf "$(site_dir "${name}")"
+    write_worktree_config
+
+    if [ "${keep_db}" != "true" ]; then
+        db=$(site_database "${name}")
+        info "Dropping database ${db}..."
+        if [[ "${DDEV_DATABASE:-mariadb}" == postgres* ]]; then
+            ddev exec -s db sh -c "PGPASSWORD=db dropdb -U db --if-exists ${db}" || true
+        else
+            ddev mysql -uroot -proot -e "DROP DATABASE IF EXISTS \`${db}\`;" || true
+        fi
+    fi
+
+    success "Site '${name}' removed (worktree kept)"
+    warn "Run 'ddev restart' to release its hostname."
 }
 
 # --- Gerrit patch functions ---

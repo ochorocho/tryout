@@ -4,7 +4,7 @@
 ## Description: TYPO3 development toolkit — manage Core, patches, and extensions
 ## Usage: tryout [command] [args]
 ## Example: "ddev tryout status\nddev tryout download\nddev tryout patch 56947\nddev tryout reset\nddev tryout delete"
-## AutocompleteTerms: ["status","download","checkout","composer","patch","reset","delete","help"]
+## AutocompleteTerms: ["status","download","checkout","composer","patch","worktree","serve","unserve","exec","reset","delete","help"]
 
 set -euo pipefail
 
@@ -49,6 +49,24 @@ cmd_status() {
 
     echo -e "  Core:      ${tree_icon} ${current_branch} (${commit_short}) — ${tree_state}"
     [ -n "${commit_date}" ] && echo -e "             ${DIM}${commit_date}${NC}"
+
+    # Worktrees (only meaningful once migrated to the symlink layout)
+    if core_is_symlinked; then
+        local active wt_count
+        active=$(active_worktree_name)
+        wt_count=$(list_core_worktrees | wc -l | tr -d ' ')
+        echo -e "  Worktree:  ${OK} ${active} ${DIM}(${wt_count} total)${NC}"
+        list_core_worktrees | while IFS=$'\t' read -r name head branch dirty is_active; do
+            [ -n "${is_active}" ] && continue
+            echo -e "             ${DIM}${name} — ${branch} (${head})${NC}"
+        done
+        # Composer binds vendor/ to the resolved real path, so a switch without a
+        # rebuild silently keeps serving the previous Core.
+        if vendor_core_mismatch; then
+            echo -e "             ${WARN} vendor/ was built from a different Core"
+            echo -e "             ${DIM}→ ddev tryout worktree use ${active}${NC}"
+        fi
+    fi
 
     # Applied patches
     if git -C "${CORE_DIR}" rev-parse "origin/${BRANCH}" >/dev/null 2>&1; then
@@ -194,10 +212,25 @@ cmd_patch() {
     require_core
     ensure_gerrit_remote
 
+    # Optional 2nd arg targets a served site; without it the primary is patched,
+    # exactly as before. TRYOUT_SITE_CORE redirects the shared patch helpers at
+    # that site's worktree instead of the symlink.
+    local site="${2:-${PRIMARY_SITE}}"
+    if ! site_is_primary "${site}"; then
+        if ! site_is_served "${site}"; then
+            error "No served site '${site}'"
+            error "  → ddev tryout worktree list"
+            return 1
+        fi
+        CORE_DIR="$(site_core_dir "${site}")"
+        BRANCH="$(detect_detached_base_branch)"
+        info "Patching site '${site}' ($(basename "${CORE_DIR}"), base ${BRANCH})"
+    fi
+
     if [ -n "${1:-}" ]; then
         apply_patch "$1"
         if [ "${PATCH_RESULT}" = "applied" ]; then
-            rebuild_typo3
+            rebuild_typo3 "${site}"
         fi
     else
         local patches="${TRYOUT_PATCHES:-}"
@@ -217,7 +250,7 @@ cmd_patch() {
 
         apply_all_patches
         if [ "${PATCHES_APPLIED:-0}" -gt 0 ]; then
-            rebuild_typo3
+            rebuild_typo3 "${site}"
         fi
     fi
 }
@@ -228,27 +261,67 @@ cmd_patch() {
 cmd_reset() {
     require_core
 
+    local site="${1:-${PRIMARY_SITE}}"
+    if ! site_is_primary "${site}"; then
+        if ! site_is_served "${site}"; then
+            error "No served site '${site}'"
+            error "  → ddev tryout worktree list"
+            return 1
+        fi
+        CORE_DIR="$(site_core_dir "${site}")"
+        BRANCH="$(detect_detached_base_branch)"
+    fi
+
     echo ""
-    info "Resetting TYPO3 Core to latest origin/${BRANCH}..."
+    info "Resetting $(basename "${CORE_DIR}") to latest origin/${BRANCH}..."
     echo ""
 
     info "[1/2] Resetting git repository..."
-    reset_core_to_main
+    reset_core_to_main "${site}"
     success "Git reset to origin/${BRANCH}"
 
     info "[2/2] Rebuilding..."
-    rebuild_typo3
+    rebuild_typo3 "${site}"
 
     echo ""
-    success "Reset complete! Site: ${DDEV_PRIMARY_URL}"
+    success "Reset complete! Site: $(site_hostname "${site}")"
 }
 
 # ─────────────────────────────────────────────────────────────────────
 # delete — Wipe database and fileadmin, fresh TYPO3 setup
 # ─────────────────────────────────────────────────────────────────────
 cmd_delete() {
+    local target="${1:-}" sites=()
+
+    # Resolve which site(s) to wipe. Defaulting to the primary keeps existing
+    # muscle memory, but with sites served we must name what gets destroyed —
+    # silently dropping `db` while orphaning db_<name> is the trap here.
+    if [ "${target}" = "--all" ]; then
+        sites=("${PRIMARY_SITE}")
+        local s
+        while IFS= read -r s; do [ -n "${s}" ] && sites+=("${s}"); done < <(served_site_names)
+    elif [ -n "${target}" ]; then
+        if ! site_is_served "${target}"; then
+            error "No served site '${target}'"
+            error "  → ddev tryout worktree list"
+            return 1
+        fi
+        sites=("${target}")
+    else
+        sites=("${PRIMARY_SITE}")
+    fi
+
     echo ""
-    echo -e "${YELLOW}${BOLD}Warning:${NC} This will delete the database and all files in fileadmin/."
+    echo -e "${YELLOW}${BOLD}Warning:${NC} this destroys data for:"
+    local s label
+    for s in "${sites[@]}"; do
+        label="${s}"
+        site_is_primary "${s}" && label="primary"
+        echo -e "  ${BOLD}${label}${NC} — database $(site_database "${s}"), $(site_docroot "${s}")/fileadmin, settings.php"
+    done
+    if [ -z "${target}" ] && [ -n "$(served_site_names)" ]; then
+        echo -e "  ${DIM}served sites are untouched — use 'delete <site>' or 'delete --all'${NC}"
+    fi
     echo ""
     read -r -p "Are you sure? [y/N] " confirm
     if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
@@ -256,59 +329,18 @@ cmd_delete() {
         return
     fi
 
-    echo ""
-
-    info "[1/5] Dropping and recreating database..."
-    local ddev_db="${DDEV_DATABASE:-mariadb}"
-    if [[ "${ddev_db}" == postgres* ]]; then
-        ddev exec -s db sh -c 'PGPASSWORD=db dropdb -U db --if-exists db' 2>/dev/null || true
-        ddev exec -s db sh -c 'PGPASSWORD=db createdb -U db db' || { error "Failed to reset database"; exit 1; }
-    else
-        ddev mysql -e "DROP DATABASE IF EXISTS db; CREATE DATABASE db;" || {
-            error "Failed to reset database"
-            exit 1
-        }
-    fi
-    success "Database recreated"
-
-    info "[2/5] Deleting fileadmin/ contents..."
-    if [ -d "${PROJECT_ROOT}/public/fileadmin" ]; then
-        find "${PROJECT_ROOT}/public/fileadmin" -mindepth 1 -delete 2>/dev/null || true
-    fi
-    success "fileadmin/ cleared"
-
-    info "[3/5] Removing TYPO3 configuration..."
-    rm -f "${PROJECT_ROOT}/config/system/settings.php"
-    success "Configuration removed"
-
-    # Derive SQL type from DDEV
-    local ddev_db="${DDEV_DATABASE:-mariadb}"
-    export TYPO3_DB_DRIVER="mysqli"
-    if [[ "${ddev_db}" == postgres* ]]; then
-      export TYPO3_DB_DRIVER="postgres"
-    fi
-
-    # Derive server type from DDEV webserver config
-    local server_type="other"
-    case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
-        apache*) server_type="apache" ;;
-    esac
-
-    info "[4/5] Running TYPO3 setup (server-type=${server_type})..."
-    if ! ddev exec env TYPO3_DB_DRIVER="${TYPO3_DB_DRIVER}" vendor/bin/typo3 setup --no-interaction --force --server-type="${server_type}"; then
-        error "TYPO3 setup failed"
-        exit 1
-    fi
-    success "TYPO3 setup complete"
-
-    info "[5/5] Setting up extensions and flushing caches..."
-    ddev typo3 extension:setup 2>/dev/null || warn "extension:setup had warnings"
-    ddev typo3 cache:flush 2>/dev/null || warn "cache:flush had warnings"
-    success "Extensions ready, caches flushed"
+    for s in "${sites[@]}"; do
+        echo ""
+        label="${s}"; site_is_primary "${s}" && label="primary"
+        info "── ${label} ──"
+        delete_site "${s}" || return 1
+    done
 
     echo ""
     success "Fresh setup complete!"
-    echo -e "  ${BOLD}Backend:${NC}  ${DDEV_PRIMARY_URL}/typo3/"
+    for s in "${sites[@]}"; do
+        echo -e "  ${BOLD}$(site_hostname "${s}")/typo3/${NC}"
+    done
     echo -e "  ${BOLD}Login:${NC}    admin / Password.1"
     echo ""
 }
@@ -317,7 +349,7 @@ cmd_delete() {
 # checkout — Switch TYPO3 Core branch (version)
 # ─────────────────────────────────────────────────────────────────────
 cmd_checkout() {
-    local target_branch="${1:-}"
+    local target_branch="${1:-}" site="${2:-${PRIMARY_SITE}}"
 
     if [ -z "${target_branch}" ]; then
         error "Usage: ddev tryout checkout <branch>"
@@ -338,6 +370,16 @@ cmd_checkout() {
     fi
 
     require_core
+
+    if ! site_is_primary "${site}"; then
+        if ! site_is_served "${site}"; then
+            error "No served site '${site}'"
+            error "  → ddev tryout worktree list"
+            return 1
+        fi
+        CORE_DIR="$(site_core_dir "${site}")"
+        info "Switching site '${site}' ($(basename "${CORE_DIR}"))"
+    fi
 
     info "Fetching latest branches..."
     git -C "${CORE_DIR}" fetch origin
@@ -362,6 +404,20 @@ cmd_checkout() {
         info "Switching from ${current_branch} to ${target_branch}..."
     fi
 
+    # git refuses a branch that is checked out in another worktree; point at the
+    # non-destructive alternative instead of surfacing the raw git error.
+    if core_is_symlinked; then
+        local holder
+        holder=$(git -C "${CORE_DIR}" worktree list --porcelain 2>/dev/null \
+                 | awk -v b="branch refs/heads/${target_branch}" '
+                     /^worktree /{w=substr($0,10)} $0==b{print w; exit}')
+        if [ -n "${holder}" ] && [ "$(cd "${holder}" && pwd -P)" != "$(cd "${CORE_DIR}" && pwd -P)" ]; then
+            error "Branch '${target_branch}' is checked out in $(basename "${holder}")"
+            error "  → ddev tryout worktree use ${holder#"${CORE_WORKTREE_PREFIX}"}"
+            return 1
+        fi
+    fi
+
     # Reset to the target branch
     git -C "${CORE_DIR}" checkout "${target_branch}" 2>/dev/null \
         || git -C "${CORE_DIR}" checkout -b "${target_branch}" "origin/${target_branch}"
@@ -371,13 +427,20 @@ cmd_checkout() {
 
     success "Core switched to ${target_branch}"
 
-    # Sync composer.json and rebuild
-    cmd_composer
-    rebuild_typo3
+    # Sync composer.json and rebuild, against this site's own root when serving.
+    if site_is_primary "${site}"; then
+        cmd_composer
+    else
+        info "Syncing sites/${site}/composer.json..."
+        ddev exec env PROJECT_ROOT="/var/www/html/sites/${site}" \
+            TRYOUT_CORE_DIR="/var/www/html/typo3-core-${site}" \
+            php /var/www/html/.ddev/scripts/sync-composer.php
+    fi
+    rebuild_typo3 "${site}"
 
     echo ""
     success "Now on TYPO3 branch ${target_branch}"
-    echo -e "  ${BOLD}Site:${NC} ${DDEV_PRIMARY_URL}"
+    echo -e "  ${BOLD}Site:${NC} https://$(site_hostname "${site}")"
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -387,6 +450,189 @@ cmd_composer() {
     require_core
     info "Syncing composer.json with available system extensions..."
     ddev php /var/www/html/.ddev/scripts/sync-composer.php
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# exec — Run a command in a site's context (its PHP, root and database)
+# ─────────────────────────────────────────────────────────────────────
+cmd_exec() {
+    local site="${1:-}"
+    shift || true
+    if [ -z "${site}" ] || [ $# -eq 0 ]; then
+        error "Usage: ddev tryout exec <site> <command> ..."
+        echo ""
+        echo "  Examples:"
+        echo "    ddev tryout exec v13 vendor/bin/typo3 cache:flush"
+        echo "    ddev tryout exec v13 composer show typo3/cms-core"
+        echo ""
+        echo "  Sites: primary$(served_site_names | sed 's/^/, /' | tr -d '\n')"
+        return 1
+    fi
+    if ! site_is_primary "${site}" && ! site_is_served "${site}"; then
+        error "No served site '${site}'"
+        error "  → ddev tryout worktree list"
+        return 1
+    fi
+    site_exec "${site}" "$*"
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# worktree — Manage side-by-side Core checkouts
+# ─────────────────────────────────────────────────────────────────────
+cmd_worktree() {
+    local sub="${1:-list}"
+    shift || true
+
+    case "${sub}" in
+        add)
+            require_core
+            local name="${1:-}" branch="" attach="false" serve="false" php=""
+            shift || true
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --branch)  attach="true" ;;
+                    --serve)   serve="true" ;;
+                    --php)     php="${2:-}"; shift ;;
+                    --php=*)   php="${1#--php=}" ;;
+                    *)         branch="$1" ;;
+                esac
+                shift
+            done
+            [ -z "${name}" ] && { error "Usage: ddev tryout worktree add <name> [<branch>] [--branch] [--serve] [--php 8.2]"; return 1; }
+            # A named PHP version only takes effect on a served site.
+            [ -n "${php}" ] && serve="true"
+            migrate_core_to_worktree_layout || return 1
+            add_core_worktree "${name}" "${branch:-${BRANCH}}" "${attach}" || return 1
+            if [ "${serve}" = "true" ]; then
+                echo ""
+                serve_worktree "${name}" "${php}" || return 1
+            else
+                echo ""
+                echo -e "  ${DIM}→ ddev tryout worktree use ${name}      (switch the primary site)${NC}"
+                echo -e "  ${DIM}→ ddev tryout worktree serve ${name}    (give it its own URL)${NC}"
+            fi
+            ;;
+
+        list)
+            require_core
+            echo ""
+            echo -e "${BOLD}Core worktrees${NC}"
+            if ! core_is_symlinked; then
+                echo -e "  ${DIM}single Core checkout (no worktrees yet)${NC}"
+                echo -e "  ${DIM}→ ddev tryout worktree add <name> [<branch>]${NC}"
+                echo ""
+                return 0
+            fi
+            printf "  %-12s %-12s %-12s %-6s %-5s %-10s %s\n" \
+                "NAME" "HEAD" "BRANCH" "STATE" "PHP" "DB" "URL"
+            list_core_worktrees | while IFS=$'\t' read -r name head branch dirty active; do
+                local php="-" db="-" url="" marker=""
+                if site_is_served "${name}"; then
+                    php=$(site_php_version "${name}")
+                    db=$(site_database "${name}")
+                    url="https://$(site_hostname "${name}")"
+                elif [ -n "${active}" ]; then
+                    php="${DDEV_PHP_VERSION:-}"
+                    db="db"
+                    url="${DDEV_PRIMARY_URL}"
+                fi
+                [ -n "${active}" ] && marker=" ${GREEN}← primary${NC}"
+                printf "  %-12s %-12s %-12s %-6s %-5s %-10s %s" \
+                    "${name}" "${head}" "${branch}" "${dirty}" "${php}" "${db}" "${url}"
+                echo -e "${marker}"
+            done
+            echo ""
+            echo -e "  ${DIM}served sites have their own URL, PHP and database;${NC}"
+            echo -e "  ${DIM}the primary is whichever worktree 'use' points at${NC}"
+            echo ""
+            ;;
+
+        use)
+            require_core
+            local name="${1:-}" force="false"
+            shift || true
+            [ "${1:-}" = "--force" ] && force="true"
+            [ -z "${name}" ] && { error "Usage: ddev tryout worktree use <name> [--force]"; return 1; }
+            migrate_core_to_worktree_layout || return 1
+            use_core_worktree "${name}" "${force}" || return 1
+            echo ""
+            success "Now on Core '${name}' — ${DDEV_PRIMARY_URL}"
+            ;;
+
+        remove|rm)
+            require_core
+            local name="${1:-}" force="false"
+            shift || true
+            [ "${1:-}" = "--force" ] && force="true"
+            [ -z "${name}" ] && { error "Usage: ddev tryout worktree remove <name> [--force]"; return 1; }
+            # A served site owns a tree and a DB; drop those before the worktree.
+            if site_is_served "${name}" 2>/dev/null; then
+                warn "'${name}' is currently served — removing its site first"
+                unserve_worktree "${name}" "false" || return 1
+            fi
+            remove_core_worktree "${name}" "${force}"
+            ;;
+
+        serve)
+            require_core
+            local name="${1:-}" php=""
+            shift || true
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --php) php="${2:-}"; shift ;;
+                    --php=*) php="${1#--php=}" ;;
+                esac
+                shift
+            done
+            [ -z "${name}" ] && { error "Usage: ddev tryout worktree serve <name> [--php 8.2]"; return 1; }
+            serve_worktree "${name}" "${php}"
+            ;;
+
+        unserve)
+            require_core
+            local name="${1:-}" keep_db="true"
+            shift || true
+            [ "${1:-}" = "--drop-db" ] && keep_db="false"
+            [ -z "${name}" ] && { error "Usage: ddev tryout worktree unserve <name> [--drop-db]"; return 1; }
+            unserve_worktree "${name}" "${keep_db}"
+            ;;
+
+        help|-h|--help)
+            echo ""
+            echo -e "${BOLD}ddev tryout worktree${NC} — side-by-side Core checkouts"
+            echo ""
+            echo -e "  ${BOLD}add <name> [<branch>]${NC}   Create typo3-core-<name> (detached at origin/<branch>)"
+            echo -e "  ${BOLD}list${NC}                    List worktrees and served sites"
+            echo -e "  ${BOLD}use <name>${NC}              Point the PRIMARY site at <name>, then rebuild"
+            echo -e "  ${BOLD}serve <name>${NC}            Give <name> its own URL, PHP version and database"
+            echo -e "  ${BOLD}unserve <name>${NC}          Drop the site, keep the worktree"
+            echo -e "  ${BOLD}remove <name>${NC}           Remove a worktree (not the primary)"
+            echo ""
+            echo "  Flags: --branch    (add: create a real branch, not detached)"
+            echo "         --serve     (add: serve it immediately)"
+            echo "         --php 8.2   (add/serve: run this site on another PHP version)"
+            echo "         --force     (use: switch despite uncommitted changes)"
+            echo "                     (remove: discard uncommitted changes)"
+            echo "         --drop-db   (unserve: also drop the site's database)"
+            echo ""
+            echo "  Two ways to run several Cores:"
+            echo "    use    — one site at the project URL, switch which Core it serves"
+            echo "    serve  — every worktree live at once on <name>.<project>.ddev.site"
+            echo ""
+            echo "  Adding or removing a served site needs 'ddev restart' so DDEV"
+            echo "  registers the hostname and issues its TLS certificate."
+            echo ""
+            echo "  All worktrees share one git object store, so ddev cs hooks and"
+            echo "  Gerrit config are set up once and apply to every one of them."
+            echo ""
+            ;;
+
+        *)
+            error "Unknown worktree command: ${sub}"
+            cmd_worktree help
+            return 1
+            ;;
+    esac
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -403,9 +649,11 @@ cmd_help() {
     echo -e "  ${BOLD}checkout <branch>${NC}   Switch TYPO3 version (main, 13.4, 12.4, ...)"
     echo -e "  ${BOLD}composer${NC}            Regenerate composer.json from Core sysexts"
     echo -e "  ${BOLD}patch <change-id>${NC}   Apply a Gerrit patch by change ID"
+    echo -e "  ${BOLD}exec <site> <cmd>${NC}   Run a command in a site's PHP/root/database"
     echo -e "  ${BOLD}patch${NC}               Apply all patches from config"
+    echo -e "  ${BOLD}worktree${NC}            Manage side-by-side Core checkouts"
     echo -e "  ${BOLD}reset${NC}               Reset Core to current branch + rebuild"
-    echo -e "  ${BOLD}delete${NC}              Wipe DB + fileadmin, fresh setup"
+    echo -e "  ${BOLD}delete [<site>]${NC}     Wipe DB + fileadmin, fresh setup (--all for every site)"
     echo -e "  ${BOLD}help${NC}                Show this help"
     echo ""
     echo "Custom extensions:"
@@ -427,6 +675,8 @@ case "${ACTION}" in
     checkout) cmd_checkout "$@" ;;
     composer) cmd_composer "$@" ;;
     patch)    cmd_patch "$@" ;;
+    worktree) cmd_worktree "$@" ;;
+    exec)     cmd_exec "$@" ;;
     reset)    cmd_reset "$@" ;;
     delete)   cmd_delete "$@" ;;
     help)     cmd_help ;;

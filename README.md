@@ -292,6 +292,105 @@ Given a change number (e.g. `56947`), the API returns the latest patchset ref
 Merged or abandoned changes are detected and skipped. Conflicts abort the
 cherry-pick automatically and report the failure.
 
+## Multiple Core Checkouts Side by Side
+
+Within a single tryout you can keep several TYPO3 Core checkouts and switch
+between them instantly. They are git worktrees of the Core clone you already
+have, so they share one object store: one fetch, a fraction of the disk, and
+no second clone.
+
+```bash
+ddev tryout worktree add v13 13.4   # create typo3-core-v13 at origin/13.4
+ddev tryout worktree list           # show all, marking the active one
+ddev tryout worktree use v13        # make it the active Core, then rebuild
+ddev tryout worktree remove v13     # remove it again
+```
+
+The first `worktree add` moves your existing `typo3-core/` to
+`typo3-core-main/` and turns `typo3-core` into a symlink pointing at whichever
+checkout is active. Every path keeps working, so nothing else in the project
+changes.
+
+```text
+typo3-core        -> typo3-core-v13   (symlink: the active Core)
+typo3-core-main/                      (the clone; owns the git object store)
+typo3-core-v13/                       (worktree, detached at origin/13.4)
+```
+
+Typical use: run a Gerrit patch against v13 while keeping main untouched.
+
+```bash
+ddev tryout worktree add v13 13.4
+ddev tryout worktree use v13
+ddev tryout patch 56947
+ddev tryout worktree use main        # back to main, patch stays on v13
+```
+
+New worktrees are created with a **detached HEAD** by default. Git refuses to
+check out one branch in two worktrees, and detached is the normal state here
+anyway: patches are cherry-picked on top and pushed to `refs/for/<branch>`.
+Pass `--branch` if you want a real local branch.
+
+Because `use` swaps the Core underneath Composer, it always runs
+`composer install` afterwards — without it `vendor/` would keep pointing at
+the previous checkout. `ddev tryout status` warns if the two ever drift apart.
+
+Two guards worth knowing: you cannot remove the active worktree, and switching
+away from one with uncommitted changes is refused (`--force` overrides).
+Since all worktrees share one object store, a single `ddev cs` sets up the
+Gerrit hooks and commit template for all of them.
+
+### Serving several sites at once
+
+`use` gives you one site at the project URL. To have every worktree reachable
+**at the same time**, each on its own hostname, PHP version and database, serve
+it instead:
+
+```bash
+ddev tryout worktree add v13 13.4 --php 8.2 --serve
+ddev restart          # registers the hostname and issues its certificate
+```
+
+```text
+https://tryout-git.ddev.site       → typo3-core        PHP 8.5   db
+https://v13.tryout-git.ddev.site   → typo3-core-v13    PHP 8.2   db_v13
+```
+
+Both run in the same container: the served site gets its own php-fpm on its own
+socket, its own vhost, its own `sites/<name>/` tree with its own `vendor/`, and
+its own database. Roughly 175 MB per extra site — the Core object store stays
+shared.
+
+The site-scoped commands take an optional site name, defaulting to the primary
+so existing usage is unchanged:
+
+```bash
+ddev tryout patch 93202 v13     # cherry-pick onto that site's Core only
+ddev tryout reset v13
+ddev tryout checkout 13.4 v13
+ddev tryout delete v13          # only that site's DB and fileadmin
+ddev tryout delete --all        # every site, named in the confirmation
+ddev tryout exec v13 vendor/bin/typo3 cache:flush
+```
+
+Use `ddev tryout worktree unserve <name>` to drop a site but keep the worktree
+(`--drop-db` to discard its database too).
+
+### Optional: speed up Mutagen sync (macOS)
+
+DDEV's Mutagen ignore list is root-anchored, so the Core clone's `.git` — around
+650 MB — is synced into the container even though git only ever runs on the host.
+To skip it, edit `.ddev/mutagen/mutagen.yml`, **remove the `#ddev-generated`
+line**, and add under `ignore.paths`:
+
+```yaml
+      - "typo3-core*/.git"
+      - "sites/*/vendor"
+```
+
+Removing the marker means you own that file and DDEV will no longer update it,
+which is why this is opt-in rather than done for you.
+
 ## Sharing one TYPO3 Core checkout across multiple tryouts (git worktree)
 
 By default every tryout instance clones its own copy of TYPO3 Core into

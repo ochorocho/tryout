@@ -1,5 +1,16 @@
 # TYPO3 Core clone (managed by ddev tryout download)
+# Two entries: with a trailing slash for the directory, without for the symlink
+# that `ddev tryout worktree` creates — git treats a symlink as a file, so the
+# slash form alone would leave it untracked-but-visible.
 /typo3-core/
+/typo3-core
+/typo3-core-*/
+
+# Served worktree sites and their generated config (ddev tryout worktree serve)
+/sites/
+/.ddev/config.worktrees.yaml
+/.ddev/apache/tryout-site-*.conf
+/.ddev/nginx_full/tryout-site-*.conf
 
 # Composer artifacts
 /vendor/

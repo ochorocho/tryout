@@ -10,10 +10,14 @@
  * - Preserves all other composer.json fields
  */
 
+// PROJECT_ROOT is the composer root to rewrite (the project itself, or one
+// sites/<name> tree). TRYOUT_CORE_DIR names the Core checkout to read sysexts from,
+// which for a served site is a sibling worktree outside that root.
 $projectRoot = getenv('PROJECT_ROOT') ?: '/var/www/html';
 $composerFile = $projectRoot . '/composer.json';
 $composerLockFile = $projectRoot . '/composer.lock';
-$sysextDir = $projectRoot . '/typo3-core/typo3/sysext';
+$coreDir = getenv('TRYOUT_CORE_DIR') ?: $projectRoot . '/typo3-core';
+$sysextDir = $coreDir . '/typo3/sysext';
 
 if (!is_dir($sysextDir)) {
     fwrite(STDERR, "Error: $sysextDir not found. Clone TYPO3 Core first.\n");
@@ -47,9 +51,24 @@ if (empty($sysextNames)) {
     exit(1);
 }
 
-// Detect active branch to determine version-specific packages
-$coreDir = $projectRoot . '/typo3-core';
-$branch = trim(shell_exec("git -C " . escapeshellarg($coreDir) . " branch --show-current 2>/dev/null") ?: 'main');
+// Detect active branch to determine version-specific packages.
+// A worktree may sit on a detached HEAD, where `branch --show-current` prints an
+// empty line — truthy, so `?:` would not catch it. Fall back to the TYPO3 version
+// declared by EXT:core, which is accurate whatever the checkout looks like.
+$branch = trim((string)shell_exec("git -C " . escapeshellarg($coreDir) . " branch --show-current 2>/dev/null"));
+
+if ($branch === '') {
+    $coreComposer = $sysextDir . '/core/composer.json';
+    if (file_exists($coreComposer)) {
+        $coreData = json_decode(file_get_contents($coreComposer), true);
+        $alias = $coreData['extra']['branch-alias']['dev-main'] ?? '';
+        if ($alias !== '') {
+            // e.g. "13.4.x-dev" -> "13.4"
+            $branch = preg_replace('/\.x-dev$/', '', $alias);
+        }
+    }
+}
+$branch = $branch !== '' ? $branch : 'main';
 
 // Keep non-sysext requires (custom packages from packages/*),
 // but drop managed typo3/* packages so they can be re-evaluated

@@ -14,6 +14,14 @@ echo "════════════════════════�
 echo ""
 
 # --- Step 1: Clone TYPO3 Core if not present ---
+# A dangling symlink reads as absent to the tests below, so the clone would fail
+# against an occupied path. Catch it with a message that names the fix.
+if [ -L "${CORE_DIR}" ] && [ ! -e "${CORE_DIR}" ]; then
+    error "typo3-core is a broken symlink -> $(readlink "${CORE_DIR}")"
+    error "  → ddev tryout worktree list, then: ddev tryout worktree use <name>"
+    exit 1
+fi
+
 if [ ! -d "${CORE_DIR}/.git" ] && [ ! -f "${CORE_DIR}/.git" ]; then
     info "[1/5] Cloning TYPO3 Core repository..."
     info "This may take a few minutes on first run."
