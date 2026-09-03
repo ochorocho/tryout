@@ -1,0 +1,50 @@
+name: tests
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  schedule:
+    - cron: '25 08 * * 001'
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Run with tmate enabled'
+        required: false
+        default: false
+        type: boolean
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tests:
+    strategy:
+      matrix:
+        ddev_version: [stable, HEAD]
+      fail-fast: false
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install DDEV
+        run: |
+          set -eu -o pipefail
+          curl -fsSL https://ddev.com/install.sh | bash -s -- -v ${{ matrix.ddev_version }}
+          ddev config global --omit-containers=ddev-router --instrumentation-opt-in=false
+
+      - name: Install bats
+        uses: bats-core/bats-action@3.0.1
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+
+      - name: Run tests
+        run: bats tests
+
+      - name: Debug with tmate on failure
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3

@@ -1,9 +1,14 @@
+[![add-on registry](https://img.shields.io/badge/DDEV-Add--on_Registry-blue)](https://addons.ddev.com)
+[![last commit](https://img.shields.io/github/last-commit/bmack/tryout)](https://github.com/bmack/tryout/commits)
+[![release](https://img.shields.io/github/v/release/bmack/tryout)](https://github.com/bmack/tryout/releases/latest)
+
 # TYPO3 tryout
 
-Get a working TYPO3 development setup in minutes. Clone, `ddev start`, done.
+Get a working TYPO3 development setup in minutes — backed by the real TYPO3 Core
+git repository, with Gerrit patches one command away.
 
-**tryout** is a DDEV-based scaffold for people who want to contribute to TYPO3 Core,
-test Gerrit patches, or develop custom extensions against the latest Core source — without
+**tryout** is a DDEV add-on for people who want to contribute to TYPO3 Core, test
+Gerrit patches, or develop custom extensions against the latest Core source — without
 wrestling with manual setup. It is aimed at Core contributors, extension developers, and
 anyone who wants to quickly spin up a TYPO3 instance backed by the actual Core repository.
 
@@ -12,27 +17,57 @@ anyone who wants to quickly spin up a TYPO3 instance backed by the actual Core r
 Pick a folder name for your project (e.g. `my-typo3-site`) and run:
 
 ```bash
-git clone --depth=1 https://github.com/bmack/tryout.git my-typo3-site
-cd my-typo3-site
-rm -rf .git && git init
+mkdir my-typo3-site && cd my-typo3-site
+ddev config --project-type=typo3 --docroot=public --php-version=8.5
+ddev add-on get bmack/tryout
 ddev start
 ```
 
-The DDEV project name is derived from the folder, so `my-typo3-site` becomes
-`https://my-typo3-site.ddev.site/`.
-
-The `--depth=1` plus `git init` gives you a clean repository with no history,
-ready to be pushed somewhere as your own project.
 On the first run this will:
 
-1. Clone the TYPO3 Core repository
-2. Install all Composer dependencies
+1. Clone the TYPO3 Core repository into `typo3-core/`
+2. Resolve every Core system extension through Composer
 3. Set up a TYPO3 instance
 
 Once finished, open the backend:
 
-- **URL:** `https://<your-folder-name>.ddev.site/typo3/` (e.g. https://my-typo3-site.ddev.site/typo3/)
+- **URL:** `https://my-typo3-site.ddev.site/typo3/`
 - **User:** `admin` / `Password.1`
+
+To update the add-on later, run `ddev add-on get bmack/tryout` again; to remove it,
+`ddev add-on remove tryout`.
+
+### Adding tryout to an existing project
+
+tryout can be installed into a project that already has its own `composer.json`.
+It never rewrites that file: Composer is pointed at an overlay
+(`composer.tryout.json`) which pulls your `composer.json` in as an include, so your
+own dependencies keep resolving alongside the Core sysexts.
+
+### Migrating from the old template layout
+
+tryout used to be a template repository — you cloned it, ran `rm -rf .git && git init`,
+and the scaffold *was* your project. That layout is superseded. To move an existing
+tryout to the add-on:
+
+```bash
+cd your-existing-tryout
+rm -rf .ddev/scripts .ddev/templates .ddev/commands/host/cs \
+       .ddev/config.patches.yaml .ddev/commands/host/tryout
+ddev add-on get bmack/tryout
+ddev restart
+```
+
+Your `.ddev/config.yaml` stays as it is. Two things change:
+
+- **`ddev cs` is now `ddev tryout cs`** — a two-letter command was too likely to
+  collide with other add-ons.
+- **Composer moves to an overlay.** Your generated `composer.json` is replaced by
+  `composer.tryout.json`; delete the old `composer.json` and `composer.lock` unless
+  you added your own dependencies to them, in which case keep `composer.json` — it
+  is merged into the overlay from now on.
+
+Your `typo3-core/` checkout, database and patches are untouched.
 
 ## Commands
 
@@ -43,26 +78,26 @@ ddev tryout status              Show project overview
 ddev tryout download            Clone or update TYPO3 Core
 ddev tryout download --reset    Hard reset Core to current branch
 ddev tryout checkout <branch>   Switch TYPO3 version (main, 14.3, 13.4, 12.4, ...)
-ddev tryout composer            Regenerate composer.json from Core sysexts
+ddev tryout composer            Regenerate the Composer overlay from Core sysexts
 ddev tryout patch <change-id>   Apply a Gerrit patch
 ddev tryout patch               Apply all patches from config
 ddev tryout reset               Reset Core to current branch + rebuild
 ddev tryout delete              Wipe DB + fileadmin, fresh setup
 
-ddev cs                         Prepare instance for Core contribution
-ddev cs doctor                  Check hooks, template, and push URL
-ddev cs uninstall               Remove hooks and reset push URL
+ddev tryout cs                  Prepare instance for Core contribution
+ddev tryout cs doctor           Check hooks, template, and push URL
+ddev tryout cs uninstall        Remove hooks and reset push URL
 ```
 
 ## Contributing to TYPO3 Core
 
 `ddev start` keeps the instance read-only against Gerrit — you can pull and
-test patches but not submit them. Run **`ddev cs`** once to turn the instance
+test patches but not submit them. Run **`ddev tryout cs`** once to turn the instance
 into a full contribution workspace:
 
 ```bash
-ddev cs             # prompts for your review.typo3.org username
-ddev cs setup jdoe  # or pass it explicitly
+ddev tryout cs             # prompts for your review.typo3.org username
+ddev tryout cs setup jdoe  # or pass it explicitly
 ```
 
 This is opt-in (nothing runs automatically on `ddev start`) and installs:
@@ -78,7 +113,7 @@ This is opt-in (nothing runs automatically on `ddev start`) and installs:
 Check the state at any time:
 
 ```bash
-ddev cs doctor
+ddev tryout cs doctor
 ```
 
 Doctor reports whether each piece is wired up and probes Gerrit SSH live
@@ -96,7 +131,7 @@ web_environment:
 To revert everything:
 
 ```bash
-ddev cs uninstall
+ddev tryout cs uninstall
 ```
 
 ## Working with Gerrit Patches
@@ -125,7 +160,7 @@ ddev tryout reset
 ### Auto-Applying Patches
 
 To have patches applied on every `ddev start` or `ddev restart`,
-list their change IDs in `.ddev/config.patches.yaml`:
+list their change IDs in `.ddev/config.tryout-patches.yaml`:
 
 ```yaml
 web_environment:
@@ -148,15 +183,15 @@ against a different major version:
 ddev tryout checkout 14.3
 ```
 
-This single command switches the Core branch, regenerates `composer.json`,
+This single command switches the Core branch, regenerates the Composer overlay,
 and rebuilds everything. Run without arguments to see all available branches.
 
 Different TYPO3 versions ship different sets of system extensions.
 `checkout` handles this automatically: a PHP script scans
 `typo3-core/typo3/sysext/*/composer.json` and rewrites the `require`
-section to match exactly what exists on disk.
+section of `composer.tryout.json` to match exactly what exists on disk.
 
-You can also regenerate `composer.json` independently at any time:
+You can also regenerate the overlay independently at any time:
 
 ```bash
 ddev tryout composer
@@ -186,88 +221,108 @@ This makes it easy to develop an extension side-by-side with Core.
 
 ## Running Multiple Instances
 
-The DDEV project name is derived from the folder name automatically
-(`config.yaml` has no `name` field). Every clone or worktree gets its
-own isolated DDEV project and URL — no extra configuration needed.
+Every tryout is an ordinary DDEV project, so running several side by side is just
+a matter of creating several of them. Each gets its own database, TYPO3
+installation, and set of patches:
 
 ```bash
-# Main checkout
-git clone <this-repo> tryout
-cd tryout && ddev start         # → project "tryout", https://tryout.ddev.site
+mkdir tryout-main && cd tryout-main
+ddev config --project-type=typo3 --docroot=public --php-version=8.5
+ddev add-on get bmack/tryout && ddev start   # → https://tryout-main.ddev.site
 
-# Worktree for a feature branch
-git worktree add ../tryout-wip
-cd ../tryout-wip && ddev start  # → project "tryout-wip", https://tryout-wip.ddev.site
-
-# Separate clone
-git clone <this-repo> tryout-v12
-cd tryout-v12 && ddev start     # → project "tryout-v12", https://tryout-v12.ddev.site
+mkdir ../tryout-v13 && cd ../tryout-v13
+ddev config --project-type=typo3 --docroot=public --php-version=8.5
+ddev add-on get bmack/tryout && ddev start   # → https://tryout-v13.ddev.site
 ```
 
-Each instance has its own database, TYPO3 installation, and set of patches.
+`ddev config` derives the project name from the folder; pass
+`--project-name=my-custom-name` to override it.
 
-To use a custom name instead of the folder name:
-
-```bash
-ddev config --project-name=my-custom-name
-ddev start
-```
+If what you actually want is several TYPO3 versions inside *one* project — sharing
+a single Core object store, and optionally all reachable at once — use
+`ddev tryout worktree` instead. See
+[Multiple Core Checkouts Side by Side](#multiple-core-checkouts-side-by-side).
 
 ## How It Works
 
 ### Directory Layout
 
+After `ddev add-on get` the add-on's payload lives under `.ddev/`, and your project
+root holds the Core checkout and the Composer overlay:
+
 ```text
-tryout/
+my-typo3-site/
 ├── .ddev/
 │   ├── commands/host/
-│   │   ├── tryout                # The ddev tryout command (runs on the host)
-│   │   └── cs                    # Contribution-setup command (ddev cs, runs on the host)
-│   ├── scripts/
+│   │   └── tryout                # The ddev tryout command (runs on the host)
+│   ├── tryout/                   # Add-on payload, namespaced so it cannot collide
 │   │   ├── functions.sh          # Shared helpers (Gerrit API, patching, hooks)
 │   │   ├── post-start.sh         # Runs on ddev start (clone, patch, setup)
 │   │   ├── resolve-patch-ref.sh  # Fetches + parses a Gerrit change (runs in-container)
-│   │   └── sync-composer.php     # Regenerates composer.json from sysexts
-│   ├── templates/
-│   │   └── gitmessage.txt        # Commit-message template installed by `ddev cs`
-│   ├── config.yaml               # DDEV settings (PHP, DB, env, hooks)
-│   └── config.patches.yaml       # Gerrit patch list (optional)
+│   │   ├── sync-composer.php     # Regenerates the overlay from Core sysexts
+│   │   └── gitmessage.txt        # Commit template installed by `ddev tryout cs`
+│   ├── config.yaml               # Yours, from `ddev config` (name, docroot, PHP, DB)
+│   ├── config.tryout.yaml        # Add-on: TYPO3 env vars + the post-start hook
+│   └── config.tryout-patches.yaml  # Gerrit patch list (yours to edit)
 ├── config/system/additional.php  # TYPO3 DB + mail + GFX config for DDEV
 ├── packages/                     # Custom extensions (path repository)
-├── composer.json                 # Path repos for Core sysexts + packages
+├── composer.tryout.json          # Composer overlay (add-on owned, generated)
+├── composer.json                 # Yours, if you have one — never rewritten
 └── typo3-core/                   # TYPO3 Core clone (gitignored, created on first start)
 ```
 
-### Composer Path Repositories
+Everything the add-on owns carries a `#ddev-generated` marker. DDEV refuses to
+overwrite a file whose marker you removed, and removes only marked files on
+uninstall — so deleting that line is how you take ownership of any of them.
 
-`composer.json` declares two path repositories:
+### The Composer Overlay
+
+An add-on must not rewrite the `composer.json` of the project it is installed
+into. So tryout ships its own **overlay**, `composer.tryout.json`, and points
+Composer at it with `COMPOSER=composer.tryout.json` in `config.tryout.yaml`.
+
+The overlay declares two path repositories:
 
 ```json
 {
   "repositories": [
     { "type": "path", "url": "packages/*" },
     { "type": "path", "url": "typo3-core/typo3/sysext/*", "options": { "symlink": true } }
-  ]
+  ],
+  "extra": {
+    "merge-plugin": { "include": ["composer.json"] }
+  }
 }
 ```
 
 Every system extension inside the Core clone is required at `@dev`. Composer
 resolves them from the local path and creates symlinks, so any edit inside
-`typo3-core/` is immediately active — no reinstall needed.
+`typo3-core/` is immediately active — no reinstall needed. The same mechanism
+applies to `packages/*`: local extensions are symlinked into `vendor/` and behave
+as if they were installed from Packagist.
 
-The same mechanism applies to `packages/*`: local extensions are symlinked
-into `vendor/` and behave as if they were installed from Packagist.
+`composer-merge-plugin` pulls your own `composer.json` in as an include, so if the
+project had dependencies before you installed tryout they keep resolving. Your file
+is only ever read, never written.
+
+The `require` block of the overlay is generated: `sync-composer.php` scans
+`typo3-core/typo3/sysext/*/composer.json` and rewrites it, which is what keeps the
+sysext list correct across `ddev tryout checkout`. Anything you add to the overlay
+that is not a `typo3/cms-*` or `typo3/theme-*` package is preserved.
 
 ### DDEV Configuration
 
-- **`config.yaml`** — tracked in git, contains all shared settings:
-  PHP 8.5, MariaDB 10.11, Apache, Node 22, environment variables,
-  and the post-start hook. The `name` field is omitted so DDEV derives
-  the project name from the folder — this is what makes worktrees work.
-- **`config.patches.yaml`** — tracked in git, defines `TRYOUT_PATCHES` for
-  auto-applying Gerrit changes on start.
+- **`config.yaml`** — yours, created by `ddev config`. Project name, docroot,
+  PHP and database versions live here.
+- **`config.tryout.yaml`** — installed by the add-on. Carries the TYPO3
+  environment variables, the `COMPOSER` overlay selection and the post-start hook.
+  Deliberately sets no `name`, `type`, `docroot` or `php_version`: those are yours.
+- **`config.tryout-patches.yaml`** — defines `TRYOUT_PATCHES` for auto-applying
+  Gerrit changes on start. Not marked generated, so your patch list survives
+  add-on updates.
 - **`config.local.yaml`** — gitignored, for personal overrides (PHP version,
-  xdebug, etc.). DDEV merges it on top of `config.yaml`.
+  xdebug, etc.). DDEV merges `config.*.yaml` files in lexicographic order, so
+  anything sorting after `config.tryout.yaml` wins.
 
 ### Post-Start Hook
 
@@ -279,7 +334,8 @@ inside the container):
    Gerrit remote.
 2. **Patch** — if `TRYOUT_PATCHES` is set, resets Core to the current branch
    and cherry-picks each change via the Gerrit REST API.
-3. **Composer install** — resolves all dependencies from the path repositories.
+3. **Sync + Composer install** — regenerates `composer.tryout.json` from the
+   sysexts in this Core checkout, then resolves everything from the path repositories.
 4. **TYPO3 setup** — on first run, creates `settings.php` and sets up the database.
 5. **Extension setup + cache flush** — activates extensions and clears caches.
 
@@ -337,7 +393,7 @@ the previous checkout. `ddev tryout status` warns if the two ever drift apart.
 
 Two guards worth knowing: you cannot remove the active worktree, and switching
 away from one with uncommitted changes is refused (`--force` overrides).
-Since all worktrees share one object store, a single `ddev cs` sets up the
+Since all worktrees share one object store, a single `ddev tryout cs` sets up the
 Gerrit hooks and commit template for all of them.
 
 ### Serving several sites at once
@@ -446,26 +502,39 @@ git -C ~/typo3-core-shared worktree prune
 - Composer path repositories still point at each instance's own
   `typo3-core/typo3/sysext/*`, so symlinks and autoloading behave exactly as
   before.
-- This is complementary to `git worktree add ../tryout-wip` for the *scaffold*
-  itself: that shares the tryout project, while this shares the Core codebase
-  underneath it.
+- This shares one Core object store across *separate DDEV projects*. To keep
+  several Core versions inside a single project — optionally all served at once —
+  use `ddev tryout worktree`, which manages the same mechanism for you.
 
 ## Requirements
 
-- [DDEV](https://ddev.readthedocs.io/en/stable/) v1.24+
+- [DDEV](https://ddev.readthedocs.io/en/stable/) v1.24.6+ (enforced by the add-on)
 - Docker Desktop or Colima
 - Git
-- A `bash` shell on the host — the `ddev tryout`/`ddev cs` commands and the
+- A `bash` shell on the host — the `ddev tryout`/`ddev tryout cs` commands and the
   post-start hook run on the host rather than inside the container. On
   Windows this means Git Bash (bundled with Git for Windows); DDEV finds it
-  automatically. An SSH client is also needed for `ddev cs` to reach Gerrit.
+  automatically. An SSH client is also needed for `ddev tryout cs` to reach Gerrit.
 
 ## Contributing
 
 tryout itself lives at [github.com/bmack/tryout](https://github.com/bmack/tryout).
-If you have improvements to the scaffold — better defaults, new `ddev tryout`
+If you have improvements to the add-on — better defaults, new `ddev tryout`
 subcommands, fixes to the post-start hook, documentation tweaks — pull requests
 and issues are welcome there.
+
+To work on the add-on, install it into a scratch project straight from your
+checkout — no release or tarball needed:
+
+```bash
+mkdir /tmp/tryout-test && cd /tmp/tryout-test
+ddev config --project-type=typo3 --docroot=public --php-version=8.5
+ddev add-on get /path/to/your/tryout/checkout
+ddev start
+```
+
+The payload lives at the repo root (`install.yaml`, `commands/`, `tryout/`,
+`config.tryout*.yaml`) and is copied into the project's `.ddev/` on install.
 
 Note that contributions to **TYPO3 Core** itself do not go through this repo.
 Core development happens on [review.typo3.org](https://review.typo3.org) via Gerrit.
