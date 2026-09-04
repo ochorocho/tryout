@@ -350,6 +350,59 @@ remove_core_worktree() {
     success "Removed worktree '${name}'"
 }
 
+# Give a worktree a different directory name. The BRANCH is never touched: a name
+# derived from a branch — which is all herdr's own New-worktree action can give us —
+# is a starting point, not a commitment.
+#
+# The name reaches further than the checkout, so all of it moves together: the
+# typo3-core symlink when this is the active worktree, and a served site's tree,
+# vhost and database name.
+rename_core_worktree() {
+    local old="$1" new="$2" old_dir new_dir was_active="false" was_served="false" php=""
+    validate_worktree_name "${old}" || return 1
+    validate_worktree_name "${new}" || return 1
+    [ "${old}" = "${new}" ] && { info "'${old}' is already called that"; return 0; }
+
+    old_dir="$(core_worktree_dir "${old}")"
+    new_dir="$(core_worktree_dir "${new}")"
+
+    [ -d "${old_dir}" ] || { error "No worktree '${old}'"; return 1; }
+    [ -e "${new_dir}" ] && { error "'${new}' already exists"; return 1; }
+
+    [ "$(active_worktree_name)" = "${old}" ] && was_active="true"
+    if site_is_served "${old}" 2>/dev/null; then
+        was_served="true"
+        php="$(site_php_version "${old}")"
+    fi
+
+    # A served site owns a database and a vhost keyed on the old name. Drop the site
+    # first — keeping its database — then rebuild it under the new one.
+    if [ "${was_served}" = "true" ]; then
+        info "Unserving '${old}' so it can be re-served as '${new}'..."
+        unserve_worktree "${old}" "true" >/dev/null 2>&1 || true
+    fi
+
+    # git worktree move, never mv: it rewrites the metadata on both sides.
+    if ! git -C "${old_dir}" worktree move "${old_dir}" "${new_dir}" 2>/dev/null; then
+        error "Could not move ${old_dir} (uncommitted changes, or it is locked?)"
+        return 1
+    fi
+
+    [ "${was_active}" = "true" ] && set_active_core "${new}"
+    success "Renamed worktree '${old}' to '${new}'"
+
+    if [ "${was_served}" = "true" ]; then
+        info "Re-serving as '${new}' on PHP ${php}..."
+        # The hostname changes with the name, so DDEV has to register the new one —
+        # and drop the old, which it only does on a restart.
+        serve_worktree "${new}" "${php}" || {
+            error "The worktree was renamed, but re-serving failed"
+            error "  → ddev tryout worktree serve ${new}"
+            return 1
+        }
+    fi
+}
+
 # Emit "name<TAB>head<TAB>branch<TAB>dirty<TAB>active" per worktree.
 list_core_worktrees() {
     local active dir name head branch dirty

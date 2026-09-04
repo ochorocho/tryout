@@ -637,10 +637,50 @@ cmd_worktree() {
             unserve_worktree "${name}" "${keep_db}"
             ;;
 
+        rename)
+            require_core
+            local old="${1:-}" new="${2:-}"
+            if [ -z "${old}" ] || [ -z "${new}" ]; then
+                error "Usage: ddev tryout worktree rename <old> <new>"
+                error "  Renames the checkout only — the branch is untouched."
+                return 1
+            fi
+            rename_core_worktree "${old}" "${new}"
+            ;;
+
         adopt)
             require_core
-            local dry="false"
-            [ "${1:-}" = "--dry-run" ] && dry="true"
+            local dry="false" one_path="" one_name=""
+            case "${1:-}" in
+                --dry-run) dry="true" ;;
+                "")        ;;
+                *)         one_path="$1"; one_name="${2:-}" ;;
+            esac
+
+            # Adopting a single stray by path lets the caller choose the directory
+            # name, rather than taking whatever the branch happens to be called.
+            if [ -n "${one_path}" ]; then
+                [ -d "${one_path}" ] || { error "No such worktree: ${one_path}"; return 1; }
+                local n
+                if [ -n "${one_name}" ]; then
+                    n="${one_name}"
+                else
+                    n="$(worktree_name_from_ref \
+                        "$(git -C "${one_path}" branch --show-current 2>/dev/null || basename "${one_path}")")"
+                fi
+                validate_worktree_name "${n}" || return 1
+                local t
+                t="$(core_worktree_dir "${n}")"
+                [ -e "${t}" ] && { error "'${n}' already exists"; return 1; }
+                info "Moving ${one_path} → $(basename "${t}")"
+                if git -C "${one_path}" worktree move "${one_path}" "${t}" 2>/dev/null; then
+                    success "Adopted as '${n}'"
+                else
+                    error "Could not move ${one_path} (uncommitted changes?)"
+                    return 1
+                fi
+                return 0
+            fi
 
             local foreign
             foreign=$(list_foreign_core_worktrees)
@@ -692,7 +732,8 @@ cmd_worktree() {
             echo -e "  ${BOLD}serve <name>${NC}            Give <name> its own URL, PHP version and database"
             echo -e "  ${BOLD}unserve <name>${NC}          Drop the site, keep the worktree"
             echo -e "  ${BOLD}remove <name>${NC}           Remove a worktree (not the primary)"
-            echo -e "  ${BOLD}adopt${NC}                   Move stray checkouts back into the project"
+            echo -e "  ${BOLD}adopt [<path> [<name>]]${NC} Move stray checkouts into the project"
+            echo -e "  ${BOLD}rename <old> <new>${NC}      Rename a checkout (the branch is untouched)"
             echo ""
             echo "  Flags: --branch    (add: create a real branch, not detached)"
             echo "         --serve     (add: serve it immediately)"

@@ -475,6 +475,7 @@ ddev tryout worktree use v13        # make it the active Core, then rebuild
 ddev tryout worktree serve v13      # give it its own URL, PHP and database
 ddev tryout worktree unserve v13    # drop that site, keep the worktree
 ddev tryout worktree remove v13     # remove the worktree itself
+ddev tryout worktree rename v13 old # rename the checkout, keep the branch
 ddev tryout worktree help           # flags and the full picture
 ```
 
@@ -721,6 +722,20 @@ ddev tryout worktree adopt             # move them into the project
 
 `ddev tryout status` flags them too, so one cannot sit unnoticed.
 
+The **directory name and the branch are independent**. herdr's own action names a
+checkout after the branch it invents (`worktree/wilie-wonka`), and `adopt` derives
+one the same way, but that is only a starting point:
+
+```bash
+ddev tryout worktree adopt <path> wonka   # adopt one stray under a name you pick
+ddev tryout worktree rename wonka spike   # rename later; the branch is untouched
+```
+
+A rename moves everything keyed on the name — the checkout, the `typo3-core`
+symlink if it is the active one, and a served site's tree, vhost and database. A
+served site is unserved and re-served under the new name, so it needs a
+`ddev restart` afterwards to pick up the new hostname.
+
 > These are keybindings, not additions to herdr's own UI. A herdr plugin cannot add an
 > entry to its menus — plugin actions are reachable only by a keybinding or a
 > ctrl-click — so the menu is a popup of our own rather than tryout entries appearing
@@ -870,7 +885,7 @@ bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no 
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
 bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
-bats tests --filter-tags '!release,!lifecycle'   # the 92 fast tests
+bats tests --filter-tags '!release,!lifecycle'   # the 95 fast tests
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 

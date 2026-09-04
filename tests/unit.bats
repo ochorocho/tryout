@@ -1023,6 +1023,52 @@ STUB
   assert_failure
 }
 
+@test "a worktree can be renamed without touching its branch" {
+  # herdr's own New-worktree action names a checkout after the branch it invents
+  # (worktree/wilie-wonka), and adopt derives one the same way. That is a starting
+  # point, not a commitment: the directory name and the branch are independent.
+  set -eu -o pipefail
+  command -v git >/dev/null 2>&1 || skip 'git not available'
+
+  git -C "${FAKEROOT}" init -q .
+  git -C "${FAKEROOT}" commit -q --allow-empty -m init
+  mkdir -p "${FAKEROOT}/typo3-core"
+  git -C "${FAKEROOT}" worktree add -q "${FAKEROOT}/typo3-core-wilie-wonka" -b wilie-wonka
+
+  run helper_eval 'rename_core_worktree wilie-wonka experiment'
+  assert_success
+
+  assert_dir_exist "${FAKEROOT}/typo3-core-experiment"
+  assert_dir_not_exist "${FAKEROOT}/typo3-core-wilie-wonka"
+
+  # The branch is the point: it must survive the rename untouched.
+  run bash -c "git -C '${FAKEROOT}/typo3-core-experiment' branch --show-current"
+  assert_output "wilie-wonka"
+}
+
+@test "rename refuses a name that is already taken" {
+  set -eu -o pipefail
+  command -v git >/dev/null 2>&1 || skip 'git not available'
+  git -C "${FAKEROOT}" init -q .
+  git -C "${FAKEROOT}" commit -q --allow-empty -m init
+  git -C "${FAKEROOT}" worktree add -q "${FAKEROOT}/typo3-core-a" -b a
+  mkdir -p "${FAKEROOT}/typo3-core-b"
+
+  run helper_eval 'rename_core_worktree a b'
+  assert_failure
+  assert_output --partial "already exists"
+  assert_dir_exist "${FAKEROOT}/typo3-core-a"
+}
+
+@test "adopt takes an optional name so the branch does not dictate the path" {
+  set -eu -o pipefail
+  run grep -q 'adopt \[<path> \[<name>\]\]' "${DIR}/commands/host/tryout"
+  assert_success
+  # and rename is offered alongside it
+  run grep -q 'rename <old> <new>' "${DIR}/commands/host/tryout"
+  assert_success
+}
+
 @test "commands that take no arguments say so instead of ignoring them" {
   # `ddev tryout composer install` used to regenerate the overlay and say nothing
   # about `install` — a typo that looked like it worked. Worse, the name suggests

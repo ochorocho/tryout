@@ -162,7 +162,7 @@ case "${VERB}" in
     worktree)
         case "${SUB}" in
             '' | "''")
-                printf '%s\n' add list use serve unserve remove adopt help
+                printf '%s\n' add list use serve unserve remove adopt rename help
                 ;;
             add)
                 # add <name> [<branch>] [--branch] [--serve] [--php 8.2] [--herdr]
@@ -191,6 +191,9 @@ case "${VERB}" in
                 ;;
             adopt)
                 printf '%s\n' --dry-run
+                ;;
+            rename)
+                [ "$#" -le 4 ] && worktree_names
                 ;;
         esac
         ;;

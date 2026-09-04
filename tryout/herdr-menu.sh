@@ -244,6 +244,7 @@ worktree_menu() {
     printf "  ${BOLD}5${NC} unserve       ${DIM}drop the site, keep the worktree${NC}\n"
     printf "  ${BOLD}6${NC} remove        ${DIM}delete the checkout${NC}\n"
     printf "  ${BOLD}7${NC} adopt         ${DIM}move stray checkouts into the project${NC}\n"
+    printf "  ${BOLD}8${NC} rename        ${DIM}rename a checkout (branch untouched)${NC}\n"
     printf "  ${BOLD}q${NC} back\n"
     printf "\n  choose: "
     read_key
@@ -269,6 +270,12 @@ worktree_menu() {
            confirm_destructive "Removes the checkout typo3-core-${name} and any uncommitted work in it." "${name}" || return 0
            run_in_pane worktree remove "${name}" --force ;;
         7) run_and_show worktree adopt ;;
+        8) printf '\n'
+           ask_name "worktree" "$(worktree_names)" || return 0; name="${ASKED}"
+           printf "  new name: "
+           read -r newname || return 0
+           [ -n "${newname}" ] || { printf "\n  cancelled\n"; pause; return 0; }
+           run_in_pane worktree rename "${name}" "${newname}" ;;
         *) return 0 ;;
     esac
 }
