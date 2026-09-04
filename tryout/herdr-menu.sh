@@ -69,10 +69,17 @@ PROJECT="$(basename "${APPROOT}")"
 KEY=""
 read_key() {
     KEY=""
-    read -r -n1 KEY
-    # A single-key read leaves the Enter behind; drain it so the next `read -r`
-    # does not take it as an empty answer.
-    read -r -t 0.01 _drain 2>/dev/null || true
+    # -s so the keypress is not echoed and, crucially, no Enter is left in the
+    # buffer for the next `read -r` to swallow as an empty answer. The old drain
+    # used `read -t 0.01`, which is bash 4+ only: on macOS's bash 3.2 it fails with
+    # "invalid timeout specification", never drains, and every following prompt
+    # silently cancels.
+    read -r -n1 -s KEY
+    # -s suppresses the echo, so show the choice back.
+    case "${KEY}" in
+        $'\e'|'') printf '\n' ;;
+        *) printf '%s\n' "${KEY}" ;;
+    esac
     case "${KEY}" in
         $'\e') KEY="q" ;;
     esac
@@ -103,8 +110,7 @@ run_in_pane() {
         printf "\n${GREEN}✓${NC} started: ${BOLD}ddev tryout %s${NC}\n" "$*"
         printf "  ${DIM}o watch it   any other key back to the menu${NC} "
         local k=""
-        read -r -n1 k
-        read -r -t 0.01 _drain 2>/dev/null || true
+        read -r -n1 -s k
         case "${k}" in
             o|O) show_job_output "${id}" ;;
         esac
@@ -242,7 +248,6 @@ worktree_menu() {
     printf "\n  choose: "
     read_key
     key="${KEY}"
-    printf '\n'
 
     case "${key}" in
         1) run_and_show worktree list ;;
@@ -278,7 +283,6 @@ cs_menu() {
     printf "\n  choose: "
     read_key
     key="${KEY}"
-    printf '\n'
 
     case "${key}" in
         1) run_in_pane cs doctor ;;
@@ -312,7 +316,6 @@ main_menu() {
     printf "\n  choose: "
     read_key
     key="${KEY}"
-    printf '\n'
 
     case "${key}" in
         1) run_and_show status ;;

@@ -488,7 +488,7 @@ complete() {
     herdr_available
   "
   assert_failure
-  assert_output --partial "herdr not found"
+  assert_output --partial "herdr is not installed"
   assert_output --partial "herdr.dev"
 }
 
@@ -894,6 +894,116 @@ STUB
   assert_success
   run grep -qE 'top \+ rows \)\) -lt "\$\{#lines\[@\]\}"' "${DIR}/tryout/herdr-menu.sh"
   assert_success
+}
+
+@test "a missing herdr says how to install it, per platform" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/empty"
+
+  # macOS gets brew; the universal installer is always offered because no Linux
+  # distro packages herdr — an apt-get line would just fail.
+  run env OSTYPE=darwin24 bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    PATH='${FAKEROOT}/empty'
+    herdr_available
+  "
+  assert_failure
+  assert_output --partial "herdr is not installed"
+  assert_output --partial "brew install herdr"
+  assert_output --partial "herdr.dev/install.sh"
+
+  run env OSTYPE=linux-gnu bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    PATH='${FAKEROOT}/empty'
+    herdr_available
+  "
+  assert_failure
+  assert_output --partial "herdr.dev/install.sh"
+  # herdr is not in apt/dnf/pacman — never claim otherwise.
+  refute_output --partial "apt-get install herdr"
+}
+
+@test "a missing jq says how to install it, and needs no uname" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/onlyherdr"
+  printf '#!/bin/sh\nexit 0\n' > "${FAKEROOT}/onlyherdr/herdr"
+  chmod +x "${FAKEROOT}/onlyherdr/herdr"
+
+  # No uname on this PATH: the platform must come from OSTYPE instead.
+  run env OSTYPE=darwin24 bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    PATH='${FAKEROOT}/onlyherdr'
+    herdr_available
+  "
+  assert_failure
+  assert_output --partial "jq is not installed"
+  assert_output --partial "brew install jq"
+  refute_output --partial "uname: command not found"
+
+  run env OSTYPE=linux-gnu bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    PATH='${FAKEROOT}/onlyherdr'
+    herdr_available
+  "
+  assert_failure
+  assert_output --partial "jq is not installed"
+}
+
+@test "no fractional read -t, which bash 3.2 rejects outright" {
+  # `read -t 0.01` is bash 4+. On macOS's bash 3.2 it fails with "invalid timeout
+  # specification" — so a drain written that way never runs, and every prompt after
+  # a single-key read silently swallows the stale Enter and cancels. Parsing is not
+  # enough to catch this: it is a runtime argument error.
+  set -eu -o pipefail
+  run bash -c "
+    cat '${DIR}'/tryout/*.sh '${DIR}'/tryout/herdr-plugin/*.sh \
+        '${DIR}/commands/host/tryout' \
+      | grep -vE '^[[:space:]]*#' | grep -qE 'read .*-t +[0-9]*\\.[0-9]'
+  "
+  assert_failure
+
+  # And bash 3.2 really does reject it, so the guard is not theoretical.
+  if [ -x /bin/bash ]; then
+    run /bin/bash -c 'read -r -t 0.01 x </dev/null'
+    assert_failure
+  fi
+}
+
+@test "every shipped script parses under bash 3.2, which macOS still ships" {
+  set -eu -o pipefail
+  [ -x /bin/bash ] || skip 'no /bin/bash'
+  local f
+  for f in "${DIR}"/tryout/*.sh "${DIR}"/tryout/herdr-plugin/*.sh \
+           "${DIR}/commands/host/tryout" "${DIR}/commands/host/autocomplete/tryout"; do
+    run /bin/bash -n "${f}"
+    assert_success
+  done
+}
+
+@test "no GNU-only utilities are assumed" {
+  # These break on macOS's BSD userland. `sed -i` needs a suffix to work on both,
+  # which is why the tests use sed -i.bak.
+  set -eu -o pipefail
+  local bad
+  for bad in 'readlink -f' 'grep -P' 'sed -r ' 'stat -c' 'date -d'; do
+    run bash -c "
+      cat '${DIR}'/tryout/*.sh '${DIR}'/tryout/herdr-plugin/*.sh \
+          '${DIR}/commands/host/tryout' '${DIR}/commands/host/autocomplete/tryout' \
+        | grep -vE '^[[:space:]]*#' | grep -q -- '${bad}'
+    "
+    assert_failure
+  done
+
+  # A bare `sed -i` with no suffix is GNU-only; BSD would eat the next argument.
+  run bash -c "
+    cat '${DIR}'/tryout/*.sh '${DIR}/commands/host/tryout' \
+      | grep -vE '^[[:space:]]*#' | grep -qE 'sed -i +[^.]'
+  "
+  assert_failure
 }
 
 @test "completion offers herdr, its worktrees and its flags" {

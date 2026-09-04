@@ -824,8 +824,12 @@ git -C ~/typo3-core-shared worktree prune
   Windows this means Git Bash (bundled with Git for Windows); DDEV finds it
   automatically. An SSH client is also needed for `ddev tryout cs` to reach Gerrit.
 - Optional, for `ddev tryout herdr` only: [herdr](https://herdr.dev) and `jq` on the
-  host. The add-on installs neither; without them that one command exits with a hint
-  and everything else works as usual.
+  host. The add-on installs neither; without them that one command exits with the
+  install command for your platform and everything else works as usual.
+
+The host scripts are POSIX-minded bash and run on **macOS and Linux alike**: no
+GNU-only utilities (`readlink -f`, `grep -P`, `stat -c`, `date -d`), and nothing that
+needs bash 4, since macOS still ships 3.2. Tests enforce both.
 
 ## Contributing
 
@@ -865,7 +869,7 @@ bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no 
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
 bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
-bats tests --filter-tags '!release,!lifecycle'   # the 84 fast tests
+bats tests --filter-tags '!release,!lifecycle'   # the 89 fast tests
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 

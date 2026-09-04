@@ -413,15 +413,53 @@ herdr_cli() { herdr --session "$(herdr_session_name)" "$@"; }
 # The binary and the JSON parser we need. Not a check for a running server: we start
 # one ourselves. Deliberately NOT gated on HERDR_ENV either — the herdr CLI talks to
 # a socket, not to the calling pane, and a DDEV host command never runs inside one.
+# Install hints worth reading: name the tool, why it is needed, and the command for
+# the platform actually in use rather than a list to pick from.
+missing_tool() {
+    local tool="$1" why="$2" brew="$3" apt="$4" docs="$5"
+    error "${tool} is not installed on the host"
+    error "  ${why}"
+    # uname may be missing from a stripped PATH; fall back to bash's own OSTYPE.
+    local os="${OSTYPE:-}"
+    command -v uname >/dev/null 2>&1 && os="$(uname -s)"
+    case "${os}" in
+        Darwin|darwin*)
+            error "  → brew install ${brew}"
+            ;;
+        Linux|linux*)
+            if command -v apt-get >/dev/null 2>&1; then
+                error "  → sudo apt-get install ${apt}"
+            elif command -v dnf >/dev/null 2>&1; then
+                error "  → sudo dnf install ${apt}"
+            elif command -v pacman >/dev/null 2>&1; then
+                error "  → sudo pacman -S ${apt}"
+            else
+                error "  → install '${apt}' with your package manager"
+            fi
+            ;;
+    esac
+    [ -n "${docs}" ] && error "  ${DIM}${docs}${NC}"
+    return 1
+}
+
 herdr_available() {
     if ! command -v herdr >/dev/null 2>&1; then
-        error "herdr not found on the host"
-        error "  → https://herdr.dev/docs/install/"
+        error "herdr is not installed on the host"
+        error "  'ddev tryout herdr' opens your Core worktrees in it."
+        # Homebrew carries it; no Linux distro packages it, so the installer is the
+        # honest answer there rather than an apt-get line that would fail.
+        case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+            darwin*|Darwin) error "  → brew install herdr" ;;
+        esac
+        error "  → curl -fsSL https://herdr.dev/install.sh | sh"
+        error "  ${DIM}https://herdr.dev/docs/install/${NC}"
         return 1
     fi
     # Control commands answer in JSON; we parse IDs out rather than predict them.
     if ! command -v jq >/dev/null 2>&1; then
-        error "'ddev tryout herdr' needs jq on the host"
+        missing_tool "jq" \
+            "herdr answers in JSON and its replies have to be parsed." \
+            "jq" "jq" "https://jqlang.github.io/jq/download/"
         return 1
     fi
 }
