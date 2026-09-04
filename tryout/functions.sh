@@ -382,6 +382,453 @@ list_local_core_branches() {
         | sort -V
 }
 
+# --- herdr integration -----------------------------------------------------
+# herdr (https://herdr.dev) is a terminal multiplexer built around coding agents.
+# It is an OPTIONAL host tool: the add-on never installs it, and nothing else here
+# depends on it. `ddev tryout herdr` opens one workspace per Core worktree.
+
+# This project's own herdr session, so Core worktrees never land among the user's
+# everyday workspaces. Session names accept dots and uppercase, so the DDEV project
+# name goes in verbatim.
+herdr_session_name() {
+    [ -n "${DDEV_SITENAME:-}" ] && { echo "tryout-${DDEV_SITENAME}"; return; }
+    echo "tryout"
+}
+
+# Every herdr call goes through here. `--session` MUST precede the subcommand: put it
+# after and herdr SILENTLY IGNORES it and talks to the default session instead.
+# (HERDR_SESSION is no good either — it reports the right name but resolves the
+# default socket.)
+herdr_cli() { herdr --session "$(herdr_session_name)" "$@"; }
+
+# The binary and the JSON parser we need. Not a check for a running server: we start
+# one ourselves. Deliberately NOT gated on HERDR_ENV either — the herdr CLI talks to
+# a socket, not to the calling pane, and a DDEV host command never runs inside one.
+herdr_available() {
+    if ! command -v herdr >/dev/null 2>&1; then
+        error "herdr not found on the host"
+        error "  → https://herdr.dev/docs/install/"
+        return 1
+    fi
+    # Control commands answer in JSON; we parse IDs out rather than predict them.
+    if ! command -v jq >/dev/null 2>&1; then
+        error "'ddev tryout herdr' needs jq on the host"
+        return 1
+    fi
+}
+
+# Drop the user into their session. A DDEV host command has no stdin/stdout tty of
+# its own, but /dev/tty still reaches the real terminal, so herdr can take it over —
+# this is what makes `ddev tryout herdr` land you in the session rather than printing
+# a command to copy. Two cases cannot attach:
+#   - no controlling terminal (a script, CI, an editor task runner)
+#   - already inside herdr, which refuses to nest
+# Both fall back to printing the command, so nothing is lost.
+attach_herdr_session() {
+    local session
+    session="$(herdr_session_name)"
+
+    if [ "${HERDR_ENV:-}" = "1" ]; then
+        info "  ${DIM}→ already in herdr; switch to '${session}' or: herdr session attach ${session}${NC}"
+        return 0
+    fi
+
+    if [ ! -e /dev/tty ] || ! { : < /dev/tty; } 2>/dev/null; then
+        info "  ${DIM}→ herdr session attach ${session}${NC}"
+        return 0
+    fi
+
+    info "Attaching to '${session}'..."
+    # Deliberately NOT herdr_cli: `session attach` takes the session as its argument,
+    # and this call must own the real terminal. Every other call goes through the
+    # wrapper; a unit test allows this one line by name.
+    herdr session attach "${session}" < /dev/tty > /dev/tty 2>&1
+}
+
+# Start this project's session unless it is already up. A server spawned here
+# outlives the command, which is what makes `ddev tryout herdr` usable at all: a DDEV
+# host command has no TTY, so it can never host the session itself.
+ensure_herdr_session() {
+    herdr_cli status server --json 2>/dev/null | grep -q '"running":true' && return 0
+
+    info "Starting herdr session '$(herdr_session_name)'..."
+    nohup herdr --session "$(herdr_session_name)" server >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+
+    # Poll rather than sleep blindly: the server answers in ~30ms, and a successful
+    # status check is a reliable gate for real work.
+    local i
+    for i in $(seq 1 50); do
+        herdr_cli status server --json 2>/dev/null | grep -q '"running":true' && return 0
+        sleep 0.1
+    done
+
+    error "herdr session '$(herdr_session_name)' did not start"
+    return 1
+}
+
+# Worktree names allow uppercase and dots (see validate_worktree_name); herdr
+# agent names must match [a-z][a-z0-9_-]{0,31}. Map one onto the other.
+herdr_agent_name() {
+    printf '%s' "${1:-}" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -e 's/[^a-z0-9_-]/-/g' -e 's/^[^a-z]/x&/' \
+        | cut -c1-32
+}
+
+# True when any pane anywhere is already sitting in that worktree, which is what
+# makes `ddev tryout herdr` safe to re-run. Deliberately NOT scoped to the current
+# workspace: each worktree gets its own, so a scoped query would never find them.
+# Keyed on the pane cwd rather than the label, which a user can rename by hand.
+herdr_worktree_is_open() {
+    local dir="$1"
+    herdr_cli pane list 2>/dev/null \
+        | jq -e --arg d "${dir}" \
+            '[.result.panes[]? | select(.cwd == $d)] | length > 0' >/dev/null 2>&1
+}
+
+# Workspace labels live in one global sidebar alongside every other project, so a
+# bare worktree name would be ambiguous there.
+herdr_workspace_label() { echo "core-${1}"; }
+
+# Workspace id for a worktree's workspace, empty when it is not open.
+herdr_workspace_id() {
+    herdr_cli workspace list 2>/dev/null \
+        | jq -r --arg l "$(herdr_workspace_label "${1}")" \
+            '.result.workspaces[]? | select(.label == $l) | .workspace_id' 2>/dev/null \
+        | head -1
+}
+
+# A worktree name derived from a branch (or any path segment). herdr names its own
+# checkouts from a generated word list on a "worktree/<slug>" branch, so take the last
+# segment, drop a typo3-core- prefix, and force it into validate_worktree_name's
+# grammar. Empty in, empty out — the caller decides what to do about that.
+worktree_name_from_ref() {
+    printf '%s' "${1:-}" \
+        | sed -e 's|^worktree/||' -e 's|^refs/heads/||' -e 's/^typo3-core-//' \
+              -e 's/[^A-Za-z0-9._-]/-/g' \
+        | cut -c1-64
+}
+
+# Checkouts of the Core repo that live OUTSIDE the project, one path per line. These
+# are invisible to every tryout command: not matched by list_core_worktrees' glob, not
+# servable, never reachable through the typo3-core symlink. herdr's own New-worktree
+# action creates them under its worktrees.directory.
+list_foreign_core_worktrees() {
+    [ -d "${CORE_DIR}" ] || return 0
+
+    # Compare RESOLVED paths: on macOS the project root is reached through /var
+    # while git reports /private/var, and a plain prefix test would call every
+    # worktree foreign.
+    local root
+    root="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P)" || return 0
+
+    git -C "${CORE_DIR}" worktree list --porcelain 2>/dev/null \
+        | awk '/^worktree /{print substr($0,10)}' \
+        | while IFS= read -r p; do
+            [ -n "${p}" ] || continue
+            local real
+            real="$(cd "${p}" 2>/dev/null && pwd -P)" || real="${p}"
+            case "${real}/" in
+                "${root}/"*) ;;
+                *) echo "${p}" ;;
+            esac
+          done
+}
+
+# --- herdr keybinding ------------------------------------------------------
+# herdr's built-in "New worktree" (prefix+shift+G) cannot be redirected: it prompts
+# for a branch and always checks out under worktrees.directory. A TYPO3 Core worktree
+# must land at typo3-core-<name>, so the only way to make that key do the right thing
+# is to unbind the built-in and bind our own popup. There is no pre-create hook to use
+# instead — every worktree.* event is past tense.
+
+herdr_config_path() { echo "${HERDR_CONFIG:-${HOME}/.config/herdr/config.toml}"; }
+
+# Delimiters so unsetup-keys can remove exactly our block and nothing else. The
+# project name is in the marker: this file is global and may serve several projects.
+herdr_key_marker_start() { echo "# >>> tryout ${DDEV_SITENAME:-tryout} >>>"; }
+herdr_key_marker_end()   { echo "# <<< tryout ${DDEV_SITENAME:-tryout} <<<"; }
+
+herdr_key_block() {
+    printf '%s\n%s\n' "$(herdr_key_marker_start)" "$(herdr_key_block_body)"
+}
+
+herdr_key_block_body() {
+    cat <<BLOCK
+# Added by 'ddev tryout herdr setup-keys'. Remove with 'unsetup-keys' — editing by
+# hand is fine too, just take the whole block including both markers.
+[keys]
+new_worktree = ""
+
+[[keys.command]]
+key = "prefix+shift+g"
+type = "popup"
+command = "${PROJECT_ROOT}/.ddev/tryout/herdr-new-worktree.sh"
+description = "new tryout worktree"
+width = "60%"
+height = "30%"
+
+[[keys.command]]
+key = "prefix+shift+t"
+type = "popup"
+command = "${PROJECT_ROOT}/.ddev/tryout/herdr-menu.sh"
+description = "ddev tryout menu"
+width = "70%"
+height = "60%"
+$(herdr_key_marker_end)
+BLOCK
+}
+
+herdr_keys_installed() {
+    local cfg
+    cfg="$(herdr_config_path)"
+    [ -f "${cfg}" ] && grep -qF "$(herdr_key_marker_start)" "${cfg}"
+}
+
+TRYOUT_HERDR_PLUGIN_ID="tryout.worktree-guard"
+
+# Link the guard plugin, which relocates a worktree herdr's own action puts outside
+# the project. Idempotent; a failure is reported but never fatal — the keybindings
+# still work without it.
+herdr_link_plugin() {
+    local dir="${PROJECT_ROOT}/.ddev/tryout/herdr-plugin"
+    [ -f "${dir}/herdr-plugin.toml" ] || return 0
+
+    if herdr plugin list 2>/dev/null | grep -q "${TRYOUT_HERDR_PLUGIN_ID}"; then
+        return 0
+    fi
+    if herdr plugin link "${dir}" >/dev/null 2>&1; then
+        success "Linked the worktree guard plugin"
+    else
+        warn "Could not link the worktree guard plugin"
+        warn "  herdr's own 'New worktree' will check out outside the project"
+    fi
+}
+
+herdr_unlink_plugin() {
+    herdr plugin list 2>/dev/null | grep -q "${TRYOUT_HERDR_PLUGIN_ID}" || return 0
+    herdr plugin unlink "${TRYOUT_HERDR_PLUGIN_ID}" >/dev/null 2>&1 \
+        && success "Unlinked the worktree guard plugin" || true
+}
+
+herdr_setup_keys() {
+    local assume_yes="${1:-false}" cfg backup
+    cfg="$(herdr_config_path)"
+
+    herdr_available || return 1
+
+    if herdr_keys_installed; then
+        info "The tryout keybinding is already in ${cfg}"
+        info "  ${DIM}→ ddev tryout herdr unsetup-keys   to remove it${NC}"
+        return 0
+    fi
+
+    echo ""
+    echo -e "${BOLD}This adds the following to ${cfg}:${NC}"
+    echo ""
+    herdr_key_block | sed 's/^/  /'
+    echo ""
+    echo -e "  ${DIM}prefix+shift+G then creates a tryout Core worktree instead of herdr's${NC}"
+    echo -e "  ${DIM}own, and prefix+shift+T opens the tryout command menu. That config is${NC}"
+    echo -e "  ${DIM}global, so both keys are live in every herdr session — the popups say${NC}"
+    echo -e "  ${DIM}so when you are not in a tryout project.${NC}"
+    echo ""
+
+    if [ "${assume_yes}" != "true" ]; then
+        local reply=""
+        if [ -e /dev/tty ] && { : < /dev/tty; } 2>/dev/null; then
+            printf "  Write it? [y/N] " > /dev/tty
+            read -r reply < /dev/tty
+        fi
+        case "${reply}" in
+            [yY]|[yY][eE][sS]) ;;
+            *) info "Nothing written."; return 0 ;;
+        esac
+    fi
+
+    mkdir -p "$(dirname "${cfg}")"
+    if [ -f "${cfg}" ]; then
+        backup="${cfg}.tryout-backup-$(date +%Y%m%d%H%M%S)"
+        cp "${cfg}" "${backup}" || { error "Could not back up ${cfg}"; return 1; }
+        success "Backed up to $(basename "${backup}")"
+    else
+        : > "${cfg}"
+    fi
+
+    # Never fuse onto the user's last line: if the file does not end in a newline,
+    # terminate it first. That byte is theirs, so unsetup-keys must not give it back —
+    # hence the marker records whether we added one.
+    local added_newline="false"
+    if [ -s "${cfg}" ] && [ -n "$(tail -c1 "${cfg}")" ]; then
+        printf '\n' >> "${cfg}"
+        added_newline="true"
+    fi
+
+    # Separate the block from the user's content with exactly one blank line — but
+    # only if there is not already one, and record that so unsetup can undo it.
+    local blank_added="false"
+    if [ -s "${cfg}" ] && [ -n "$(tail -c2 "${cfg}" | head -c1)" ]; then
+        printf '\n' >> "${cfg}"
+        blank_added="true"
+    fi
+
+    printf '%s\n%s\n' \
+        "$(herdr_key_marker_start) newline_added=${added_newline} blank_added=${blank_added}" \
+        "$(herdr_key_block_body)" >> "${cfg}" || {
+        error "Could not write ${cfg}"
+        return 1
+    }
+    success "Bound prefix+shift+G (new worktree) and prefix+shift+T (menu)"
+
+    # The plugin covers the route a keybinding cannot: herdr's own New-worktree entry
+    # in the sidebar right-click menu.
+    herdr_link_plugin
+
+    herdr_cli server reload-config >/dev/null 2>&1 \
+        && info "  ${DIM}herdr reloaded its config${NC}" \
+        || info "  ${DIM}→ restart herdr, or: herdr server reload-config${NC}"
+}
+
+herdr_unsetup_keys() {
+    local cfg tmp
+    cfg="$(herdr_config_path)"
+
+    if ! herdr_keys_installed; then
+        info "No tryout keybinding in ${cfg}"
+        return 0
+    fi
+
+    tmp="${cfg}.tryout-tmp.$$"
+    # Delete the marked block, plus the single blank line setup-keys put before it,
+    # so a setup/unsetup round trip leaves the file byte for byte as it was.
+    # Hold back blank lines and only emit them once a real line follows. The blank
+    # line setup-keys wrote before the block is then dropped with it, so a
+    # setup/unsetup round trip leaves the file byte for byte as it was.
+    local strip_newline="false" drop_blank="false"
+    grep -q "newline_added=true" "${cfg}" && strip_newline="true"
+    grep -q "blank_added=true" "${cfg}" && drop_blank="true"
+
+    awk -v start="$(herdr_key_marker_start)" -v end="$(herdr_key_marker_end)" \
+        -v dropblank="${drop_blank}" '
+        index($0, start) == 1 {
+            inblock = 1
+            # We added one blank line before the block; give back any others.
+            if (dropblank == "true") sub(/\n$/, "", pending)
+            printf "%s", pending
+            pending = ""
+            next
+        }
+        $0 == end             { inblock = 0; next }
+        inblock               { next }
+        /^[[:space:]]*$/ { pending = pending $0 "\n"; next }
+        { printf "%s%s\n", pending, $0; pending = "" }
+        END { printf "%s", pending }
+    ' "${cfg}" > "${tmp}" || { error "Could not rewrite ${cfg}"; rm -f "${tmp}"; return 1; }
+
+    # Give back the terminating newline we added, if we added it.
+    if [ "${strip_newline}" = "true" ] && [ -s "${tmp}" ]; then
+        printf '%s' "$(cat "${tmp}")" > "${tmp}.n" && mv "${tmp}.n" "${tmp}"
+    fi
+
+    mv "${tmp}" "${cfg}" || { error "Could not replace ${cfg}"; rm -f "${tmp}"; return 1; }
+    success "Removed the tryout keybinding from ${cfg}"
+    herdr_unlink_plugin
+
+    herdr_cli server reload-config >/dev/null 2>&1 || true
+}
+
+# One workspace per worktree: the root pane runs the agent, a right split gives a
+# shell. Both are rooted at the worktree. `workspace create` makes its first tab and
+# root pane too, so one call covers the whole topology. Focus stays where the caller
+# was unless asked.
+open_worktree_in_herdr() {
+    local name="$1" use_agent="${2:-true}" focus="${3:-false}" dir ws_json root_pane agent
+    dir="$(core_worktree_dir "${name}")"
+
+    if [ ! -d "${dir}" ]; then
+        error "No worktree '${name}'"
+        error "  → ddev tryout worktree add ${name} <branch>"
+        return 1
+    fi
+
+    if herdr_worktree_is_open "${dir}"; then
+        info "'${name}' is already open — skipping"
+        return 0
+    fi
+
+    info "Opening '${name}'..."
+
+    local focus_flag="--no-focus"
+    [ "${focus}" = "true" ] && focus_flag="--focus"
+
+    # `worktree open` registers the checkout as a workspace WITH git provenance, so
+    # herdr groups it under the Core repo exactly like a natively created worktree.
+    # `workspace create` sets no provenance, so it is only the fallback for a herdr
+    # that does not know the subcommand.
+    local label main_dir
+    label="$(herdr_workspace_label "${name}")"
+    main_dir="$(main_core_worktree_dir)"
+    [ -z "${main_dir}" ] && main_dir="${dir}"
+
+    ws_json=$(herdr_cli worktree open \
+        --cwd "${main_dir}" --path "${dir}" --label "${label}" "${focus_flag}" 2>&1) \
+        || ws_json=""
+
+    if [ -z "${ws_json}" ] || ! printf '%s' "${ws_json}" | jq -e '.result' >/dev/null 2>&1; then
+        ws_json=$(herdr_cli workspace create \
+            --cwd "${dir}" --label "${label}" "${focus_flag}" 2>&1) || {
+            error "herdr could not open '${name}'"
+            echo "${ws_json}" >&2
+            return 1
+        }
+    fi
+
+    root_pane=$(printf '%s' "${ws_json}" | jq -r '.result.root_pane.pane_id // empty')
+    if [ -z "${root_pane}" ]; then
+        error "herdr did not report a pane for '${name}'"
+        return 1
+    fi
+
+    # Split right: these panes are wide, and there is only ever one split per tab.
+    herdr_cli pane split "${root_pane}" --direction right --cwd "${dir}" --no-focus \
+        >/dev/null 2>&1 || warn "Could not add a shell pane for '${name}'"
+
+    if [ "${use_agent}" = "true" ]; then
+        agent="$(herdr_agent_name "${name}")"
+        local start_err rc=0 attempt=0
+
+        # `workspace create` answers before the pane's shell reaches its prompt, and
+        # `agent start` needs an idle shell to take over — so a first attempt can
+        # lose that race. Retry a few times before believing a failure.
+        while :; do
+            rc=0
+            start_err=$(herdr_cli agent start "${agent}" --kind claude --pane "${root_pane}" 2>&1 >/dev/null) || rc=$?
+            # Success, or a definite answer (the agent is up but blocked on its own
+            # UI) — either way, stop.
+            [ "${rc}" -eq 0 ] && break
+            printf '%s' "${start_err}" | grep -q 'agent_not_ready' && break
+            attempt=$((attempt + 1))
+            [ "${attempt}" -ge 5 ] && break
+            sleep 1
+        done
+
+        if [ "${rc}" -eq 0 ]; then
+            success "'${name}' — claude '${agent}' + shell"
+        elif printf '%s' "${start_err}" | grep -q 'agent_not_ready'; then
+            # Claude launched but is waiting on its own UI — on a worktree it has
+            # not seen before that is the folder-trust prompt. It is running and
+            # named, so this is a normal first run, not a failure.
+            success "'${name}' — claude '${agent}' + shell"
+            info "  ${DIM}'${agent}' is waiting for input (folder trust?) — open core-${name}${NC}"
+        else
+            warn "Could not start claude in '${name}' — left as a shell"
+        fi
+    else
+        success "'${name}' — two shells"
+    fi
+}
+
 # True when vendor/ was built from a different Core than the active one. This is
 # the silent failure mode of a symlink swap without a reinstall.
 vendor_core_mismatch() {

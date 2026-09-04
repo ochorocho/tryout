@@ -24,7 +24,8 @@ post_install_actions:
   # project root is "..".
   - |
     #ddev-description:Make the tryout scripts executable
-    chmod +x tryout/*.sh commands/host/tryout commands/host/autocomplete/tryout
+    chmod +x tryout/*.sh tryout/herdr-plugin/*.sh \
+      commands/host/tryout commands/host/autocomplete/tryout
 
   - |
     #ddev-description:Install the Gerrit patch list

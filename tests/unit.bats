@@ -374,12 +374,353 @@ complete() {
   assert_line "--force"
 }
 
-@test "completion offers the worktrees on disk" {
+# --- herdr integration ----------------------------------------------------
+# `ddev tryout herdr` opens one herdr tab per Core worktree. herdr is an optional
+# host tool, so these tests cover the pure helpers and the guard clauses only —
+# real tab creation mutates a live session and is verified by hand.
+
+@test "herdr agent names are sanitised to herdr's grammar" {
+  # Worktree names allow uppercase and dots; agent names must match
+  # [a-z][a-z0-9_-]{0,31}.
+  set -eu -o pipefail
+  run helper herdr_agent_name main
+  assert_output "main"
+
+  run helper herdr_agent_name v13
+  assert_output "v13"
+
+  run helper herdr_agent_name my.branch
+  assert_output "my-branch"
+
+  run helper herdr_agent_name Feature-X
+  assert_output "feature-x"
+
+  # Must start with a letter.
+  run helper herdr_agent_name 13.4
+  assert_output "x13-4"
+
+  # And be at most 32 characters.
+  run helper_eval 'herdr_agent_name a-very-long-worktree-name-that-goes-past-the-limit | wc -c'
+  assert_output --partial "33"   # 32 chars + newline
+}
+
+@test "the herdr session is named after the DDEV project" {
+  # Each project gets its own session, so two tryout projects never collide.
+  set -eu -o pipefail
+  run helper_eval 'DDEV_SITENAME=myproj herdr_session_name'
+  assert_output "tryout-myproj"
+
+  # setup() exports DDEV_SITENAME, so clear it in a child env rather than in-shell.
+  run env -u DDEV_SITENAME bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    herdr_session_name
+  "
+  assert_output "tryout"
+}
+
+@test "herdr_cli puts --session before the subcommand" {
+  # herdr SILENTLY IGNORES --session when it comes after the subcommand and talks to
+  # the default session instead — so argument order is load-bearing, not cosmetic.
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/bin"
+  printf '#!/usr/bin/env bash\necho "ARGV: $*"\n' > "${FAKEROOT}/bin/herdr"
+  chmod +x "${FAKEROOT}/bin/herdr"
+
+  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    herdr_cli workspace list
+  "
+  assert_success
+  assert_output "ARGV: --session tryout-myproj workspace list"
+}
+
+@test "every herdr call goes through the session wrapper" {
+  # A bare `herdr <subcommand>` would silently target the user's default session.
+  # The only allowed raw call is the deliberate `nohup herdr --session ... server`.
+  set -eu -o pipefail
+  # Only look at executable lines: strip comments and echo/error strings first, so
+  # help text and messages mentioning herdr do not register as calls.
+  run bash -c "
+    cat '${DIR}/tryout/functions.sh' '${DIR}/commands/host/tryout' \
+      | grep -vE '^[[:space:]]*#' \
+      | grep -vE '^[[:space:]]*(echo|printf|error|warn|info|success)\b' \
+      | grep -E '(^|[^_[:alnum:]])herdr (workspace|pane|agent|tab|status|session) ' \
+      | grep -v 'herdr_cli' \
+      | grep -v 'herdr session attach' || true
+  "
+  assert_output ""
+}
+
+@test "attaching falls back to printing the command when it cannot attach" {
+  # Three ways attaching is impossible: no controlling terminal (CI, a script), or
+  # already inside herdr, which refuses to nest. Neither may hang or fail.
+  set -eu -o pipefail
+
+  # Inside herdr: say how to switch, do not try to nest.
+  run env HERDR_ENV=1 DDEV_SITENAME=myproj bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    attach_herdr_session
+  "
+  assert_success
+  assert_output --partial "already in herdr"
+  assert_output --partial "tryout-myproj"
+
+  # No controlling terminal: print the command. bats already runs without one.
+  run env -u HERDR_ENV DDEV_SITENAME=myproj bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    attach_herdr_session
+  "
+  assert_success
+  assert_output --partial "herdr session attach tryout-myproj"
+}
+
+@test "the herdr command reports a missing herdr binary" {
+  set -eu -o pipefail
+  run bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    export HERDR_ENV=1 HERDR_WORKSPACE_ID=w1
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    PATH=/nonexistent
+    herdr_available
+  "
+  assert_failure
+  assert_output --partial "herdr not found"
+  assert_output --partial "herdr.dev"
+}
+
+@test "herdr workspace labels are namespaced" {
+  # Workspace labels share one global sidebar with every other project, so a bare
+  # worktree name would be ambiguous there.
+  set -eu -o pipefail
+  run helper herdr_workspace_label main
+  assert_output "core-main"
+
+  run helper herdr_workspace_label v13
+  assert_output "core-v13"
+}
+
+@test "the herdr keybinding round-trips the config byte for byte" {
+  # This edits a file outside .ddev/ that holds the user's own settings and that the
+  # add-on's removal actions cannot reach, so setup/unsetup MUST be exact. Every
+  # shape below broke a naive implementation during development.
+  set -eu -o pipefail
+  local case_name content
+  for case_name in normal no-newline trailing-blanks many-blanks empty; do
+    case "${case_name}" in
+      normal)          content=$'a = 1\n[ui]\nx = 2\n' ;;
+      no-newline)      content=$'a = 1' ;;
+      trailing-blanks) content=$'a = 1\n\n' ;;
+      many-blanks)     content=$'a = 1\n\n\n\n' ;;
+      empty)           content='' ;;
+    esac
+    printf '%s' "${content}" > "${FAKEROOT}/cfg.toml"
+    cp "${FAKEROOT}/cfg.toml" "${FAKEROOT}/cfg.before"
+
+    run env DDEV_SITENAME=myproj HERDR_CONFIG="${FAKEROOT}/cfg.toml" bash -c "
+      export DDEV_APPROOT='${FAKEROOT}'
+      source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+      command -v herdr >/dev/null 2>&1 || exit 0
+      herdr_setup_keys true >/dev/null 2>&1
+      grep -q 'new_worktree' '${FAKEROOT}/cfg.toml' || exit 1
+      herdr_unsetup_keys >/dev/null 2>&1
+    "
+    assert_success
+
+    run diff "${FAKEROOT}/cfg.before" "${FAKEROOT}/cfg.toml"
+    assert_success
+  done
+}
+
+@test "setup-keys refuses to write a second block and backs the config up" {
+  set -eu -o pipefail
+  printf 'a = 1\n' > "${FAKEROOT}/cfg.toml"
+
+  run env DDEV_SITENAME=myproj HERDR_CONFIG="${FAKEROOT}/cfg.toml" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    command -v herdr >/dev/null 2>&1 || skip 'herdr not installed'
+    herdr_setup_keys true >/dev/null 2>&1
+    herdr_setup_keys true >/dev/null 2>&1
+    grep -c '>>> tryout' '${FAKEROOT}/cfg.toml'
+  "
+  assert_success
+  assert_output "1"
+
+  # The backup must hold the pre-write content.
+  run bash -c "cat '${FAKEROOT}'/cfg.toml.tryout-backup-*"
+  assert_success
+  assert_output "a = 1"
+}
+
+@test "the popup script trusts the cwd, not its own location" {
+  # The key is bound globally, so \$0 always points at whichever project ran
+  # setup-keys. Trusting it would create a worktree in a project the user is
+  # nowhere near.
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/.ddev/tryout"
+  cp "${DIR}/tryout/herdr-new-worktree.sh" "${FAKEROOT}/.ddev/tryout/"
+  chmod +x "${FAKEROOT}/.ddev/tryout/herdr-new-worktree.sh"
+
+  # Run it from outside any project: it must refuse rather than resolve via \$0.
+  run bash -c "cd / && printf '' | '${FAKEROOT}/.ddev/tryout/herdr-new-worktree.sh' 2>&1"
+  assert_output --partial "No DDEV project here"
+}
+
+@test "the menu covers every command the dispatch case accepts" {
+  # The menu IS the GUI — herdr allows no plugin menu entries — so a new subcommand
+  # that never reaches it is invisible to anyone driving tryout from herdr.
+  set -eu -o pipefail
+  local actions verb
+  actions=$(sed -n '/^case "${ACTION}" in/,/^esac/p' "${DIR}/commands/host/tryout" \
+    | sed -n 's/^    \([a-z|]*\)).*/\1/p' | tr '|' '\n' | grep -v '^\*$')
+  [ -n "${actions}" ]
+
+  for verb in ${actions}; do
+    grep -q -- "${verb}" "${DIR}/tryout/herdr-menu.sh" \
+      || { echo "menu is missing '${verb}'"; false; }
+  done
+}
+
+@test "the menu keeps destructive commands behind a confirmation" {
+  set -eu -o pipefail
+  # Each destructive path must call confirm_destructive before running anything.
+  run grep -c 'confirm_destructive' "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+  [ "${output}" -ge 3 ]
+
+  # And the confirmation must compare against the typed name, not just prompt.
+  run grep -q 'answer.*}" = "\${expect}' "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+}
+
+@test "the menu script trusts the cwd, not its own location" {
+  # Same global-keybinding hazard as the new-worktree popup.
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/.ddev/tryout"
+  cp "${DIR}/tryout/herdr-menu.sh" "${FAKEROOT}/.ddev/tryout/"
+  chmod +x "${FAKEROOT}/.ddev/tryout/herdr-menu.sh"
+
+  run bash -c "cd / && printf '' | '${FAKEROOT}/.ddev/tryout/herdr-menu.sh' 2>&1"
+  assert_output --partial "No DDEV project here"
+}
+
+@test "setup-keys binds both the worktree key and the menu key" {
+  set -eu -o pipefail
+  printf 'a = 1\n' > "${FAKEROOT}/cfg.toml"
+
+  run env DDEV_SITENAME=myproj HERDR_CONFIG="${FAKEROOT}/cfg.toml" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    command -v herdr >/dev/null 2>&1 || skip 'herdr not installed'
+    herdr_setup_keys true >/dev/null 2>&1
+    grep -c 'keys.command' '${FAKEROOT}/cfg.toml'
+  "
+  assert_success
+  assert_output "2"
+
+  run grep -q 'prefix+shift+t' "${FAKEROOT}/cfg.toml"
+  assert_success
+}
+
+@test "the relocation hook never touches a worktree outside a tryout project" {
+  # THE safety property: this hook fires for EVERY worktree herdr creates, on any
+  # repository on the machine. Moving someone else's checkout would be data loss.
+  set -eu -o pipefail
+  command -v git >/dev/null 2>&1 || skip 'git not available'
+  command -v jq  >/dev/null 2>&1 || skip 'jq not available'
+
+  mkdir -p "${FAKEROOT}/other"
+  git -C "${FAKEROOT}/other" init -q .
+  git -C "${FAKEROOT}/other" commit -q --allow-empty -m init
+  git -C "${FAKEROOT}/other" worktree add -q "${FAKEROOT}/other-wt" -b probe
+
+  run env HERDR_PLUGIN_EVENT_JSON="$(jq -nc --arg p "${FAKEROOT}/other-wt" \
+      '{worktree:{path:$p,branch:"probe"},workspace:{workspace_id:"w9"}}')" \
+    bash "${DIR}/tryout/herdr-plugin/relocate.sh"
+  assert_success
+
+  # Still exactly where git put it.
+  assert_dir_exist "${FAKEROOT}/other-wt"
+}
+
+@test "the relocation hook leaves a correctly-placed worktree alone" {
+  set -eu -o pipefail
+  command -v jq >/dev/null 2>&1 || skip 'jq not available'
+  mkdir -p "${FAKEROOT}/.ddev/tryout" "${FAKEROOT}/typo3-core-v13"
+  cp "${DIR}/tryout/functions.sh" "${FAKEROOT}/.ddev/tryout/"
+
+  run env HERDR_PLUGIN_EVENT_JSON="$(jq -nc --arg p "${FAKEROOT}/typo3-core-v13" \
+      '{worktree:{path:$p,branch:"13.4"},workspace:{workspace_id:"w9"}}')" \
+    bash "${DIR}/tryout/herdr-plugin/relocate.sh"
+  assert_success
+  assert_dir_exist "${FAKEROOT}/typo3-core-v13"
+}
+
+@test "worktree names are derived from a branch and sanitised" {
+  # herdr names its own checkouts worktree/<generated-slug>; tryout needs a name
+  # validate_worktree_name accepts.
+  set -eu -o pipefail
+  run helper worktree_name_from_ref "worktree/brave-harbor-dc20"
+  assert_output "brave-harbor-dc20"
+
+  run helper worktree_name_from_ref "feature/foo"
+  assert_output "feature-foo"
+
+  run helper worktree_name_from_ref "typo3-core-v13"
+  assert_output "v13"
+
+  run helper worktree_name_from_ref "13.4"
+  assert_output "13.4"
+}
+
+@test "foreign worktrees are the ones outside the project root" {
+  set -eu -o pipefail
+  command -v git >/dev/null 2>&1 || skip 'git not available'
+  mkdir -p "${FAKEROOT}/typo3-core"
+  git -C "${FAKEROOT}/typo3-core" init -q .
+  git -C "${FAKEROOT}/typo3-core" commit -q --allow-empty -m init
+  git -C "${FAKEROOT}/typo3-core" worktree add -q "${FAKEROOT}/typo3-core-inside" -b inside
+  git -C "${FAKEROOT}/typo3-core" worktree add -q "${BATS_TMPDIR}/tryout-outside-$$" -b outside
+
+  run helper_eval 'list_foreign_core_worktrees'
+  assert_success
+  refute_output --partial "typo3-core-inside"
+  assert_output --partial "tryout-outside-$$"
+
+  git -C "${FAKEROOT}/typo3-core" worktree remove --force "${BATS_TMPDIR}/tryout-outside-$$" || true
+}
+
+@test "the guard plugin manifest declares the worktree hook" {
+  set -eu -o pipefail
+  local m="${DIR}/tryout/herdr-plugin/herdr-plugin.toml"
+  assert_file_exist "${m}"
+
+  run grep -q 'id = "tryout.worktree-guard"' "${m}"
+  assert_success
+  run grep -q 'on = "worktree.created"' "${m}"
+  assert_success
+  run grep -q 'min_herdr_version' "${m}"
+  assert_success
+  run grep -q 'ddev-generated' "${m}"
+  assert_success
+}
+
+@test "completion offers herdr, its worktrees and its flags" {
   set -eu -o pipefail
   mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
 
-  run complete worktree use "''"
+  run complete "''"
+  assert_success
+  assert_line "herdr"
+
+  run complete herdr "''"
   assert_success
   assert_line "main"
   assert_line "v13"
+  assert_line "--no-agent"
+  assert_line "--no-focus"
 }

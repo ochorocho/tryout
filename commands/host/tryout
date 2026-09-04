@@ -71,6 +71,13 @@ cmd_status() {
             echo -e "             ${WARN} vendor/ was built from a different Core"
             echo -e "             ${DIM}→ ddev tryout worktree use ${active}${NC}"
         fi
+        # A checkout outside the project is invisible to every other command, so say so.
+        local stray_count
+        stray_count=$(list_foreign_core_worktrees | grep -c . || true)
+        if [ "${stray_count}" -gt 0 ]; then
+            echo -e "             ${WARN} ${stray_count} checkout(s) outside the project"
+            echo -e "             ${DIM}→ ddev tryout worktree adopt${NC}"
+        fi
     fi
 
     # Applied patches
@@ -487,23 +494,28 @@ cmd_worktree() {
     case "${sub}" in
         add)
             require_core
-            local name="${1:-}" branch="" attach="false" serve="false" php=""
+            local name="${1:-}" branch="" attach="false" serve="false" php="" in_herdr="false"
             shift || true
             while [ $# -gt 0 ]; do
                 case "$1" in
                     --branch)  attach="true" ;;
                     --serve)   serve="true" ;;
+                    --herdr)   in_herdr="true" ;;
                     --php)     php="${2:-}"; shift ;;
                     --php=*)   php="${1#--php=}" ;;
                     *)         branch="$1" ;;
                 esac
                 shift
             done
-            [ -z "${name}" ] && { error "Usage: ddev tryout worktree add <name> [<branch>] [--branch] [--serve] [--php 8.2]"; return 1; }
+            [ -z "${name}" ] && { error "Usage: ddev tryout worktree add <name> [<branch>] [--branch] [--serve] [--php 8.2] [--herdr]"; return 1; }
             # A named PHP version only takes effect on a served site.
             [ -n "${php}" ] && serve="true"
             migrate_core_to_worktree_layout || return 1
             add_core_worktree "${name}" "${branch:-${BRANCH}}" "${attach}" || return 1
+            if [ "${in_herdr}" = "true" ]; then
+                echo ""
+                ensure_herdr_session && open_worktree_in_herdr "${name}" "true" "true"
+            fi
             if [ "${serve}" = "true" ]; then
                 echo ""
                 serve_worktree "${name}" "${php}" || return 1
@@ -598,6 +610,51 @@ cmd_worktree() {
             unserve_worktree "${name}" "${keep_db}"
             ;;
 
+        adopt)
+            require_core
+            local dry="false"
+            [ "${1:-}" = "--dry-run" ] && dry="true"
+
+            local foreign
+            foreign=$(list_foreign_core_worktrees)
+            if [ -z "${foreign}" ]; then
+                success "Every Core worktree is inside the project"
+                return 0
+            fi
+
+            echo ""
+            warn "Core worktrees outside the project:"
+            echo "${foreign}" | sed 's/^/    /'
+            echo ""
+            echo -e "  ${DIM}These are invisible to every ddev tryout command.${NC}"
+            echo ""
+
+            [ "${dry}" = "true" ] && return 0
+
+            local wt name target branch
+            echo "${foreign}" | while IFS= read -r wt; do
+                [ -n "${wt}" ] || continue
+                branch=$(git -C "${wt}" branch --show-current 2>/dev/null || true)
+                name=$(worktree_name_from_ref "${branch:-$(basename "${wt}")}")
+                if ! validate_worktree_name "${name}" >/dev/null 2>&1; then
+                    error "Cannot derive a name for ${wt}"
+                    continue
+                fi
+                target=$(core_worktree_dir "${name}")
+                if [ -e "${target}" ]; then
+                    error "'${name}' already exists — skipping ${wt}"
+                    continue
+                fi
+                info "Moving ${wt} → $(basename "${target}")"
+                if git -C "${wt}" worktree move "${wt}" "${target}" 2>/dev/null; then
+                    success "Adopted '${name}'"
+                else
+                    error "Could not move ${wt} (uncommitted changes?)"
+                fi
+            done
+            echo ""
+            ;;
+
         help|-h|--help)
             echo ""
             echo -e "${BOLD}ddev tryout worktree${NC} — side-by-side Core checkouts"
@@ -608,9 +665,11 @@ cmd_worktree() {
             echo -e "  ${BOLD}serve <name>${NC}            Give <name> its own URL, PHP version and database"
             echo -e "  ${BOLD}unserve <name>${NC}          Drop the site, keep the worktree"
             echo -e "  ${BOLD}remove <name>${NC}           Remove a worktree (not the primary)"
+            echo -e "  ${BOLD}adopt${NC}                   Move stray checkouts back into the project"
             echo ""
             echo "  Flags: --branch    (add: create a real branch, not detached)"
             echo "         --serve     (add: serve it immediately)"
+            echo "         --herdr     (add: open it as a herdr workspace)"
             echo "         --php 8.2   (add/serve: run this site on another PHP version)"
             echo "         --force     (use: switch despite uncommitted changes)"
             echo "                     (remove: discard uncommitted changes)"
@@ -634,6 +693,174 @@ cmd_worktree() {
             return 1
             ;;
     esac
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# herdr — Open every Core worktree in its own herdr tab
+# ─────────────────────────────────────────────────────────────────────
+cmd_herdr() {
+    # Subcommands come before the flag loop: they are separate entry points.
+    case "${1:-}" in
+        new)           shift; cmd_herdr_new "$@"; return $? ;;
+        setup-keys)    shift
+                       local yes="false"
+                       case "${1:-}" in --yes|-y) yes="true" ;; esac
+                       herdr_setup_keys "${yes}"; return $? ;;
+        unsetup-keys)  shift; herdr_unsetup_keys; return $? ;;
+    esac
+
+    local only="" use_agent="true" focus="true" attach="true"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --no-agent)  use_agent="false" ;;
+            --focus)     focus="true" ;;
+            --no-focus)  focus="false" ;;
+            --no-attach) attach="false" ;;
+            -h|--help)  cmd_herdr_help; return 0 ;;
+            -*)         error "Unknown option: $1"; cmd_herdr_help; return 1 ;;
+            *)          only="$1" ;;
+        esac
+        shift
+    done
+
+    herdr_available || return 1
+    require_core
+
+    if ! core_is_symlinked; then
+        error "This project has a single Core checkout, not worktrees"
+        error "  → ddev tryout worktree add <name> <branch>"
+        return 1
+    fi
+
+    local names
+    if [ -n "${only}" ]; then
+        validate_worktree_name "${only}" || return 1
+        names="${only}"
+    else
+        names=$(list_core_worktrees | cut -f1)
+    fi
+
+    if [ -z "${names}" ]; then
+        error "No Core worktrees found"
+        error "  → ddev tryout worktree add <name> <branch>"
+        return 1
+    fi
+
+    echo ""
+    ensure_herdr_session || return 1
+    local name first_ws="" first_label=""
+    # A failure on one worktree must not abandon the rest.
+    for name in ${names}; do
+        if open_worktree_in_herdr "${name}" "${use_agent}"; then
+            if [ -z "${first_ws}" ]; then
+                first_ws="$(herdr_workspace_id "${name}")"
+                first_label="$(herdr_workspace_label "${name}")"
+            fi
+        fi
+    done
+
+    # Land the user on the first Core workspace rather than wherever they were.
+    if [ "${focus}" != "false" ] && [ -n "${first_ws}" ]; then
+        herdr_cli workspace focus "${first_ws}" >/dev/null 2>&1 || true
+    fi
+
+    echo ""
+    if [ -n "${first_ws}" ]; then
+        # A DDEV host command has no TTY, so it cannot attach the herdr UI itself —
+        # herdr panics without one, and refuses a nested launch from inside a pane.
+        # Attaching stays the user's keystroke, so hand them the exact command.
+        success "Session ready — focused ${first_label}"
+
+        # Print this BEFORE attaching: attach_herdr_session takes over the terminal
+        # and never returns, so anything after it is never seen.
+        if herdr_keys_installed; then
+            info "  ${DIM}ctrl+b shift+T for the tryout menu${NC}"
+        else
+            info "  ${DIM}→ ddev tryout herdr setup-keys   for a menu on ctrl+b shift+T${NC}"
+        fi
+
+        if [ "${attach}" = "true" ]; then
+            attach_herdr_session
+        else
+            info "  ${DIM}→ herdr session attach $(herdr_session_name)${NC}"
+        fi
+    fi
+    echo ""
+}
+
+# herdr new — create a Core worktree and open it, prompting when run interactively.
+# This is what the herdr popup calls; `ddev tryout worktree add --herdr` is the same
+# work from the other direction.
+cmd_herdr_new() {
+    local name="${1:-}" branch="${2:-}"
+
+    herdr_available || return 1
+    require_core
+
+    # No name given: ask, if there is anyone to ask.
+    if [ -z "${name}" ]; then
+        if [ ! -t 0 ]; then
+            error "Usage: ddev tryout herdr new <name> [<branch>]"
+            return 1
+        fi
+        printf "  Name: "
+        read -r name || return 1
+        [ -n "${name}" ] || { error "No name given"; return 1; }
+        printf "  Branch [%s]: " "${BRANCH}"
+        read -r branch || return 1
+    fi
+
+    validate_worktree_name "${name}" || return 1
+    branch="${branch:-${BRANCH}}"
+
+    migrate_core_to_worktree_layout || return 1
+    add_core_worktree "${name}" "${branch}" "false" || return 1
+
+    echo ""
+    ensure_herdr_session || return 1
+    open_worktree_in_herdr "${name}" "true" "true" || return 1
+
+    echo ""
+    success "Worktree '${name}' opened as $(herdr_workspace_label "${name}")"
+    echo ""
+}
+
+cmd_herdr_help() {
+    echo ""
+    echo -e "${BOLD}ddev tryout herdr${NC} — open Core worktrees in herdr"
+    echo ""
+    echo "  Creates one herdr workspace per Core worktree (labelled core-<name>),"
+    echo "  each holding a claude pane and a shell pane rooted at that worktree."
+    echo ""
+    echo -e "  ${BOLD}herdr${NC}                 Open every worktree"
+    echo -e "  ${BOLD}herdr <name>${NC}          Open just that one"
+    echo -e "  ${BOLD}herdr new [<name>]${NC}    Create a worktree and open it (prompts if bare)"
+    echo ""
+    echo -e "  ${BOLD}herdr setup-keys${NC}      Bind prefix+shift+G (new worktree) and"
+    echo -e "                        prefix+shift+T (the tryout menu)"
+    echo -e "  ${BOLD}herdr unsetup-keys${NC}    Undo that binding"
+    echo ""
+    echo "  Flags: --no-agent    Two shells instead of claude + shell"
+    echo "         --no-focus    Stay where you are (default: focus the first one)"
+    echo "         --no-attach   Print the attach command instead of attaching"
+    echo "         --yes         setup-keys: write without asking"
+    echo ""
+    echo "  Worktrees already open in any workspace are skipped, so the"
+    echo "  command is safe to re-run."
+    echo ""
+    echo "  Runs in a herdr session of its own, 'tryout-<project>', started on"
+    echo "  demand, and attaches to it — your default session is never touched."
+    echo "  Stop the session with:"
+    echo "    herdr --session tryout-<project> server stop"
+    echo ""
+    echo "  setup-keys edits your herdr config (~/.config/herdr/config.toml) so"
+    echo "  prefix+shift+G creates a TYPO3 Core worktree instead of herdr's own,"
+    echo "  and prefix+shift+T opens a menu of the tryout commands."
+    echo "  It backs the file up first and unsetup-keys restores it exactly."
+    echo ""
+    echo "  Needs the herdr terminal multiplexer on the host — https://herdr.dev"
+    echo ""
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -664,19 +891,20 @@ cmd_help() {
     echo -e "${BOLD}ddev tryout${NC} — TYPO3 development toolkit"
     echo ""
     echo "Commands:"
-    echo -e "  ${BOLD}status${NC}              Show project overview"
-    echo -e "  ${BOLD}download${NC}            Clone or update TYPO3 Core"
-    echo -e "  ${BOLD}download --reset${NC}    Hard reset Core to current branch"
-    echo -e "  ${BOLD}checkout <branch>${NC}   Switch TYPO3 version (main, 13.4, 12.4, ...)"
-    echo -e "  ${BOLD}composer${NC}            Regenerate the Composer overlay from Core sysexts"
-    echo -e "  ${BOLD}patch <change-id>${NC}   Apply a Gerrit patch by change ID"
-    echo -e "  ${BOLD}exec <site> <cmd>${NC}   Run a command in a site's PHP/root/database"
-    echo -e "  ${BOLD}patch${NC}               Apply all patches from config"
-    echo -e "  ${BOLD}worktree${NC}            Manage side-by-side Core checkouts"
-    echo -e "  ${BOLD}cs [setup|doctor]${NC}   Prepare this instance for Core contribution"
-    echo -e "  ${BOLD}reset${NC}               Reset Core to current branch + rebuild"
-    echo -e "  ${BOLD}delete [<site>]${NC}     Wipe DB + fileadmin, fresh setup (--all for every site)"
-    echo -e "  ${BOLD}help${NC}                Show this help"
+    echo -e "  ${BOLD}status${NC}                    Show project overview"
+    echo -e "  ${BOLD}download [--reset]${NC}        Clone or update Core (--reset: hard reset)"
+    echo -e "  ${BOLD}checkout <branch>${NC}         Switch TYPO3 version (main, 13.4, 12.4, ...)"
+    echo -e "  ${BOLD}composer${NC}                  Regenerate the Composer overlay from Core sysexts"
+    echo -e "  ${BOLD}patch [<id>] [<site>]${NC}     Apply one Gerrit patch, or all from config"
+    echo -e "  ${BOLD}worktree${NC}                  Manage side-by-side Core checkouts"
+    echo -e "  ${BOLD}cs [setup|doctor]${NC}         Prepare this instance for Core contribution"
+    echo -e "  ${BOLD}herdr [<name>|new]${NC}        Open Core worktrees as herdr workspaces"
+    echo -e "  ${BOLD}exec <site> <cmd>${NC}         Run a command in a site's PHP/root/database"
+    echo -e "  ${BOLD}reset [<site>]${NC}            Reset Core to current branch + rebuild"
+    echo -e "  ${BOLD}delete [<site>]${NC}           Wipe DB + fileadmin, fresh setup (--all for every site)"
+    echo -e "  ${BOLD}help${NC}                      Show this help"
+    echo ""
+    echo -e "  ${DIM}worktree and herdr have their own help: ddev tryout worktree help${NC}"
     echo ""
     echo "Custom extensions:"
     echo "  Place extensions in packages/ and run:"
@@ -699,6 +927,7 @@ case "${ACTION}" in
     patch)    cmd_patch "$@" ;;
     worktree) cmd_worktree "$@" ;;
     cs)       cmd_cs "$@" ;;
+    herdr)    cmd_herdr "$@" ;;
     exec)     cmd_exec "$@" ;;
     reset)    cmd_reset "$@" ;;
     delete)   cmd_delete "$@" ;;
