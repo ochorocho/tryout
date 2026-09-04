@@ -138,7 +138,7 @@ ddev tryout exec <site> <cmd>   Run a command in a site's PHP, root and database
 
 ddev tryout herdr               Open every Core worktree as a herdr workspace
 ddev tryout herdr new           Create a worktree and open it
-ddev tryout herdr setup-keys    Bind prefix+shift+G to that
+ddev tryout herdr setup-keys    Bind the three herdr keys (see below)
 ddev tryout herdr unsetup-keys  Undo the binding
 
 ddev tryout cs                  Prepare instance for Core contribution
@@ -619,7 +619,7 @@ ddev tryout herdr setup-keys --yes  # skip the question
 ddev tryout herdr unsetup-keys      # removes it again
 ```
 
-That binds **two** keys:
+That binds **three** keys:
 
 | Key | What it opens |
 |---|---|
@@ -632,10 +632,26 @@ That binds **two** keys:
 the key when it finishes, and `ctrl+b ?` lists every active binding.
 
 The menu covers every command the CLI dispatches, with `worktree` and `cs` as
-submenus. It runs instant commands (`status`, `worktree list`, `cs doctor`) in the
-popup itself, and pushes anything slow (`serve`, `use`, `reset`, `checkout`,
-`cs setup`) into a new pane you can watch. Destructive ones — `delete`,
-`worktree remove`, `cs uninstall` — make you type a confirmation first.
+submenus. It runs instant commands (`status`, `worktree list`, `herdr jobs`) in the
+popup itself (also `worktree adopt` and `help`), and pushes anything slow
+(`serve`, `use`, `reset`, `checkout`,
+`cs doctor`, `cs setup`) into a new pane you can watch. Destructive ones —
+`delete`, `worktree remove`, `reset`, `checkout`, `cs uninstall` — make you type a
+confirmation first.
+
+```text
+ctrl+b shift+T
+
+  1 status        7 composer          2 worktree…        8 cs…
+  2 worktree…     8 cs…                 1 list             1 doctor
+  3 herdr new     9 reset               2 add              2 setup
+  4 patch         0 delete              3 use              3 uninstall
+  5 checkout      e exec                4 serve            q back
+  6 download      j jobs                5 unserve
+                  d dashboard           6 remove
+                  h help  q quit        7 adopt
+                                        q back
+```
 
 Flags are the exception: the menu prompts for names, not options, so
 `download --reset`, `worktree add --php 8.2` and `delete --all` stay CLI-only.
@@ -688,9 +704,8 @@ ddev tryout worktree adopt             # move them into the project
 > ctrl-click — so the menu is a popup of our own rather than tryout entries appearing
 > in herdr's right-click menu.
 
-> herdr has **one** global config, so this rebinds `prefix+shift+G` in every session,
-> not just tryout's. Pressed outside a tryout project, the popup says so and does
-> nothing.
+> herdr has **one** global config, so these keys are live in every session, not just
+> tryout's. Pressed outside a tryout project, each popup says so and does nothing.
 
 Manage the session like any other:
 
