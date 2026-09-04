@@ -482,6 +482,11 @@ ddev tryout worktree rename v13 old # rename the checkout, keep the branch
 ddev tryout worktree help           # flags and the full picture
 ```
 
+Without `--php`, a served worktree gets **the highest PHP its own Core accepts** —
+read from `require.php` in that branch's `composer.json`, not from the project's
+PHP version. A 13.4 worktree (`^8.2`) and a main one (`^8.5`) therefore get the
+right runtime each, and a branch with an upper bound like `>=8.2 <8.4` gets 8.3.
+
 `add` takes `--branch` (a real local branch instead of a detached HEAD), `--serve`,
 `--php 8.2` (which implies `--serve`), and `--herdr` to open it as a
 [herdr workspace](#opening-worktrees-in-herdr) straight away.
@@ -888,7 +893,7 @@ bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no 
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
 bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
-bats tests --filter-tags '!release,!lifecycle'   # the 98 fast tests
+bats tests --filter-tags '!release,!lifecycle'   # the 100 fast tests
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 

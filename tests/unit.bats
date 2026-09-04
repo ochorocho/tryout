@@ -1023,6 +1023,43 @@ STUB
   assert_failure
 }
 
+@test "the default PHP comes from the branch's own constraint" {
+  # Core states its requirement per branch — ^8.5 on main, ^8.2 on 13.4 — so the
+  # project's PHP is the wrong default for a worktree on another branch. An upper
+  # bound has to be honoured too: reading only the floor would hand a capped
+  # branch a PHP it rejects.
+  set -eu -o pipefail
+  command -v php >/dev/null 2>&1 || skip 'php not available'
+
+  mkdir -p "${FAKEROOT}/typo3-core-capped" "${FAKEROOT}/typo3-core-open" \
+           "${FAKEROOT}/typo3-core-nojson"
+  printf '{"require":{"php":">=8.2 <8.4"}}' > "${FAKEROOT}/typo3-core-capped/composer.json"
+  printf '{"require":{"php":"^8.2"}}'       > "${FAKEROOT}/typo3-core-open/composer.json"
+  printf '{}'                               > "${FAKEROOT}/typo3-core-nojson/composer.json"
+
+  # Stub the container lookup: these are the versions the web image ships.
+  run env DDEV_PHP_VERSION=8.5 bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    available_php_versions() { printf '8.2\n8.3\n8.4\n8.5\n'; }
+    printf '%s %s %s' \
+      \"\$(best_php_for_worktree capped)\" \
+      \"\$(best_php_for_worktree open)\" \
+      \"\$(best_php_for_worktree nojson)\"
+  "
+  assert_success
+  # capped stops at 8.3; open takes the highest; no constraint falls back.
+  assert_output "8.3 8.5 8.5"
+}
+
+@test "the PHP constraint is read from require, not config.platform" {
+  # A naive grep for "php" finds config.platform.php first — a pinned build
+  # version, not the constraint.
+  set -eu -o pipefail
+  run grep -q 'require.*\]\["php"\]' "${DIR}/tryout/functions.sh"
+  assert_success
+}
+
 @test "job ids do not collide within the same second" {
   # $$ is constant for the menu process and date is second-granular, so two jobs
   # launched together shared an id: the second overwrote the first's .rc, and a

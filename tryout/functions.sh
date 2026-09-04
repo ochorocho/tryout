@@ -1348,6 +1348,64 @@ delete_site() {
     success "Setup complete"
 }
 
+# PHP versions the web container actually provides, low to high. Read from the
+# image rather than hardcoded: DDEV adds versions over time and does not validate
+# --php-version, so a stale list here would silently pick a PHP that is not there.
+available_php_versions() {
+    ddev exec "ls /usr/bin/php8.* 2>/dev/null" 2>/dev/null \
+        | sed 's|.*/php||' \
+        | grep -E '^8\.[0-9]+$' \
+        | sort -V
+}
+
+# The highest available PHP a worktree's Core will accept.
+#
+# Core states its requirement per branch — "^8.5" on main, "^8.2" on 13.4 — so the
+# project's own PHP is the wrong default for a worktree on another branch. Falls
+# back to the project version when the constraint cannot be read, which keeps a
+# missing or unparsable composer.json from blocking a serve.
+best_php_for_worktree() {
+    local name="$1" dir constraint v best=""
+    dir="$(core_worktree_dir "${name}")"
+    [ -f "${dir}/composer.json" ] || { echo "${DDEV_PHP_VERSION:-8.5}"; return; }
+
+    # require.php specifically — a naive grep for "php" finds config.platform.php
+    # first, which is a pinned build version, not the constraint.
+    constraint="$(php -r '
+        $f = $argv[1];
+        $d = json_decode(@file_get_contents($f), true);
+        echo is_array($d) ? ($d["require"]["php"] ?? "") : "";
+    ' "${dir}/composer.json" 2>/dev/null)"
+    [ -n "${constraint}" ] || { echo "${DDEV_PHP_VERSION:-8.5}"; return; }
+
+    # Let PHP judge each candidate against the constraint. Core uses "^8.x", but an
+    # upper bound like ">=8.2 <8.4" has to be honoured too — reading only the floor
+    # would hand a capped branch a PHP it rejects.
+    while IFS= read -r v; do
+        [ -n "${v}" ] || continue
+        php -r '
+            $c = $argv[1]; $v = $argv[2] . ".0"; $ok = true;
+            // Split on whitespace and commas: every clause must hold.
+            foreach (preg_split("/[\s,]+/", trim($c), -1, PREG_SPLIT_NO_EMPTY) as $part) {
+                if (preg_match("/^\^(\d+)\.(\d+)/", $part, $m)) {
+                    // ^8.2 means >=8.2 and <9.0
+                    $ok = $ok && version_compare($v, "{$m[1]}.{$m[2]}.0", ">=")
+                              && version_compare($v, ($m[1] + 1) . ".0.0", "<");
+                } elseif (preg_match("/^(>=|<=|>|<|=)?\s*(\d+(?:\.\d+){0,2})$/", $part, $m)) {
+                    $op = $m[1] ?: ">=";
+                    $ok = $ok && version_compare($v, $m[2], $op === "=" ? "==" : $op);
+                }
+            }
+            exit($ok ? 0 : 1);
+        ' "${constraint}" "${v}" 2>/dev/null && best="${v}"
+    done <<EOF
+$(available_php_versions)
+EOF
+
+    [ -n "${best}" ] || best="${DDEV_PHP_VERSION:-8.5}"
+    echo "${best}"
+}
+
 # --- Serve / unserve ---
 
 # Build a site's own composer.json from the root one, repointing the Core path repo
@@ -1371,7 +1429,12 @@ serve_worktree() {
         return 1
     fi
 
-    php="${php:-${DDEV_PHP_VERSION:-8.5}}"
+    # No --php given: take the highest the branch's Core will accept, not the
+    # project's version — a 13.4 worktree in an 8.5 project needs its own answer.
+    if [ -z "${php}" ]; then
+        php="$(best_php_for_worktree "${name}")"
+        info "PHP ${php} (highest this Core accepts; --php overrides)"
+    fi
     dir=$(site_dir "${name}")
     mkdir -p "${dir}/config/system" "${dir}/var"
 
