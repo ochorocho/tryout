@@ -44,6 +44,114 @@ success() { echo -e "${GREEN}==>${NC} $*"; }
 warn()    { echo -e "${YELLOW}==>${NC} $*"; }
 error()   { echo -e "${RED}✗${NC} $*" >&2; }
 
+# --- gum-backed presentation ------------------------------------------------
+# gum (https://github.com/charmbracelet/gum) is a hard requirement, checked in
+# install.yaml alongside git. Everything goes through these wrappers rather than
+# calling gum directly, because two of its behaviours have to be handled in ONE
+# place:
+#
+#   1. `gum choose` and friends need a controlling terminal. Without one they
+#      print "could not open TTY" AND EXIT 0 — so the exit code lies, and the
+#      output is the only reliable signal.
+#   2. `gum spin` writes escape sequences when its stdout is not a terminal, so
+#      it must never wrap a command whose output is captured.
+
+have_gum() { command -v gum >/dev/null 2>&1; }
+
+# An interactive prompt is always read as `x="$(ui_choose ...)"`, so stdout is a
+# pipe by definition — testing it would disable the chooser everywhere. gum draws
+# its UI on stderr, so stdin and stderr are what must be terminals.
+have_tty() { [ -t 0 ] && [ -t 2 ]; }
+
+# A bordered block. Content on stdin.
+ui_box() {
+    local title="${1:-}"
+    if have_gum; then
+        if [ -n "${title}" ]; then
+            gum style --border rounded --padding "0 1" --border-foreground 244                 "$(gum style --bold "${title}")" "$(cat)"
+        else
+            gum style --border rounded --padding "0 1" --border-foreground 244 "$(cat)"
+        fi
+    else
+        [ -n "${title}" ] && echo -e "${BOLD}${title}${NC}"
+        cat
+    fi
+}
+
+# A table. CSV on stdin, first line the header.
+ui_table() {
+    if have_gum; then
+        gum table --print --separator "," 2>/dev/null && return 0
+    fi
+    # Fallback: readable columns without the borders.
+    sed 's/,/	/g' | column -t -s $'	' 2>/dev/null || cat
+}
+
+# Pick one of the arguments. Echoes the choice; empty means cancelled.
+# NEVER trust gum's exit code here — see the note above.
+ui_choose() {
+    local prompt="$1"; shift
+    [ $# -gt 0 ] || return 1
+
+    if have_gum && have_tty; then
+        local picked
+        picked="$(printf '%s
+' "$@" | gum choose --header "${prompt}" 2>/dev/null)"
+        # An empty answer means no TTY or a cancel; either way, nothing was chosen.
+        [ -n "${picked}" ] && { printf '%s' "${picked}"; return 0; }
+        return 1
+    fi
+
+    # No gum, or no terminal for it. Reading a piped answer still works, but the
+    # prompt itself is only drawn when there is a terminal to draw it on —
+    # otherwise it lands in whatever is capturing this.
+    if [ -t 2 ]; then
+        printf '  %s
+' "$*" >&2
+        printf '  %s: ' "${prompt}" >&2
+    fi
+    local answer=""
+    read -r answer || return 1
+    # An arrow key at a plain read arrives as a full escape sequence (ESC [ B).
+    # Dropping the ESC byte alone would leave a printable "[B" that reads like a
+    # typed name, so strip the whole sequence, then any stray control bytes.
+    answer="$(printf '%s' "${answer}" \
+        | sed $'s/\033\[[0-9;]*[A-Za-z]//g; s/\033[NOP]*[A-Za-z]//g' \
+        | tr -d '\000-\037')"
+    [ -n "${answer}" ] || return 1
+    printf '%s' "${answer}"
+}
+
+# Free text. Echoes the answer; empty means cancelled.
+ui_input() {
+    local prompt="$1" placeholder="${2:-}"
+    if have_gum && have_tty; then
+        local v
+        v="$(gum input --header "${prompt}" --placeholder "${placeholder}" 2>/dev/null)"
+        [ -n "${v}" ] && { printf '%s' "${v}"; return 0; }
+        return 1
+    fi
+
+    if [ -t 2 ]; then printf '  %s: ' "${prompt}" >&2; fi
+    local answer=""
+    read -r answer || return 1
+    [ -n "${answer}" ] || return 1
+    printf '%s' "${answer}"
+}
+
+# Run a command behind a spinner, preserving its exit code — the error handling
+# throughout this file depends on those codes surviving. Only spins on a terminal:
+# piped, gum would emit escape sequences into whatever is reading.
+ui_spin() {
+    local title="$1"; shift
+    if have_gum && [ -t 1 ]; then
+        gum spin --spinner dot --title "${title}" --show-error -- "$@"
+        return $?
+    fi
+    if [ -t 2 ]; then info "${title}" >&2; fi
+    "$@"
+}
+
 # In a linked worktree .git is a file pointing at the shared object store, so
 # resolve it to the common dir — hooks and config live there, not per worktree.
 # Must run before branch detection, which needs a usable git dir.

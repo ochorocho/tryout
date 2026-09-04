@@ -41,6 +41,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # gum is a hard requirement of the add-on (checked in pre_install_actions),
+      # so every job needs it on the runner before the add-on is installed.
+      - name: Install gum
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://repo.charm.sh/apt/gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
+            | sudo tee /etc/apt/sources.list.d/charm.list >/dev/null
+          sudo apt-get update && sudo apt-get install -y gum
+          gum --version
+
       - uses: ddev/github-action-add-on-test@v2
         with:
           ddev_version: ${{ matrix.ddev_version }}
@@ -70,6 +82,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # gum is a hard requirement of the add-on (checked in pre_install_actions),
+      # so every job needs it on the runner before the add-on is installed.
+      - name: Install gum
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://repo.charm.sh/apt/gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
+            | sudo tee /etc/apt/sources.list.d/charm.list >/dev/null
+          sudo apt-get update && sudo apt-get install -y gum
+          gum --version
+
       - uses: ddev/github-action-add-on-test@v2
         with:
           ddev_version: ${{ matrix.ddev_version }}
@@ -92,6 +116,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # gum is a hard requirement of the add-on (checked in pre_install_actions),
+      # so every job needs it on the runner before the add-on is installed.
+      - name: Install gum
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://repo.charm.sh/apt/gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
+            | sudo tee /etc/apt/sources.list.d/charm.list >/dev/null
+          sudo apt-get update && sudo apt-get install -y gum
+          gum --version
+
       - uses: ddev/github-action-add-on-test@v2
         with:
           ddev_version: ${{ matrix.ddev_version }}

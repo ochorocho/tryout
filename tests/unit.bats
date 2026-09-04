@@ -1209,3 +1209,133 @@ STUB
   assert_line "--no-agent"
   assert_line "--no-focus"
 }
+
+# --- gum presentation layer -------------------------------------------------
+# These pin the two gum behaviours that would otherwise cause silent damage:
+# spin must not swallow exit codes (the error handling depends on them), and
+# choose reports success without a TTY while choosing nothing.
+
+@test "ui_spin preserves the wrapped command's exit code" {
+  set -eu -o pipefail
+
+  # The whole error-handling layer branches on these codes; a spinner that
+  # swallows them would report every failed serve/checkout as a success.
+  run helper_eval 'ui_spin "working" true'
+  assert_success
+
+  run helper_eval 'ui_spin "working" false'
+  assert_failure
+
+  run helper_eval 'ui_spin "working" sh -c "exit 3"'
+  [ "$status" -eq 3 ]
+}
+
+@test "ui_spin does not emit escape sequences when its output is captured" {
+  set -eu -o pipefail
+
+  # gum spin writes control characters to a non-TTY; the helper must run the
+  # command plainly there, or captured output is corrupted.
+  run helper_eval 'ui_spin "working" printf hello'
+  assert_success
+  assert_output --partial "hello"
+  refute_output --partial $'\e['
+}
+
+@test "ui_choose fails without a TTY instead of reporting a bogus choice" {
+  set -eu -o pipefail
+
+  # gum choose exits 0 with no output when it cannot open a terminal. Trusting
+  # that exit code would make a cancelled prompt look like a real answer.
+  run helper_eval 'ui_choose "pick one" alpha beta </dev/null'
+  assert_failure
+  refute_output --partial "alpha"
+}
+
+@test "ui_choose falls back to a plain read when a name is piped in" {
+  set -eu -o pipefail
+
+  run helper_eval 'printf "beta\n" | ui_choose "pick one" alpha beta'
+  assert_success
+  assert_output --partial "beta"
+}
+
+@test "ui_table renders rows and degrades without gum" {
+  set -eu -o pipefail
+
+  run helper_eval 'printf "NAME,STATE\nmain,clean\n" | ui_table'
+  assert_success
+  assert_output --partial "NAME"
+  assert_output --partial "main"
+  assert_output --partial "clean"
+
+  # With gum off the PATH the data must still come through, unbordered.
+  run helper_eval 'printf "NAME,STATE\nmain,clean\n" | PATH=/usr/bin:/bin ui_table'
+  assert_success
+  assert_output --partial "main"
+}
+
+@test "worktree list --plain is the parseable contract, the default is a table" {
+  set -eu -o pipefail
+
+  # tests/e2e/login.spec.ts discovers served sites by regex over --plain. The
+  # bordered default table does not match it, so the flag must keep working.
+  run grep -n "worktree', 'list', '--plain'" "${DIR}/tests/e2e/login.spec.ts"
+  assert_success
+
+  # The flag has to reach the list branch, not be swallowed as a worktree name.
+  run grep -c -- '--plain' "${DIR}/commands/host/tryout"
+  assert_success
+}
+
+@test "install.yaml requires gum on the host, like git" {
+  set -eu -o pipefail
+
+  # gum renders every table and prompt; without the pre-install check the
+  # failure surfaces much later as a confusing error inside a command.
+  run grep -A2 'command -v gum' "${DIR}/install.yaml"
+  assert_success
+  assert_output --partial "gum"
+
+  # And the message has to say how to get it.
+  run grep -q 'github.com/charmbracelet/gum' "${DIR}/install.yaml"
+  assert_success
+}
+
+@test "have_tty tests stderr, not stdout, so the chooser survives \$(...)" {
+  set -eu -o pipefail
+
+  # Every prompt is read as x="$(ui_choose ...)", which makes stdout a pipe. A
+  # have_tty that required [ -t 1 ] would silently disable gum's chooser in the
+  # one place it is meant to run — and the plain read it fell back to returned
+  # the arrow-key escape sequence as the "choice".
+  run grep -A1 '^have_tty()' "${DIR}/tryout/functions.sh"
+  assert_success
+  refute_output --partial '-t 1'
+  assert_output --partial '-t 2'
+}
+
+@test "the plain prompt never returns a control sequence as an answer" {
+  set -eu -o pipefail
+
+  # An arrow key at a plain `read` arrives as an escape sequence; treating it as
+  # a worktree name would send a command off at a nonexistent target.
+  run helper_eval 'printf "\033[B\n" | ui_choose "pick" alpha beta'
+  assert_failure
+}
+
+@test "the herdr menu loads functions.sh outside a ddev command" {
+  set -eu -o pipefail
+
+  # functions.sh derives PROJECT_ROOT from DDEV_APPROOT, which DDEV exports only
+  # to its own commands. The menu is launched by herdr, so without setting it the
+  # library aborts under `set -u` and the popup dies with no output at all.
+  run grep -q 'export DDEV_APPROOT=' "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+
+  # And it must be set before the library is sourced, not after.
+  local export_line source_line
+  export_line=$(grep -n 'export DDEV_APPROOT=' "${DIR}/tryout/herdr-menu.sh" | head -1 | cut -d: -f1)
+  source_line=$(grep -n '^\. "\${APPROOT}/.ddev/tryout/functions.sh"' "${DIR}/tryout/herdr-menu.sh" | head -1 | cut -d: -f1)
+  [ -n "${export_line}" ] && [ -n "${source_line}" ]
+  [ "${export_line}" -lt "${source_line}" ]
+}

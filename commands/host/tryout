@@ -34,19 +34,22 @@ reject_args() {
 
 cmd_status() {
     reject_args status "$@" || return 1
+    echo ""
+    # The body writes the report and returns early in places; capturing it here
+    # keeps that flow and puts the framing in exactly one spot.
+    cmd_status_body | ui_box "TYPO3 tryout — Status"
+    echo ""
+}
+
+cmd_status_body() {
     local OK="${GREEN}✓${NC}"
     local WARN="${YELLOW}!${NC}"
     local FAIL="${RED}✗${NC}"
-
-    echo ""
-    echo -e "${BOLD}TYPO3 tryout — Status${NC}"
-    echo "─────────────────────────────────────"
 
     # Core repository
     if [ ! -d "${CORE_DIR}/.git" ] && [ ! -f "${CORE_DIR}/.git" ]; then
         echo -e "  Core:      ${FAIL} not cloned"
         echo -e "             ${DIM}→ ddev tryout download${NC}"
-        echo "─────────────────────────────────────"
         return
     fi
 
@@ -162,8 +165,6 @@ cmd_status() {
 
     # Site URL
     echo -e "  Site:      ${BOLD}${DDEV_PRIMARY_URL}${NC}"
-    echo "─────────────────────────────────────"
-    echo ""
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -412,8 +413,7 @@ cmd_checkout() {
         info "Switching site '${site}' ($(basename "${CORE_DIR}"))"
     fi
 
-    info "Fetching latest branches..."
-    git -C "${CORE_DIR}" fetch origin
+    ui_spin "Fetching latest branches" git -C "${CORE_DIR}" fetch origin
 
     # Verify the branch exists on the remote
     if ! git -C "${CORE_DIR}" ls-remote --exit-code --heads origin "${target_branch}" >/dev/null 2>&1; then
@@ -555,6 +555,8 @@ cmd_worktree() {
 
         list)
             require_core
+            local plain="false" _wt_rows=""
+            if [ "${1:-}" = "--plain" ]; then plain="true"; fi
             echo ""
             echo -e "${BOLD}Core worktrees${NC}"
             if ! core_is_symlinked; then
@@ -563,24 +565,38 @@ cmd_worktree() {
                 echo ""
                 return 0
             fi
-            printf "  %-12s %-12s %-12s %-6s %-5s %-10s %s\n" \
-                "NAME" "HEAD" "BRANCH" "STATE" "PHP" "DB" "URL"
-            list_core_worktrees | while IFS=$'\t' read -r name head branch dirty active; do
-                local php="-" db="-" url="" marker=""
-                if site_is_served "${name}"; then
-                    php=$(site_php_version "${name}")
-                    db=$(site_database "${name}")
-                    url="https://$(site_hostname "${name}")"
-                elif [ -n "${active}" ]; then
-                    php="${DDEV_PHP_VERSION:-}"
-                    db="db"
-                    url="${DDEV_PRIMARY_URL}"
-                fi
-                [ -n "${active}" ] && marker=" ${GREEN}← primary${NC}"
-                printf "  %-12s %-12s %-12s %-6s %-5s %-10s %s" \
-                    "${name}" "${head}" "${branch}" "${dirty}" "${php}" "${db}" "${url}"
-                echo -e "${marker}"
-            done
+            # --plain is the machine-readable contract: the padded columns other
+            # tools already parse (tests/e2e discovers served sites from it). The
+            # default is a real table for humans.
+            _wt_rows="$(mktemp "${TMPDIR:-/tmp}/tryout-wt.XXXXXX")"
+            {
+                printf "NAME,HEAD,BRANCH,STATE,PHP,DB,URL\n"
+                list_core_worktrees | while IFS=$'\t' read -r name head branch dirty active; do
+                    local php="-" db="-" url="" marker=""
+                    if site_is_served "${name}"; then
+                        php=$(site_php_version "${name}")
+                        db=$(site_database "${name}")
+                        url="https://$(site_hostname "${name}")"
+                    elif [ -n "${active}" ]; then
+                        php="${DDEV_PHP_VERSION:-}"
+                        db="db"
+                        url="${DDEV_PRIMARY_URL}"
+                    fi
+                    if [ -n "${active}" ]; then marker=" ← primary"; fi
+                    printf "%s,%s,%s,%s,%s,%s,%s\n" \
+                        "${name}" "${head}" "${branch}" "${dirty}" "${php}" "${db}" \
+                        "${url}${marker}"
+                done
+            } > "${_wt_rows}"
+
+            if [ "${plain}" = "true" ]; then
+                # Same shape as before: two leading spaces, padded columns.
+                awk -F, '{ printf "  %-12s %-12s %-12s %-6s %-5s %-10s %s\n", \
+                             $1,$2,$3,$4,$5,$6,$7 }' "${_wt_rows}"
+            else
+                ui_table < "${_wt_rows}"
+            fi
+            rm -f "${_wt_rows}"
             echo ""
             echo -e "  ${DIM}served sites have their own URL, PHP and database;${NC}"
             echo -e "  ${DIM}the primary is whichever worktree 'use' points at${NC}"

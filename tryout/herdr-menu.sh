@@ -59,6 +59,17 @@ command -v ddev >/dev/null 2>&1 || fail "ddev not found on the host."
 # running inside this modal popup instead of a pane.
 command -v jq >/dev/null 2>&1 || fail "jq not found on the host — needed to launch jobs."
 
+# functions.sh derives PROJECT_ROOT from DDEV_APPROOT, which DDEV exports only to
+# its own commands — this popup is launched by herdr, so it has to be set here or
+# `set -u` aborts the moment the library is sourced.
+export DDEV_APPROOT="${DDEV_APPROOT:-${APPROOT}}"
+
+# The ui_* helpers back every prompt below. Sourced here rather than in each
+# subshell so ask_name() can use them; the library is side-effect free.
+# shellcheck source=/dev/null
+. "${APPROOT}/.ddev/tryout/functions.sh" >/dev/null 2>&1 \
+    || fail "Could not load .ddev/tryout/functions.sh"
+
 cd "${APPROOT}" || fail "Cannot enter ${APPROOT}"
 PROJECT="$(basename "${APPROOT}")"
 
@@ -226,9 +237,24 @@ ASKED=""
 ask_name() {
     local prompt="$1" options="$2"
     ASKED=""
-    [ -n "${options}" ] && printf "  ${DIM}%s${NC}\n" "$(echo "${options}" | tr '\n' ' ')"
-    printf "  %s: " "${prompt}"
-    read -r ASKED || { printf "\n  cancelled\n"; pause; return 1; }
+
+    # With candidates, pick from a list instead of typing a name from memory —
+    # this popup always has a TTY, so gum's chooser is the normal path here.
+    # Without candidates (a new worktree's name) it is free text.
+    if [ -n "${options}" ]; then
+        local list=()
+        while IFS= read -r line; do
+            [ -n "${line}" ] && list+=("${line}")
+        done <<< "${options}"
+        if [ ${#list[@]} -gt 0 ]; then
+            ASKED="$(ui_choose "${prompt}" "${list[@]}")" || {
+                printf "\n  cancelled\n"; pause; return 1; }
+            [ -n "${ASKED}" ] || { printf "\n  cancelled\n"; pause; return 1; }
+            return 0
+        fi
+    fi
+
+    ASKED="$(ui_input "${prompt}")" || { printf "\n  cancelled\n"; pause; return 1; }
     [ -n "${ASKED}" ] || { printf "\n  cancelled\n"; pause; return 1; }
 }
 

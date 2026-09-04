@@ -16,8 +16,10 @@ function discoverSites(): Site[] {
   if (!APPROOT) return [];
   // `worktree list` prints NAME … URL; take the pairs it reports rather than
   // hard-coding hostnames, so serving another worktree is covered automatically.
+  // --plain is the machine-readable contract — without it the command renders a
+  // bordered gum table that this regex cannot match.
   // The command colours its output; strip the escapes before matching.
-  const out = sh('ddev', ['tryout', 'worktree', 'list'])
+  const out = sh('ddev', ['tryout', 'worktree', 'list', '--plain'])
     .replace(/\u001b\[[0-9;]*m/g, '');
   const sites: Site[] = [];
   for (const line of out.split('\n')) {

@@ -13,6 +13,30 @@ pre_install_actions:
       exit 1
     fi
 
+    # gum renders every table, prompt and spinner the commands produce. It cannot
+    # be sourced from functions.sh here — the payload is not copied yet — so the
+    # platform hint is spelled out inline, matching missing_tool()'s wording.
+    if ! command -v gum >/dev/null 2>&1; then
+      echo "tryout needs 'gum' on the host (it renders the tables and prompts)."
+      case "$(uname -s 2>/dev/null || echo "${OSTYPE:-}")" in
+        Darwin|darwin*) echo "  -> brew install gum" ;;
+        Linux|linux*)
+          if command -v apt-get >/dev/null 2>&1; then
+            echo "  -> sudo apt-get install gum"
+          elif command -v dnf >/dev/null 2>&1; then
+            echo "  -> sudo dnf install gum"
+          elif command -v pacman >/dev/null 2>&1; then
+            echo "  -> sudo pacman -S gum"
+          else
+            echo "  -> install 'gum' with your package manager"
+          fi
+          ;;
+        *) echo "  -> see https://github.com/charmbracelet/gum#installation" ;;
+      esac
+      echo "  https://github.com/charmbracelet/gum#installation"
+      exit 1
+    fi
+
 project_files:
   - commands/host/tryout
   - commands/host/autocomplete/tryout
