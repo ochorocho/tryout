@@ -64,37 +64,124 @@ PROJECT="$(basename "${APPROOT}")"
 
 # --- running commands ------------------------------------------------------
 
-# Instant commands print here; the popup stays until the user has read them.
-run_here() {
-    printf '\n'
-    ddev tryout "$@"
-    pause
-    exit 0
+# One key. ESC and q both mean "back": ESC used to fall into the catch-all and
+# close the whole popup from a submenu, which is not what anyone means by it.
+KEY=""
+read_key() {
+    KEY=""
+    read -r -n1 KEY
+    # A single-key read leaves the Enter behind; drain it so the next `read -r`
+    # does not take it as an empty answer.
+    read -r -t 0.01 _drain 2>/dev/null || true
+    case "${KEY}" in
+        $'\e') KEY="q" ;;
+    esac
 }
 
-# Anything that takes real time goes to a pane: the popup is modal, so a long
-# command inside it blocks the whole session and cannot be watched alongside
-# anything else. Falls back to running here when we are not inside herdr.
-# Hand a slow command to the job runner, which gives it a labelled pane and records
-# its exit code. Outside herdr there is no pane to hand it to, so it runs here.
+# Instant commands run here and their output goes to the viewer, so it scrolls and
+# ESC comes back to the menu.
+run_and_show() {
+    local out
+    printf "\n  ${DIM}running…${NC}\n"
+    out="$(ddev tryout "$@" 2>&1)"
+    show_output "$*" "" "${out}"
+}
+
+# Slow commands go to a pane of their own, which keeps them watchable full-size and
+# out of this modal popup. The menu stays open.
 run_in_pane() {
     if [ "${HERDR_ENV:-}" != "1" ] || ! command -v herdr >/dev/null 2>&1; then
-        run_here "$@"
+        run_and_show "$@"
+        return 0
     fi
 
     # shellcheck disable=SC1090
-    . "${APPROOT}/.ddev/tryout/functions.sh" >/dev/null 2>&1 || run_here "$@"
+    . "${APPROOT}/.ddev/tryout/functions.sh" >/dev/null 2>&1 || { run_and_show "$@"; return 0; }
 
     local id
     if id=$(start_tryout_job "$*" "$@") && [ -n "${id}" ]; then
-        printf "\n${GREEN}✓${NC} started in a pane: ${BOLD}ddev tryout %s${NC}\n" "$*"
-        printf "  ${DIM}you will be notified when it finishes${NC}\n"
+        printf "\n${GREEN}✓${NC} started: ${BOLD}ddev tryout %s${NC}\n" "$*"
+        printf "  ${DIM}o watch it   any other key back to the menu${NC} "
+        local k=""
+        read -r -n1 k
+        read -r -t 0.01 _drain 2>/dev/null || true
+        case "${k}" in
+            o|O) show_job_output "${id}" ;;
+        esac
     else
         # Never claim success we did not verify — that was the old behaviour.
         printf "\n${YELLOW}!${NC} could not start a pane; running here instead\n"
-        run_here "$@"
+        run_and_show "$@"
     fi
-    exit 0
+    return 0
+}
+
+# --- the output viewer -----------------------------------------------------
+# A popup is a singleton, session-modal terminal with no pane id, so it cannot hold
+# real herdr panes: this draws the view itself, full height, replacing the menu.
+
+# show_output <title> <state> <text>
+show_output() {
+    local title="$1" state="$2" text="$3"
+    local -a lines=()
+    local top=0 rows key
+    while IFS= read -r l; do lines+=("${l}"); done <<< "${text}"
+    rows=$(( $(tput lines 2>/dev/null || echo 24) - 6 ))
+    [ "${rows}" -lt 5 ] && rows=5
+
+    while :; do
+        printf '\033[H\033[2J'
+        printf "  ${BOLD}%s${NC}  %b\n\n" "${title}" "${state}"
+        local i=0
+        while [ "${i}" -lt "${rows}" ]; do
+            local n=$(( top + i ))
+            [ "${n}" -ge "${#lines[@]}" ] && break
+            printf '  %s\n' "${lines[$n]}"
+            i=$(( i + 1 ))
+        done
+        printf "\n  ${DIM}↑↓/jk scroll  g/G top/bottom  r refresh  ESC back  (%s/%s)${NC} " \
+            "$(( top + 1 ))" "${#lines[@]}"
+
+        read_key
+        case "${KEY}" in
+            q)   return 0 ;;
+            j)   [ $(( top + rows )) -lt "${#lines[@]}" ] && top=$(( top + 1 )) ;;
+            k)   [ "${top}" -gt 0 ] && top=$(( top - 1 )) ;;
+            g)   top=0 ;;
+            G)   top=$(( ${#lines[@]} - rows )); [ "${top}" -lt 0 ] && top=0 ;;
+            r)   return 2 ;;
+            *)   [ $(( top + rows )) -lt "${#lines[@]}" ] && top=$(( top + rows )) ;;
+        esac
+    done
+}
+
+# Read a job's output out of the pane it runs in, and say so plainly when that pane
+# has gone. `pane read` answers with a JSON error AND exit code 0 for a missing
+# pane, so the text is the only reliable signal.
+show_job_output() {
+    local id="$1" pane cmd state text rc
+    . "${APPROOT}/.ddev/tryout/functions.sh" >/dev/null 2>&1 || return 0
+    pane="$(cat "${TRYOUT_JOBS_DIR}/${id}.pane" 2>/dev/null)"
+    cmd="$(cat "${TRYOUT_JOBS_DIR}/${id}.cmd" 2>/dev/null)"
+
+    while :; do
+        if [ -f "${TRYOUT_JOBS_DIR}/${id}.rc" ]; then
+            rc="$(cat "${TRYOUT_JOBS_DIR}/${id}.rc" 2>/dev/null)"
+            if [ "${rc}" = "0" ]; then state="${GREEN}✓ finished${NC}"
+            else state="${RED}✗ exit ${rc}${NC}"; fi
+        else
+            state="${CYAN}⟳ running${NC}"
+        fi
+
+        text="$(herdr_cli pane read "${pane}" --source recent-unwrapped --lines 400 2>&1)"
+        case "${text}" in
+            *'"code":"pane_not_found"'*|*'pane_not_found'*)
+                text="  The pane this job ran in has been closed, so its output is gone."$'\n'"  The exit code above is still recorded." ;;
+        esac
+
+        show_output "${cmd}" "${state}" "${text}"
+        [ $? -eq 2 ] || return 0     # 2 = refresh, anything else = back
+    done
 }
 
 # Destructive commands name what they will affect and require it typed back.
@@ -103,7 +190,7 @@ confirm_destructive() {
     printf "\n${YELLOW}!${NC} %s\n" "${what}"
     printf "  type ${BOLD}%s${NC} to confirm: " "${expect}"
     read -r answer || return 1
-    [ "${answer}" = "${expect}" ] || { printf "\n  cancelled\n"; pause; exit 0; }
+    [ "${answer}" = "${expect}" ] || { printf "\n  cancelled\n"; pause; return 1; }
 }
 
 # --- pickers ---------------------------------------------------------------
@@ -135,8 +222,8 @@ ask_name() {
     ASKED=""
     [ -n "${options}" ] && printf "  ${DIM}%s${NC}\n" "$(echo "${options}" | tr '\n' ' ')"
     printf "  %s: " "${prompt}"
-    read -r ASKED || { printf "\n  cancelled\n"; pause; exit 0; }
-    [ -n "${ASKED}" ] || { printf "\n  cancelled\n"; pause; exit 0; }
+    read -r ASKED || { printf "\n  cancelled\n"; pause; return 1; }
+    [ -n "${ASKED}" ] || { printf "\n  cancelled\n"; pause; return 1; }
 }
 
 # --- menus -----------------------------------------------------------------
@@ -153,33 +240,31 @@ worktree_menu() {
     printf "  ${BOLD}7${NC} adopt         ${DIM}move stray checkouts into the project${NC}\n"
     printf "  ${BOLD}q${NC} back\n"
     printf "\n  choose: "
-    read -r -n1 key
-    # A single-key read leaves the Enter in the buffer; drain it so the next
-    # `read -r` does not take it as an empty answer.
-    read -r -t 0.01 _drain 2>/dev/null || true
+    read_key
+    key="${KEY}"
     printf '\n'
 
     case "${key}" in
-        1) run_here worktree list ;;
+        1) run_and_show worktree list ;;
         2) printf '\n'
-           ask_name "name" ""; name="${ASKED}"
+           ask_name "name" "" || return 0; name="${ASKED}"
            printf "  branch [current]: "; read -r branch || true
            run_in_pane worktree add "${name}" ${branch:+"${branch}"} ;;
         3) printf '\n'
-           ask_name "worktree" "$(worktree_names)"; name="${ASKED}"
+           ask_name "worktree" "$(worktree_names)" || return 0; name="${ASKED}"
            run_in_pane worktree use "${name}" ;;
         4) printf '\n'
-           ask_name "worktree" "$(worktree_names)"; name="${ASKED}"
+           ask_name "worktree" "$(worktree_names)" || return 0; name="${ASKED}"
            run_in_pane worktree serve "${name}" ;;
         5) printf '\n'
-           ask_name "served site" "$(served_names)"; name="${ASKED}"
+           ask_name "served site" "$(served_names)" || return 0; name="${ASKED}"
            run_in_pane worktree unserve "${name}" ;;
         6) printf '\n'
-           ask_name "worktree" "$(worktree_names)"; name="${ASKED}"
-           confirm_destructive "Removes the checkout typo3-core-${name} and any uncommitted work in it." "${name}"
+           ask_name "worktree" "$(worktree_names)" || return 0; name="${ASKED}"
+           confirm_destructive "Removes the checkout typo3-core-${name} and any uncommitted work in it." "${name}" || return 0
            run_in_pane worktree remove "${name}" --force ;;
-        7) run_here worktree adopt ;;
-        *) exit 0 ;;
+        7) run_and_show worktree adopt ;;
+        *) return 0 ;;
     esac
 }
 
@@ -191,8 +276,8 @@ cs_menu() {
     printf "  ${BOLD}3${NC} uninstall     ${DIM}remove hooks, reset the push URL${NC}\n"
     printf "  ${BOLD}q${NC} back\n"
     printf "\n  choose: "
-    read -r -n1 key
-    read -r -t 0.01 _drain 2>/dev/null || true
+    read_key
+    key="${KEY}"
     printf '\n'
 
     case "${key}" in
@@ -201,9 +286,9 @@ cs_menu() {
            read -r user || true
            # cs setup probes Gerrit over SSH, so it belongs in a pane.
            run_in_pane cs setup ${user:+"${user}"} ;;
-        3) confirm_destructive "Removes the Gerrit hooks and resets origin's push URL." "uninstall"
+        3) confirm_destructive "Removes the Gerrit hooks and resets origin's push URL." "uninstall" || return 0
            run_in_pane cs uninstall ;;
-        *) exit 0 ;;
+        *) return 0 ;;
     esac
 }
 
@@ -225,37 +310,35 @@ main_menu() {
     printf "  ${BOLD}d${NC} dashboard     ${DIM}live project view${NC}\n"
     printf "  ${BOLD}h${NC} help          ${BOLD}q${NC} quit\n"
     printf "\n  choose: "
-    read -r -n1 key
-    # A single-key read leaves the Enter in the buffer; drain it so the next
-    # `read -r` does not take it as an empty answer.
-    read -r -t 0.01 _drain 2>/dev/null || true
+    read_key
+    key="${KEY}"
     printf '\n'
 
     case "${key}" in
-        1) run_here status ;;
+        1) run_and_show status ;;
         2) worktree_menu ;;
         3) run_in_pane herdr new ;;
         4) printf '\n  change-id [empty = all from config]: '
            read -r id || true
            run_in_pane patch ${id:+"${id}"} ;;
         5) printf '\n'
-           ask_name "branch" ""; name="${ASKED}"
-           confirm_destructive "Switching branch discards uncommitted work in Core." "${name}"
+           ask_name "branch" "" || return 0; name="${ASKED}"
+           confirm_destructive "Switching branch discards uncommitted work in Core." "${name}" || return 0
            run_in_pane checkout "${name}" ;;
         6) run_in_pane download ;;
         7) run_in_pane composer ;;
         8) cs_menu ;;
-        9) confirm_destructive "Resets Core to its branch — uncommitted work is lost." "reset"
+        9) confirm_destructive "Resets Core to its branch — uncommitted work is lost." "reset" || return 0
            run_in_pane reset ;;
         0) printf '\n'
-           ask_name "site" "$(served_names)"; name="${ASKED}"
-           confirm_destructive "Wipes the database and fileadmin of '${name}'." "${name}"
+           ask_name "site" "$(served_names)" || return 0; name="${ASKED}"
+           confirm_destructive "Wipes the database and fileadmin of '${name}'." "${name}" || return 0
            run_in_pane delete "${name}" --yes ;;
         e) printf '\n'
-           ask_name "site" "@primary $(served_names | tr '\n' ' ')"; name="${ASKED}"
+           ask_name "site" "@primary $(served_names | tr '\n' ' ')" || return 0; name="${ASKED}"
            printf "  command: "
-           read -r cmd || exit 0
-           [ -n "${cmd}" ] || { printf "\n  cancelled\n"; pause; exit 0; }
+           read -r cmd || return 0
+           [ -n "${cmd}" ] || { printf "\n  cancelled\n"; pause; return 0; }
            # shellcheck disable=SC2086 # the command is deliberately word-split
            run_in_pane exec "${name}" ${cmd} ;;
         j) printf '\n'
@@ -272,11 +355,17 @@ main_menu() {
            else
                printf "  ${DIM}no jobs yet${NC}\n"
            fi
-           pause; exit 0 ;;
-        d) exec "${APPROOT}/.ddev/tryout/herdr-dashboard.sh" ;;
-        h) run_here help ;;
-        *) exit 0 ;;
+           pause ;;
+        d) "${APPROOT}/.ddev/tryout/herdr-dashboard.sh" ;;
+        h) run_and_show help ;;
+        q) return 1 ;;
+        *) ;;
     esac
+    return 0
 }
 
-main_menu
+# The menu is a session now, not a one-shot: run something, come back, run another.
+while :; do
+    main_menu || break
+done
+printf '\n'

@@ -837,6 +837,65 @@ STUB
   assert_success
 }
 
+@test "the menu treats ESC as back, not as quit" {
+  # ESC used to fall into the catch-all and close the whole popup from a submenu.
+  set -eu -o pipefail
+  run grep -qE "\\\$'\\\\e'\\)" "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+
+  # and every menu reads through the one helper, so the mapping applies everywhere
+  run grep -c 'read_key' "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+  [ "${output}" -ge 4 ]
+}
+
+@test "the menu loops instead of exiting after each action" {
+  set -eu -o pipefail
+  # The loop itself.
+  run grep -qE 'while :; do' "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+  run grep -q 'main_menu || break' "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+
+  # The action helpers must return, not exit — that was the old one-shot shape.
+  run bash -c "
+    sed -n '/^run_and_show()/,/^}\$/p;/^run_in_pane()/,/^}\$/p' \
+      '${DIR}/tryout/herdr-menu.sh' | grep -c 'exit 0' || true
+  "
+  assert_output "0"
+}
+
+@test "the output view reports a closed pane instead of raw JSON" {
+  # `herdr pane read` answers with a JSON error AND exit code 0 when the pane is
+  # gone, so the exit status cannot be trusted — the text is the only signal.
+  set -eu -o pipefail
+  run bash -c '
+    text="{\"error\":{\"code\":\"pane_not_found\",\"message\":\"gone\"}}"
+    case "${text}" in
+        *pane_not_found*) echo detected ;;
+        *) echo missed ;;
+    esac
+  '
+  assert_output "detected"
+
+  # and the menu actually implements that check
+  run grep -q 'pane_not_found' "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+  run grep -q 'has been closed' "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+}
+
+@test "the output view clamps scrolling at both ends" {
+  set -eu -o pipefail
+  # g goes to the top, G to the last screenful, and neither runs past the array.
+  run grep -qE 'g\)\s+top=0' "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+  run grep -q 'top}" -lt 0 ] && top=0' "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+  run grep -qE 'top \+ rows \)\) -lt "\$\{#lines\[@\]\}"' "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+}
+
 @test "completion offers herdr, its worktrees and its flags" {
   set -eu -o pipefail
   mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"

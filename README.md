@@ -653,6 +653,27 @@ ctrl+b shift+T
                                         q back
 ```
 
+The menu **stays open**: run something, come back, run something else. <kbd>ESC</kbd>
+goes back one level — out of a submenu, out of an output view — and closes the popup
+from the top. `q` does the same.
+
+Output from an instant command, and from any job you choose to watch, fills the popup
+in a scrollable view:
+
+```text
+worktree list
+
+  NAME    HEAD         BRANCH      STATE  PHP  DB         URL
+  benni   101b9ca0454  (detached)  clean  8.5  db_benni   https://benni.…
+  …
+
+  ↑↓/jk scroll  g/G top/bottom  r refresh  ESC back  (1/10)
+```
+
+A job's output is read back out of the pane it runs in, so the pane is still there to
+watch full-size or scroll in herdr itself. Close that pane and the view says so rather
+than showing you an error blob.
+
 Flags are the exception: the menu prompts for names, not options, so
 `download --reset`, `worktree add --php 8.2` and `delete --all` stay CLI-only.
 
@@ -844,7 +865,7 @@ bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no 
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
 bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
-bats tests --filter-tags '!release,!lifecycle'   # the 80 fast tests
+bats tests --filter-tags '!release,!lifecycle'   # the 84 fast tests
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 
