@@ -1006,6 +1006,23 @@ STUB
   assert_failure
 }
 
+@test "a served site's vhost tells PHP the request was TLS" {
+  # Without `fastcgi_param HTTPS`, TYPO3 builds http:// URLs behind DDEV's TLS
+  # terminator and its secure session cookie is never returned — the backend login
+  # then fails with "Please activate Cookies" while the page still answers 200, so
+  # no status-code check can catch it. The $ must reach nginx literally, which
+  # means escaping it inside the generator's unquoted heredoc.
+  set -eu -o pipefail
+  run grep -q 'fastcgi_param HTTPS \\$fcgi_https;' "${DIR}/tryout/functions.sh"
+  assert_success
+
+  # An unescaped $fcgi_https would be eaten by the shell and emit
+  # `fastcgi_param HTTPS ;`, which nginx rejects outright — taking the whole
+  # container down, not just that site.
+  run grep -q 'fastcgi_param HTTPS \$fcgi_https;' "${DIR}/tryout/functions.sh"
+  assert_failure
+}
+
 @test "completion offers herdr, its worktrees and its flags" {
   set -eu -o pipefail
   mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"

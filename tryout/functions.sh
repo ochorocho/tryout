@@ -1091,6 +1091,11 @@ server {
         fastcgi_param PATH_INFO \$fastcgi_path_info;
         fastcgi_param TRYOUT_SITE ${name};
         fastcgi_param TYPO3_DB_DBNAME ${db};
+        # Without this PHP never learns the request arrived over TLS, so TYPO3
+        # builds http:// URLs and its secure session cookie is never sent back —
+        # the backend login then fails with "Please activate Cookies". DDEV's own
+        # vhost sets the same parameter.
+        fastcgi_param HTTPS \$fcgi_https;
         fastcgi_pass unix:${sock};
     }
 }

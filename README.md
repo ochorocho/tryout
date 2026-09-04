@@ -869,7 +869,7 @@ bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no 
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
 bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
-bats tests --filter-tags '!release,!lifecycle'   # the 89 fast tests
+bats tests --filter-tags '!release,!lifecycle'   # the 90 fast tests
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 
@@ -884,6 +884,11 @@ serving.
 > DDEV writes project hostnames to `/etc/hosts`, which needs sudo, and the suite runs
 > with `DDEV_NONINTERACTIVE=true` — so a throwaway test project never gets an entry.
 > CI, and any host with a wildcard resolver, runs them for real.
+
+`tests/e2e/` holds opt-in Playwright tests that log into the backend of every
+served worktree with a real browser — the one thing curl cannot prove, since a
+login posts a form, sets a secure cookie and redirects into a module. They are not
+part of any default run; see `tests/e2e/README.md`.
 
 `tests/test.bats` carries an `install from release` test tagged `release`; it needs
 a published GitHub release, so exclude it locally with `--filter-tags '!release'`.
