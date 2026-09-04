@@ -1023,6 +1023,38 @@ STUB
   assert_failure
 }
 
+@test "completion works while a word is being typed, not just on an empty one" {
+  # Every test here used to pass '' as the word being completed, so the partial
+  # case went unexercised — and it was broken: the script read $2 as the verb, but
+  # with `ddev tryout herd<TAB>` argv is `tryout herd`, so $2 IS the partial word.
+  # It matched no case, printed nothing, and zsh fell back to file completion.
+  # cobra filters candidates against the partial word itself, so returning the full
+  # list is correct.
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
+
+  run complete herd
+  assert_success
+  assert_line "herdr"
+
+  run complete cs doc
+  assert_success
+  assert_line "doctor"
+
+  run complete worktree us
+  assert_success
+  assert_line "use"
+
+  run complete worktree use ma
+  assert_success
+  assert_line "main"
+
+  # An empty word must keep working too.
+  run complete "''"
+  assert_success
+  assert_line "herdr"
+}
+
 @test "completion offers herdr, its worktrees and its flags" {
   set -eu -o pipefail
   mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"

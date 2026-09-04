@@ -869,7 +869,7 @@ bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no 
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
 bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
-bats tests --filter-tags '!release,!lifecycle'   # the 90 fast tests
+bats tests --filter-tags '!release,!lifecycle'   # the 91 fast tests
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 

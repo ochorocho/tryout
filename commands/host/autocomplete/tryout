@@ -90,8 +90,18 @@ branch_names() {
 # --- Dispatch -------------------------------------------------------------
 # $1 is the command name ("tryout"); $2 the verb, $3 its subcommand, and the
 # last argument is the word being completed.
-VERB="${2:-}"
-SUB="${3:-}"
+# The LAST argument is always the word being typed; everything before it is already
+# complete. With `ddev tryout herd<TAB>` argv is `tryout herd`, so $2 is a partial
+# word, not a verb — treating it as one printed nothing and zsh fell back to file
+# completion. Drop the trailing word and read the verb from what remains.
+#
+# cobra filters our candidates against the partial word itself, so we do not.
+VERB=""
+SUB=""
+if [ "$#" -ge 3 ]; then
+    VERB="$2"
+    [ "$#" -ge 4 ] && SUB="$3"
+fi
 
 case "${VERB}" in
     '' | "''")
