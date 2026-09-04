@@ -55,6 +55,9 @@ APPROOT="$(resolve_approot)"
 [ -f "${APPROOT}/.ddev/tryout/functions.sh" ] \
     || fail "$(basename "${APPROOT}") is a DDEV project, but the tryout add-on is not installed in it."
 command -v ddev >/dev/null 2>&1 || fail "ddev not found on the host."
+# Without jq the pane id cannot be parsed, and a multi-minute command would end up
+# running inside this modal popup instead of a pane.
+command -v jq >/dev/null 2>&1 || fail "jq not found on the host — needed to launch jobs."
 
 cd "${APPROOT}" || fail "Cannot enter ${APPROOT}"
 PROJECT="$(basename "${APPROOT}")"
@@ -72,23 +75,25 @@ run_here() {
 # Anything that takes real time goes to a pane: the popup is modal, so a long
 # command inside it blocks the whole session and cannot be watched alongside
 # anything else. Falls back to running here when we are not inside herdr.
+# Hand a slow command to the job runner, which gives it a labelled pane and records
+# its exit code. Outside herdr there is no pane to hand it to, so it runs here.
 run_in_pane() {
-    local cmd="ddev tryout $*"
-
     if [ "${HERDR_ENV:-}" != "1" ] || ! command -v herdr >/dev/null 2>&1; then
         run_here "$@"
     fi
 
-    local pane
-    pane=$(herdr pane split --direction down --cwd "${APPROOT}" --focus 2>/dev/null \
-           | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
+    # shellcheck disable=SC1090
+    . "${APPROOT}/.ddev/tryout/functions.sh" >/dev/null 2>&1 || run_here "$@"
 
-    if [ -z "${pane}" ]; then
+    local id
+    if id=$(start_tryout_job "$*" "$@") && [ -n "${id}" ]; then
+        printf "\n${GREEN}✓${NC} started in a pane: ${BOLD}ddev tryout %s${NC}\n" "$*"
+        printf "  ${DIM}you will be notified when it finishes${NC}\n"
+    else
+        # Never claim success we did not verify — that was the old behaviour.
+        printf "\n${YELLOW}!${NC} could not start a pane; running here instead\n"
         run_here "$@"
     fi
-
-    herdr pane run "${pane}" "${cmd}" >/dev/null 2>&1
-    printf "\n${GREEN}✓${NC} running in a new pane: ${BOLD}%s${NC}\n" "${cmd}"
     exit 0
 }
 
@@ -191,7 +196,7 @@ cs_menu() {
     printf '\n'
 
     case "${key}" in
-        1) run_here cs doctor ;;
+        1) run_in_pane cs doctor ;;
         2) printf '\n  Gerrit user [empty = ask in the pane]: '
            read -r user || true
            # cs setup probes Gerrit over SSH, so it belongs in a pane.
@@ -216,6 +221,8 @@ main_menu() {
     printf "  ${BOLD}9${NC} reset         ${DIM}Core to its branch + rebuild${NC}\n"
     printf "  ${BOLD}0${NC} delete        ${DIM}wipe a site's DB + fileadmin${NC}\n"
     printf "  ${BOLD}e${NC} exec          ${DIM}run a command in a site${NC}\n"
+    printf "  ${BOLD}j${NC} jobs          ${DIM}what is running, and what failed${NC}\n"
+    printf "  ${BOLD}d${NC} dashboard     ${DIM}live project view${NC}\n"
     printf "  ${BOLD}h${NC} help          ${BOLD}q${NC} quit\n"
     printf "\n  choose: "
     read -r -n1 key
@@ -233,15 +240,17 @@ main_menu() {
            run_in_pane patch ${id:+"${id}"} ;;
         5) printf '\n'
            ask_name "branch" ""; name="${ASKED}"
+           confirm_destructive "Switching branch discards uncommitted work in Core." "${name}"
            run_in_pane checkout "${name}" ;;
         6) run_in_pane download ;;
         7) run_in_pane composer ;;
         8) cs_menu ;;
-        9) run_in_pane reset ;;
+        9) confirm_destructive "Resets Core to its branch — uncommitted work is lost." "reset"
+           run_in_pane reset ;;
         0) printf '\n'
            ask_name "site" "$(served_names)"; name="${ASKED}"
            confirm_destructive "Wipes the database and fileadmin of '${name}'." "${name}"
-           run_in_pane delete "${name}" ;;
+           run_in_pane delete "${name}" --yes ;;
         e) printf '\n'
            ask_name "site" "@primary $(served_names | tr '\n' ' ')"; name="${ASKED}"
            printf "  command: "
@@ -249,6 +258,22 @@ main_menu() {
            [ -n "${cmd}" ] || { printf "\n  cancelled\n"; pause; exit 0; }
            # shellcheck disable=SC2086 # the command is deliberately word-split
            run_in_pane exec "${name}" ${cmd} ;;
+        j) printf '\n'
+           # shellcheck disable=SC1090
+           . "${APPROOT}/.ddev/tryout/functions.sh" >/dev/null 2>&1
+           if [ -n "$(tryout_jobs_status 2>/dev/null)" ]; then
+               tryout_jobs_status | while IFS=$'\t' read -r st cmd detail; do
+                   case "${st}" in
+                       ok)     printf "  ${GREEN}✓${NC} %-34s\n" "${cmd}" ;;
+                       failed) printf "  ${RED}✗${NC} %-34s ${RED}%s${NC}\n" "${cmd}" "${detail}" ;;
+                       *)      printf "  ${CYAN}⟳${NC} %-34s ${DIM}running${NC}\n" "${cmd}" ;;
+                   esac
+               done
+           else
+               printf "  ${DIM}no jobs yet${NC}\n"
+           fi
+           pause; exit 0 ;;
+        d) exec "${APPROOT}/.ddev/tryout/herdr-dashboard.sh" ;;
         h) run_here help ;;
         *) exit 0 ;;
     esac

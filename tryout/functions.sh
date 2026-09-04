@@ -391,7 +391,16 @@ list_local_core_branches() {
 # everyday workspaces. Session names accept dots and uppercase, so the DDEV project
 # name goes in verbatim.
 herdr_session_name() {
-    [ -n "${DDEV_SITENAME:-}" ] && { echo "tryout-${DDEV_SITENAME}"; return; }
+    # DDEV only exports DDEV_SITENAME to commands it runs itself. The herdr popups
+    # are launched by herdr, not ddev, so fall back to the project config — without
+    # this they resolve to the session "tryout" and talk to a server that is not
+    # there.
+    local name="${DDEV_SITENAME:-}"
+    if [ -z "${name}" ] && [ -f "${PROJECT_ROOT}/.ddev/config.yaml" ]; then
+        name="$(sed -n 's/^name: *//p' "${PROJECT_ROOT}/.ddev/config.yaml" 2>/dev/null \
+                | head -1 | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//')"
+    fi
+    [ -n "${name}" ] && { echo "tryout-${name}"; return; }
     echo "tryout"
 }
 
@@ -536,6 +545,85 @@ list_foreign_core_worktrees() {
           done
 }
 
+# --- job tracking ----------------------------------------------------------
+# A tryout command launched into a pane used to be fire-and-forget: the caller
+# printed a tick and exited, so a failed serve looked exactly like a successful
+# one. Each job now leaves three small files behind — <id>.cmd, <id>.pane and,
+# once it finishes, <id>.rc — which is what makes the outcome observable at all.
+# Deliberately not herdr's pane.exited event: a wrapper writing its own exit code
+# needs no daemon and survives the popup that launched it closing.
+
+TRYOUT_JOBS_DIR="${PROJECT_ROOT}/.ddev/.tryout-jobs"
+
+# Launch `ddev tryout <cmd...>` in a pane of its own and record it. Echoes the
+# job id; non-zero means nothing was started.
+start_tryout_job() {
+    local label="$1"; shift
+    [ $# -gt 0 ] || return 1
+
+    local id pane wrapped
+    mkdir -p "${TRYOUT_JOBS_DIR}" 2>/dev/null || return 1
+    id="$(date +%s)-$$"
+    printf '%s\n' "$*" > "${TRYOUT_JOBS_DIR}/${id}.cmd"
+
+    pane=$(herdr_cli pane split --direction down --cwd "${PROJECT_ROOT}" --no-focus 2>/dev/null \
+           | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
+    if [ -z "${pane}" ]; then
+        rm -f "${TRYOUT_JOBS_DIR}/${id}.cmd"
+        return 1
+    fi
+    printf '%s\n' "${pane}" > "${TRYOUT_JOBS_DIR}/${id}.pane"
+
+    herdr_cli pane rename "${pane}" "tryout: ${label}" >/dev/null 2>&1 || true
+
+    # The wrapper is the whole point: it records the exit code and says so.
+    wrapped="ddev tryout $*; __rc=\$?;"
+    wrapped="${wrapped} printf '%s' \"\${__rc}\" > '${TRYOUT_JOBS_DIR}/${id}.rc';"
+    wrapped="${wrapped} if [ \"\${__rc}\" -eq 0 ]; then"
+    wrapped="${wrapped} herdr notification show 'tryout: ${label}' --body 'finished';"
+    wrapped="${wrapped} else"
+    wrapped="${wrapped} herdr notification show 'tryout: ${label} FAILED' --body \"exit \${__rc}\";"
+    wrapped="${wrapped} fi"
+
+    if ! herdr_cli pane run "${pane}" "${wrapped}" >/dev/null 2>&1; then
+        rm -f "${TRYOUT_JOBS_DIR}/${id}.cmd" "${TRYOUT_JOBS_DIR}/${id}.pane"
+        return 1
+    fi
+
+    printf '%s' "${id}"
+}
+
+# One line per job, newest first: "<state>\t<cmd>\t<detail>".
+# state is running | ok | failed.
+tryout_jobs_status() {
+    [ -d "${TRYOUT_JOBS_DIR}" ] || return 0
+    local f id cmd rc
+    for f in $(ls -t "${TRYOUT_JOBS_DIR}"/*.cmd 2>/dev/null); do
+        id="$(basename "${f}" .cmd)"
+        cmd="$(cat "${f}" 2>/dev/null)"
+        if [ -f "${TRYOUT_JOBS_DIR}/${id}.rc" ]; then
+            rc="$(cat "${TRYOUT_JOBS_DIR}/${id}.rc" 2>/dev/null)"
+            if [ "${rc}" = "0" ]; then
+                printf 'ok\t%s\t\n' "${cmd}"
+            else
+                printf 'failed\t%s\texit %s\n' "${cmd}" "${rc}"
+            fi
+        else
+            printf 'running\t%s\t\n' "${cmd}"
+        fi
+    done
+}
+
+# Drop finished jobs older than an hour. Running ones are never touched.
+reap_tryout_jobs() {
+    [ -d "${TRYOUT_JOBS_DIR}" ] || return 0
+    local f id
+    for f in $(find "${TRYOUT_JOBS_DIR}" -name '*.rc' -mmin +60 2>/dev/null); do
+        id="$(basename "${f}" .rc)"
+        rm -f "${TRYOUT_JOBS_DIR}/${id}".{cmd,pane,rc} 2>/dev/null
+    done
+}
+
 # --- herdr keybinding ------------------------------------------------------
 # herdr's built-in "New worktree" (prefix+shift+G) cannot be redirected: it prompts
 # for a branch and always checks out under worktrees.directory. A TYPO3 Core worktree
@@ -576,6 +664,14 @@ command = "${PROJECT_ROOT}/.ddev/tryout/herdr-menu.sh"
 description = "ddev tryout menu"
 width = "70%"
 height = "60%"
+
+[[keys.command]]
+key = "prefix+shift+d"
+type = "popup"
+command = "${PROJECT_ROOT}/.ddev/tryout/herdr-dashboard.sh"
+description = "tryout dashboard"
+width = "80%"
+height = "70%"
 $(herdr_key_marker_end)
 BLOCK
 }
@@ -679,7 +775,7 @@ herdr_setup_keys() {
         error "Could not write ${cfg}"
         return 1
     }
-    success "Bound prefix+shift+G (new worktree) and prefix+shift+T (menu)"
+    success "Bound prefix+shift+G (worktree), +T (menu), +D (dashboard)"
 
     # The plugin covers the route a keybinding cannot: herdr's own New-worktree entry
     # in the sidebar right-click menu.

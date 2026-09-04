@@ -15,7 +15,7 @@ assert_file_exist "${TESTDIR}/.ddev/config.tryout.yaml"
 assert_file_exist "${TESTDIR}/.ddev/config.tryout-patches.yaml"
 for f in functions.sh post-start.sh sync-composer.php site-composer.php \
          tryout-php-fpm.sh resolve-patch-ref.sh resolve-gerrit-account.sh \
-         herdr-new-worktree.sh herdr-menu.sh \
+         herdr-new-worktree.sh herdr-menu.sh herdr-dashboard.sh \
          gitmessage.txt composer.tryout.json additional.php gitignore \
          patches.yaml; do
   assert_file_exist "${TESTDIR}/.ddev/tryout/${f}"

@@ -631,7 +631,7 @@ complete() {
   assert_output --partial "No DDEV project here"
 }
 
-@test "setup-keys binds both the worktree key and the menu key" {
+@test "setup-keys binds the worktree, menu and dashboard keys" {
   set -eu -o pipefail
   printf 'a = 1\n' > "${FAKEROOT}/cfg.toml"
 
@@ -643,9 +643,11 @@ complete() {
     grep -c 'keys.command' '${FAKEROOT}/cfg.toml'
   "
   assert_success
-  assert_output "2"
+  assert_output "3"
 
   run grep -q 'prefix+shift+t' "${FAKEROOT}/cfg.toml"
+  assert_success
+  run grep -q 'prefix+shift+d' "${FAKEROOT}/cfg.toml"
   assert_success
 }
 
@@ -729,6 +731,109 @@ complete() {
   run grep -q 'min_herdr_version' "${m}"
   assert_success
   run grep -q 'ddev-generated' "${m}"
+  assert_success
+}
+
+@test "a job records its command, pane and exit code" {
+  set -eu -o pipefail
+  command -v jq >/dev/null 2>&1 || skip 'jq not available'
+  mkdir -p "${FAKEROOT}/bin" "${FAKEROOT}/.ddev"
+  cat > "${FAKEROOT}/bin/herdr" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"pane split"*) echo '{"result":{"pane":{"pane_id":"w1:p9"}}}' ;;
+  *"pane run"*)   printf '%s' "$*" > "${CAPTURE:-/dev/null}" ;;
+esac
+exit 0
+STUB
+  chmod +x "${FAKEROOT}/bin/herdr"
+
+  run env PATH="${FAKEROOT}/bin:${PATH}" CAPTURE="${FAKEROOT}/wrapper.txt" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    start_tryout_job 'worktree serve v13' worktree serve v13
+  "
+  assert_success
+  local job_id="${output}"
+  [ -n "${job_id}" ]
+
+  assert_file_exist "${FAKEROOT}/.ddev/.tryout-jobs/${job_id}.cmd"
+  assert_file_exist "${FAKEROOT}/.ddev/.tryout-jobs/${job_id}.pane"
+
+  # The wrapper is what makes the outcome observable: it must record the exit code.
+  run cat "${FAKEROOT}/wrapper.txt"
+  assert_output --partial "${job_id}.rc"
+  assert_output --partial "ddev tryout worktree serve v13"
+  assert_output --partial "notification show"
+}
+
+@test "job status reports running, ok and failed" {
+  set -eu -o pipefail
+  local j="${FAKEROOT}/.ddev/.tryout-jobs"
+  mkdir -p "${j}"
+  printf 'worktree serve v13\n' > "${j}/1-a.cmd"
+
+  run helper_eval 'tryout_jobs_status'
+  assert_output --partial "running"
+
+  printf '0' > "${j}/1-a.rc"
+  run helper_eval 'tryout_jobs_status'
+  assert_output --partial "ok"
+
+  printf '1' > "${j}/1-a.rc"
+  run helper_eval 'tryout_jobs_status'
+  assert_output --partial "failed"
+  assert_output --partial "exit 1"
+}
+
+@test "the dashboard only makes instant calls" {
+  # It redraws on a timer in a pane the user is watching. One network or container
+  # call would freeze it, so none may appear at all.
+  set -eu -o pipefail
+  local bad
+  grep -vE '^[[:space:]]*#' "${DIR}/tryout/herdr-dashboard.sh" > "${FAKEROOT}/dash.code"
+  for bad in 'ls-remote' 'ddev exec' 'ddev composer' 'ddev typo3' \
+             'diagnose_gerrit_ssh' 'inspect_author_identity' \
+             'detect_detached_base_branch' 'curl' 'ssh '; do
+    run grep -q -- "${bad}" "${FAKEROOT}/dash.code"
+    assert_failure
+  done
+
+  # `git ... fetch|pull|push` in any argument order — the inserted -C makes a plain
+  # 'git fetch' substring match useless.
+  run grep -qE 'git .*(fetch|pull|push|ls-remote)' "${FAKEROOT}/dash.code"
+  assert_failure
+}
+
+@test "the dashboard never mutates the project" {
+  set -eu -o pipefail
+  local bad
+  grep -vE '^[[:space:]]*#' "${DIR}/tryout/herdr-dashboard.sh" > "${FAKEROOT}/dash.code"
+  for bad in 'rm -rf' 'git reset' 'git checkout' 'worktree add' 'worktree remove' \
+             'worktree move' 'start_tryout_job'; do
+    run grep -q -- "${bad}" "${FAKEROOT}/dash.code"
+    assert_failure
+  done
+}
+
+@test "the menu refuses to run without jq" {
+  # Without jq the pane id cannot be parsed and a multi-minute command would run
+  # inside the modal popup instead.
+  set -eu -o pipefail
+  run grep -q 'command -v jq' "${DIR}/tryout/herdr-menu.sh"
+  assert_success
+}
+
+@test "every destructive menu entry asks first" {
+  # reset and checkout both run `git reset --hard` + `clean -fd`.
+  set -eu -o pipefail
+  local m="${DIR}/tryout/herdr-menu.sh"
+  run grep -c 'confirm_destructive' "${m}"
+  assert_success
+  [ "${output}" -ge 5 ]
+
+  # delete must not prompt twice: the menu confirms, so the command is told not to.
+  run grep -q 'run_in_pane delete .* --yes' "${m}"
   assert_success
 }
 

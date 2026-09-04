@@ -137,7 +137,7 @@ case "${VERB}" in
     herdr)
         # herdr [<worktree>|new|setup-keys|unsetup-keys] [flags]
         if [ "$#" -le 3 ]; then
-            printf '%s\n' new setup-keys unsetup-keys
+            printf '%s\n' new dashboard jobs setup-keys unsetup-keys
             worktree_names
             printf '%s\n' --no-agent --no-focus --no-attach
         else

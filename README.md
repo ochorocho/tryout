@@ -625,6 +625,7 @@ That binds **two** keys:
 |---|---|
 | `prefix+shift+G` | New Core worktree — asks for a name and branch |
 | `prefix+shift+T` | The tryout menu — every `ddev tryout` command |
+| `prefix+shift+D` | The dashboard — worktrees, served URLs, running jobs |
 
 `prefix` is herdr's own, `ctrl+b` by default — so the menu is <kbd>ctrl+b</kbd> then
 <kbd>shift</kbd>+<kbd>T</kbd>, pressed in sequence. `ddev tryout herdr` reminds you of
@@ -638,6 +639,22 @@ popup itself, and pushes anything slow (`serve`, `use`, `reset`, `checkout`,
 
 Flags are the exception: the menu prompts for names, not options, so
 `download --reset`, `worktree add --php 8.2` and `delete --all` stay CLI-only.
+
+#### Watching what runs
+
+A command launched from the menu gets a pane of its own, named after it, and its
+exit code is recorded. You are notified when it finishes — and told when it fails,
+which used to look identical to success.
+
+```bash
+ddev tryout herdr jobs        # ✓ / ✗ / ⟳ per job
+ddev tryout herdr dashboard   # the live view, same as prefix+shift+D
+```
+
+The dashboard shows worktrees with their branch, dirty state and served URL, the
+patch count, and the running jobs, refreshing every five seconds. It only ever reads
+local state — no fetch, no container, no SSH — so a refresh cannot hang, and it never
+writes anything: every change goes through the menu.
 
 It backs your config up first (`config.toml.tryout-backup-<timestamp>`) and delimits
 its block with markers, so `unsetup-keys` restores the file byte for byte.
@@ -812,7 +829,7 @@ bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no 
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
 bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
-bats tests --filter-tags '!release,!lifecycle'   # the 74 fast tests
+bats tests --filter-tags '!release,!lifecycle'   # the 80 fast tests
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 

@@ -55,3 +55,4 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+/.ddev/.tryout-jobs/
