@@ -508,7 +508,7 @@ cmd_exec() {
         error "  → ddev tryout worktree list"
         return 1
     fi
-    site_exec "${site}" "$*"
+    site_exec "${site}" "$@"
 }
 
 # ─────────────────────────────────────────────────────────────────────

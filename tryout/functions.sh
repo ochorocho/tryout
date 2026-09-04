@@ -7,6 +7,7 @@
 PROJECT_ROOT="${DDEV_APPROOT}"
 CORE_DIR="${PROJECT_ROOT}/typo3-core"
 CORE_GIT_DIR="${CORE_DIR}/.git"
+# shellcheck disable=SC2034 # used by post-start.sh and commands/host/tryout
 CORE_REPO="https://github.com/typo3/typo3.git"
 GERRIT_REMOTE="https://review.typo3.org/Packages/TYPO3.CMS"
 GERRIT_API="https://review.typo3.org"
@@ -27,7 +28,6 @@ DEFAULT_CORE_WORKTREE="main"
 SITES_DIR="${PROJECT_ROOT}/sites"
 PRIMARY_SITE="@primary"
 WORKTREE_CONFIG="${PROJECT_ROOT}/.ddev/config.worktrees.yaml"
-FPM_WRAPPER="${PROJECT_ROOT}/.ddev/tryout/tryout-php-fpm.sh"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -129,10 +129,10 @@ rebuild_typo3() {
         --working-dir="/var/www/html/sites/${name}" --no-interaction \
         || { error "Composer install failed for ${name}"; return 1; }
     info "Running extension:setup for '${name}'..."
-    site_exec "${name}" "vendor/bin/typo3 extension:setup" >/dev/null 2>&1 || true
+    site_exec "${name}" vendor/bin/typo3 extension:setup >/dev/null 2>&1 || true
     info "Flushing caches for '${name}'..."
     rm -rf "$(site_dir "${name}")/var/cache"/* 2>/dev/null || true
-    site_exec "${name}" "vendor/bin/typo3 cache:flush" >/dev/null 2>&1 || true
+    site_exec "${name}" vendor/bin/typo3 cache:flush >/dev/null 2>&1 || true
     success "Rebuild complete for '${name}'"
 }
 
@@ -654,7 +654,13 @@ start_tryout_job() {
 
     local id pane wrapped
     mkdir -p "${TRYOUT_JOBS_DIR}" 2>/dev/null || return 1
-    id="$(date +%s)-$$"
+    # $$ is constant for the menu process and date is second-granular, so two jobs
+    # started together shared an id — the second overwrote the first's .rc, and a
+    # FAILED job could be reported as ok. That defeats the point of tracking.
+    id="$(date +%s)-$$-${RANDOM}"
+    while [ -e "${TRYOUT_JOBS_DIR}/${id}.cmd" ]; do
+        id="$(date +%s)-$$-${RANDOM}"
+    done
     printf '%s\n' "$*" > "${TRYOUT_JOBS_DIR}/${id}.cmd"
 
     pane=$(herdr_cli pane split --direction down --cwd "${PROJECT_ROOT}" --no-focus 2>/dev/null \
@@ -689,7 +695,10 @@ start_tryout_job() {
 tryout_jobs_status() {
     [ -d "${TRYOUT_JOBS_DIR}" ] || return 0
     local f id cmd rc
-    for f in $(ls -t "${TRYOUT_JOBS_DIR}"/*.cmd 2>/dev/null); do
+    # Newest first, without parsing ls: job ids are <epoch>-<pid>, so a reverse
+    # sort on the name is the same ordering and cannot trip over odd filenames.
+    for f in $(printf '%s\n' "${TRYOUT_JOBS_DIR}"/*.cmd | sort -r); do
+        [ -e "${f}" ] || continue
         id="$(basename "${f}" .cmd)"
         cmd="$(cat "${f}" 2>/dev/null)"
         if [ -f "${TRYOUT_JOBS_DIR}/${id}.rc" ]; then
@@ -709,10 +718,13 @@ tryout_jobs_status() {
 reap_tryout_jobs() {
     [ -d "${TRYOUT_JOBS_DIR}" ] || return 0
     local f id
-    for f in $(find "${TRYOUT_JOBS_DIR}" -name '*.rc' -mmin +60 2>/dev/null); do
-        id="$(basename "${f}" .rc)"
-        rm -f "${TRYOUT_JOBS_DIR}/${id}".{cmd,pane,rc} 2>/dev/null
-    done
+    find "${TRYOUT_JOBS_DIR}" -name '*.rc' -mmin +60 2>/dev/null \
+        | while IFS= read -r f; do
+            id="$(basename "${f}" .rc)"
+            rm -f "${TRYOUT_JOBS_DIR}/${id}.cmd" \
+                  "${TRYOUT_JOBS_DIR}/${id}.pane" \
+                  "${TRYOUT_JOBS_DIR}/${id}.rc" 2>/dev/null
+          done
 }
 
 # --- herdr keybinding ------------------------------------------------------
@@ -931,6 +943,9 @@ herdr_unsetup_keys() {
 # was unless asked.
 open_worktree_in_herdr() {
     local name="$1" use_agent="${2:-true}" focus="${3:-false}" dir ws_json root_pane agent
+    # Every caller validates first, but the name becomes a path and a herdr label —
+    # so check here too rather than trusting each new call site to remember.
+    validate_worktree_name "${name}" || return 1
     dir="$(core_worktree_dir "${name}")"
 
     if [ ! -d "${dir}" ]; then
@@ -1252,9 +1267,17 @@ site_exec() {
 
     # Paths must be container-side.
     local cdir="/var/www/html${dir#${PROJECT_ROOT}}"
+    # Quote each argument for the sh -c the container runs, otherwise argument
+    # boundaries are lost twice over: once joining them, once re-parsing. Without
+    # this, `exec v13 vendor/bin/typo3 config:set X "My Site"` passes two arguments.
+    local quoted="" a
+    for a in "$@"; do
+        quoted="${quoted} $(printf '%q' "${a}")"
+    done
+
     # shellcheck disable=SC2086 # TRYOUT_EXTRA_ENV is deliberately word-split
     ddev exec env TYPO3_DB_DBNAME="${db}" TRYOUT_SITE="${name}" ${TRYOUT_EXTRA_ENV:-} \
-        sh -c "cd '${cdir}' && ${bin} $*"
+        sh -c "cd $(printf '%q' "${cdir}") && ${bin}${quoted}"
 }
 
 # First-run TYPO3 setup for a served site, mirroring what post-start.sh does for
@@ -1277,7 +1300,7 @@ setup_site_typo3() {
 
     info "Running TYPO3 setup for '${name}' (db ${db}, PHP ${php})..."
     TRYOUT_EXTRA_ENV="TYPO3_DB_DRIVER=${driver}" \
-        site_exec "${name}" "vendor/bin/typo3 setup --no-interaction --force --server-type=${server_type}" \
+        site_exec "${name}" vendor/bin/typo3 setup --no-interaction --force "--server-type=${server_type}" \
         || { error "TYPO3 setup failed for ${name}"; return 1; }
     success "Site '${name}' set up"
 }
@@ -1318,10 +1341,10 @@ delete_site() {
 
     info "[4/4] Running TYPO3 setup + extension:setup..."
     TRYOUT_EXTRA_ENV="TYPO3_DB_DRIVER=${driver}" \
-        site_exec "${name}" "vendor/bin/typo3 setup --no-interaction --force --server-type=${server_type}" \
+        site_exec "${name}" vendor/bin/typo3 setup --no-interaction --force "--server-type=${server_type}" \
         || { error "TYPO3 setup failed for ${name}"; return 1; }
-    site_exec "${name}" "vendor/bin/typo3 extension:setup" >/dev/null 2>&1 || warn "extension:setup had warnings"
-    site_exec "${name}" "vendor/bin/typo3 cache:flush" >/dev/null 2>&1 || warn "cache:flush had warnings"
+    site_exec "${name}" vendor/bin/typo3 extension:setup >/dev/null 2>&1 || warn "extension:setup had warnings"
+    site_exec "${name}" vendor/bin/typo3 cache:flush >/dev/null 2>&1 || warn "cache:flush had warnings"
     success "Setup complete"
 }
 
@@ -1352,7 +1375,12 @@ serve_worktree() {
     dir=$(site_dir "${name}")
     mkdir -p "${dir}/config/system" "${dir}/var"
 
+    # The marker IS the definition of "served" (site_is_served), so writing it up
+    # front makes a half-built site look real to worktree list, the dashboard,
+    # delete --all and write_worktree_config. Remove it if we do not get to the end.
     printf 'php=%s\n' "${php}" > "${dir}/.tryout-site"
+    # shellcheck disable=SC2064 # expand dir/name now, not when the trap fires
+    trap "rm -f '${dir}/.tryout-site'" RETURN
 
     # TYPO3 loads config/system/additional.php relative to its OWN root, so a
     # served site would otherwise miss the DDEV overrides — including
@@ -1388,6 +1416,7 @@ serve_worktree() {
 
     setup_site_typo3 "${name}" || return 1
 
+    trap - RETURN    # got to the end: the marker stands
     success "Site '${name}' prepared — PHP ${php}, db $(site_database "${name}")"
     warn "Run 'ddev restart' to register $(site_hostname "${name}") and issue its certificate."
     echo -e "  ${DIM}then: https://$(site_hostname "${name}")/typo3/  (admin / Password.1)${NC}"
@@ -1591,6 +1620,7 @@ apply_all_patches() {
     done
 
     print_patch_summary
+    # shellcheck disable=SC2034 # read by cmd_patch in commands/host/tryout
     PATCHES_APPLIED=${applied}
 
     if [ "${failed}" -gt 0 ]; then

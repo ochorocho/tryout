@@ -80,6 +80,9 @@ provisions Core on a fresh project. To see what is installed:
 ddev add-on list --installed
 ```
 
+> Removing the add-on leaves `packages/` alone — those are your extensions, not
+> the add-on's — along with `typo3-core*`, your `composer.json` and your patch list.
+
 > An install **overwrites** every file the add-on owns — those carrying a
 > `#ddev-generated` marker. Files you have taken ownership of by deleting that line
 > are left alone, as are your `config.yaml`, your `composer.json`, the Gerrit patch
@@ -885,7 +888,7 @@ bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no 
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
 bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
-bats tests --filter-tags '!release,!lifecycle'   # the 95 fast tests
+bats tests --filter-tags '!release,!lifecycle'   # the 98 fast tests
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 

@@ -81,9 +81,17 @@ if (!is_dir($dir) && !mkdir($dir, 0777, true) && !is_dir($dir)) {
     exit(1);
 }
 
-file_put_contents(
-    $dir . '/' . $composerName,
-    json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n"
-);
+$json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+if ($json === false) {
+    fwrite(STDERR, "site-composer: failed to encode: " . json_last_error_msg() . "\n");
+    exit(1);
+}
+
+// A short write leaves a truncated overlay, and composer install then fails far
+// from the cause.
+if (file_put_contents($dir . '/' . $composerName, $json . "\n") === false) {
+    fwrite(STDERR, "site-composer: cannot write $dir/$composerName\n");
+    exit(1);
+}
 
 echo "sites/$name/$composerName written\n";

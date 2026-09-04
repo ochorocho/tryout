@@ -48,6 +48,8 @@ post_install_actions:
 
   - |
     #ddev-description:Create the packages/ and config/system/ directories
+    # Deliberately absent from removal_actions: packages/ holds the user's own
+    # extensions, so uninstalling the add-on must not take them with it.
     mkdir -p ../packages ../config/system
 
   - |

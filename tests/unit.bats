@@ -1023,6 +1023,42 @@ STUB
   assert_failure
 }
 
+@test "job ids do not collide within the same second" {
+  # $$ is constant for the menu process and date is second-granular, so two jobs
+  # launched together shared an id: the second overwrote the first's .rc, and a
+  # FAILED job could be reported ok — the exact thing job tracking exists to stop.
+  set -eu -o pipefail
+  run grep -q 'date +%s)-\$\$-\${RANDOM}' "${DIR}/tryout/functions.sh"
+  assert_success
+  # and it retries rather than trusting RANDOM to be unique
+  run grep -q 'while \[ -e "\${TRYOUT_JOBS_DIR}/\${id}.cmd" \]' "${DIR}/tryout/functions.sh"
+  assert_success
+}
+
+@test "a failed serve does not leave the site marked as served" {
+  # .tryout-site IS the definition of served, so writing it before the work made a
+  # half-built site look real to worktree list, the dashboard and delete --all.
+  set -eu -o pipefail
+  run grep -q "trap \"rm -f '\${dir}/.tryout-site'\" RETURN" "${DIR}/tryout/functions.sh"
+  assert_success
+  # cleared only once the site really is built
+  run grep -q 'trap - RETURN' "${DIR}/tryout/functions.sh"
+  assert_success
+}
+
+@test "exec preserves argument boundaries through the container" {
+  # The command is re-parsed by sh -c inside the container, so each argument has to
+  # be quoted or `exec v13 typo3 config:set X "My Site"` arrives as two arguments.
+  set -eu -o pipefail
+  run grep -q "printf '%q'" "${DIR}/tryout/functions.sh"
+  assert_success
+  # cmd_exec must pass "$@", not "$*", or the boundaries are gone before we start
+  run grep -q 'site_exec "\${site}" "\$@"' "${DIR}/commands/host/tryout"
+  assert_success
+  run grep -q 'site_exec "\${site}" "\$\*"' "${DIR}/commands/host/tryout"
+  assert_failure
+}
+
 @test "a worktree can be renamed without touching its branch" {
   # herdr's own New-worktree action names a checkout after the branch it invents
   # (worktree/wilie-wonka), and adopt derives one the same way. That is a starting

@@ -110,8 +110,18 @@ ksort($newRequire);
 
 $composerData['require'] = $newRequire;
 
-$json = json_encode($composerData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
-file_put_contents($composerFile, $json);
+$json = json_encode($composerData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+if ($json === false) {
+    fwrite(STDERR, "Error: Failed to encode $composerFile: " . json_last_error_msg() . "\n");
+    exit(1);
+}
+
+// A short write leaves a truncated overlay behind, and the next composer install
+// fails somewhere far from the cause. Say so here instead.
+if (file_put_contents($composerFile, $json . "\n") === false) {
+    fwrite(STDERR, "Error: Failed to write $composerFile (permissions? disk full?)\n");
+    exit(1);
+}
 
 // The lock file needs to be removed so that the next "composer install" step will use
 // current versions. This is e.g. required when Core removes an extension like EXT:setup
