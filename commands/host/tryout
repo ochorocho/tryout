@@ -22,7 +22,18 @@ shift || true
 # ─────────────────────────────────────────────────────────────────────
 # status — Show project overview
 # ─────────────────────────────────────────────────────────────────────
+# Some commands take no arguments. Silently ignoring an extra word makes a typo
+# look like it worked — `ddev tryout composer install` regenerated the overlay and
+# said nothing about `install`.
+reject_args() {
+    local cmd="$1"; shift
+    [ $# -eq 0 ] && return 0
+    error "'${cmd}' takes no arguments, but got: $*"
+    return 1
+}
+
 cmd_status() {
+    reject_args status "$@" || return 1
     local OK="${GREEN}✓${NC}"
     local WARN="${YELLOW}!${NC}"
     local FAIL="${RED}✗${NC}"
@@ -465,6 +476,12 @@ cmd_checkout() {
 # composer — Regenerate composer.json from available system extensions
 # ─────────────────────────────────────────────────────────────────────
 cmd_composer() {
+    if [ $# -gt 0 ]; then
+        error "'composer' takes no arguments, but got: $*"
+        error "  It regenerates composer.tryout.json from the Core sysexts."
+        error "  → ddev composer $*   (to run Composer itself)"
+        return 1
+    fi
     require_core
     info "Syncing composer.tryout.json with available system extensions..."
     ddev php /var/www/html/.ddev/tryout/sync-composer.php
@@ -914,6 +931,7 @@ cmd_cs() {
 # help — Show available commands
 # ─────────────────────────────────────────────────────────────────────
 cmd_help() {
+    reject_args help "$@" || return 1
     echo ""
     echo -e "${BOLD}ddev tryout${NC} — TYPO3 development toolkit"
     echo ""
@@ -921,7 +939,7 @@ cmd_help() {
     echo -e "  ${BOLD}status${NC}                    Show project overview"
     echo -e "  ${BOLD}download [--reset]${NC}        Clone or update Core (--reset: hard reset)"
     echo -e "  ${BOLD}checkout <branch>${NC}         Switch TYPO3 version (main, 13.4, 12.4, ...)"
-    echo -e "  ${BOLD}composer${NC}                  Regenerate the Composer overlay from Core sysexts"
+    echo -e "  ${BOLD}composer${NC}                  Regenerate the overlay (not: run Composer)"
     echo -e "  ${BOLD}patch [<id>] [<site>]${NC}     Apply one Gerrit patch, or all from config"
     echo -e "  ${BOLD}worktree${NC}                  Manage side-by-side Core checkouts"
     echo -e "  ${BOLD}cs [setup|doctor]${NC}         Prepare this instance for Core contribution"
@@ -958,7 +976,7 @@ case "${ACTION}" in
     exec)     cmd_exec "$@" ;;
     reset)    cmd_reset "$@" ;;
     delete)   cmd_delete "$@" ;;
-    help)     cmd_help ;;
+    help)     cmd_help "$@" ;;
     *)
         error "Unknown command: ${ACTION}"
         cmd_help

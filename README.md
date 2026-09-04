@@ -127,6 +127,7 @@ ddev tryout download            Clone or update TYPO3 Core
 ddev tryout download --reset    Hard reset Core to current branch
 ddev tryout checkout <branch>   Switch TYPO3 version (main, 13.4, 12.4, ...)
 ddev tryout composer            Regenerate the Composer overlay from Core sysexts
+                                (it does not run Composer — that is `ddev composer`)
 ddev tryout patch <change-id>   Apply a Gerrit patch
 ddev tryout patch               Apply all patches from config
 ddev tryout reset               Reset Core to current branch + rebuild
@@ -869,7 +870,7 @@ bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no 
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
 bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
-bats tests --filter-tags '!release,!lifecycle'   # the 91 fast tests
+bats tests --filter-tags '!release,!lifecycle'   # the 92 fast tests
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 

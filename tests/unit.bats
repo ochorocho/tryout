@@ -1023,6 +1023,26 @@ STUB
   assert_failure
 }
 
+@test "commands that take no arguments say so instead of ignoring them" {
+  # `ddev tryout composer install` used to regenerate the overlay and say nothing
+  # about `install` — a typo that looked like it worked. Worse, the name suggests
+  # it runs Composer, which it does not.
+  set -eu -o pipefail
+  local c
+  for c in status composer help; do
+    run grep -qE "(reject_args ${c}|'${c}' takes no arguments)" "${DIR}/commands/host/tryout"
+    assert_success
+  done
+
+  # composer points at the command the user probably wanted.
+  run grep -q 'ddev composer' "${DIR}/commands/host/tryout"
+  assert_success
+
+  # help must receive its arguments to be able to reject them.
+  run grep -q 'help)     cmd_help "$@"' "${DIR}/commands/host/tryout"
+  assert_success
+}
+
 @test "completion works while a word is being typed, not just on an empty one" {
   # Every test here used to pass '' as the word being completed, so the partial
   # case went unexercised — and it was broken: the script read $2 as the verb, but
