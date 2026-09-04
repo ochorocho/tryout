@@ -45,6 +45,21 @@ helper_eval() {
   eval "$1"
 }
 
+# Lay the payload out under FAKEROOT the way `ddev add-on get` does, then run the
+# completion script the way DDEV does: absolute path, argv = the command line,
+# an empty word as the literal '', and no DDEV_* variables in the environment.
+complete() {
+  if [ ! -x "${FAKEROOT}/.ddev/commands/host/autocomplete/tryout" ]; then
+    mkdir -p "${FAKEROOT}/.ddev/commands/host/autocomplete" "${FAKEROOT}/.ddev/tryout"
+    cp "${DIR}/commands/host/autocomplete/tryout" "${FAKEROOT}/.ddev/commands/host/autocomplete/"
+    cp "${DIR}/tryout/functions.sh" "${FAKEROOT}/.ddev/tryout/"
+    chmod +x "${FAKEROOT}/.ddev/commands/host/autocomplete/tryout"
+  fi
+  # cd elsewhere on purpose: DDEV leaves the cwd wherever the user pressed TAB.
+  (cd / && env -u DDEV_APPROOT -u DDEV_SITENAME \
+    "${FAKEROOT}/.ddev/commands/host/autocomplete/tryout" tryout "$@")
+}
+
 @test "functions.sh is syntactically valid and sources cleanly" {
   set -eu -o pipefail
   run bash -n "${DIR}/tryout/functions.sh"
@@ -184,7 +199,8 @@ helper_eval() {
 
 @test "every shipped script is valid bash" {
   set -eu -o pipefail
-  for f in "${DIR}"/tryout/*.sh "${DIR}/commands/host/tryout"; do
+  for f in "${DIR}"/tryout/*.sh "${DIR}/commands/host/tryout" \
+           "${DIR}/commands/host/autocomplete/tryout"; do
     run bash -n "${f}"
     assert_success
   done
@@ -209,7 +225,8 @@ helper_eval() {
 
 @test "install.yaml lists every file the add-on ships" {
   set -eu -o pipefail
-  for entry in commands/host/tryout config.tryout.yaml tryout; do
+  for entry in commands/host/tryout commands/host/autocomplete/tryout \
+               config.tryout.yaml tryout; do
     run grep -qE "^  - ${entry}\$" "${DIR}/install.yaml"
     assert_success
   done
@@ -224,4 +241,145 @@ helper_eval() {
       | while read -r p; do [ -e \"\$p\" ] || echo \"MISSING: \$p\"; done
   "
   assert_output ""
+}
+
+# --- Tab-completion -------------------------------------------------------
+# DDEV runs commands/host/autocomplete/tryout on every TAB, passing the command
+# line as argv and reading candidates from stdout. See the script's header for
+# the contract these tests pin down.
+
+@test "the completion script ships executable" {
+  set -eu -o pipefail
+  assert_file_executable "${DIR}/commands/host/autocomplete/tryout"
+  run grep -q '#ddev-generated' "${DIR}/commands/host/autocomplete/tryout"
+  assert_success
+}
+
+@test "the completion script has no CRLF line endings" {
+  # DDEV skips an autocomplete script containing \r\n, with only a warning.
+  set -eu -o pipefail
+  run grep -qU $'\r' "${DIR}/commands/host/autocomplete/tryout"
+  assert_failure
+}
+
+@test "the command declares no AutocompleteTerms header" {
+  # It would set cobra's ValidArgs, which then rejects any second argument during
+  # completion — so the autocomplete script never runs and `ddev tryout cs <TAB>`
+  # completes nothing. Verified against ddev v1.25.2 with `ddev __complete`.
+  set -eu -o pipefail
+  run grep -q '^## AutocompleteTerms:' "${DIR}/commands/host/tryout"
+  assert_failure
+}
+
+@test "completion covers every command the dispatch case accepts" {
+  set -eu -o pipefail
+  local actions verb
+  actions=$(sed -n '/^case "${ACTION}" in/,/^esac/p' "${DIR}/commands/host/tryout" \
+    | sed -n 's/^    \([a-z|]*\)).*/\1/p' | tr '|' '\n' | grep -v '^\*$')
+  [ -n "${actions}" ]
+
+  run complete "''"
+  assert_success
+  for verb in ${actions}; do
+    assert_line "${verb}"
+  done
+}
+
+@test "completion suggests the top-level commands" {
+  set -eu -o pipefail
+  run complete "''"
+  assert_success
+  for verb in status download checkout composer patch worktree cs exec reset delete help; do
+    assert_line "${verb}"
+  done
+}
+
+@test "completion is position aware for cs and worktree" {
+  set -eu -o pipefail
+  run complete cs "''"
+  assert_success
+  assert_line "setup"
+  assert_line "doctor"
+  assert_line "uninstall"
+  # The top-level verbs must NOT come back here — that is the whole point of the
+  # script over the flat AutocompleteTerms list.
+  refute_line "download"
+
+  run complete worktree "''"
+  assert_success
+  for sub in add list use serve unserve remove; do
+    assert_line "${sub}"
+  done
+  refute_line "status"
+}
+
+@test "completion offers the flags a subcommand actually parses" {
+  set -eu -o pipefail
+  run complete download "''"
+  assert_line "--reset"
+
+  run complete worktree unserve "''"
+  assert_line "--drop-db"
+
+  run complete worktree use "''"
+  assert_line "--force"
+}
+
+@test "completion lists the worktrees on disk" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
+
+  run complete worktree use "''"
+  assert_success
+  assert_line "main"
+  assert_line "v13"
+}
+
+@test "completion lists served sites for the commands that take one" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/sites/v13"
+  printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+
+  run complete exec "''"
+  assert_success
+  assert_line "@primary"
+  assert_line "v13"
+}
+
+@test "completion never writes to stderr and never fails" {
+  # DDEV merges our stderr into the candidate list and drops every suggestion if
+  # we exit non-zero, so both are silent breakages. Sweep every dispatch path.
+  set -eu -o pipefail
+  local args err
+  for args in "''" "cs ''" "worktree ''" "worktree add foo ''" "worktree serve ''" \
+              "checkout ''" "patch ''" "reset ''" "delete ''" "exec ''" \
+              "status ''" "composer ''" "help ''" "download ''" "bogus ''"; do
+    # shellcheck disable=SC2086
+    err=$(complete ${args} 2>&1 >/dev/null)
+    [ -z "${err}" ] || { echo "stderr for '${args}': ${err}"; false; }
+    # shellcheck disable=SC2086
+    complete ${args} >/dev/null
+  done
+}
+
+@test "completion survives a missing functions.sh" {
+  # A partial install must degrade to the static candidates, never break TAB.
+  set -eu -o pipefail
+  run complete "''"
+  assert_success
+  rm -f "${FAKEROOT}/.ddev/tryout/functions.sh"
+
+  run complete worktree use "''"
+  assert_success
+  assert_line "--force"
+}
+
+@test "completion offers the worktrees on disk" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
+
+  run complete worktree use "''"
+  assert_success
+  assert_line "main"
+  assert_line "v13"
 }

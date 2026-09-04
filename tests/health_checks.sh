@@ -8,6 +8,7 @@ set -eu -o pipefail
 
 # --- Payload landed where DDEV puts project_files -------------------------------
 assert_file_exist "${TESTDIR}/.ddev/commands/host/tryout"
+assert_file_exist "${TESTDIR}/.ddev/commands/host/autocomplete/tryout"
 assert_file_exist "${TESTDIR}/.ddev/config.tryout.yaml"
 assert_file_exist "${TESTDIR}/.ddev/config.tryout-patches.yaml"
 for f in functions.sh post-start.sh sync-composer.php site-composer.php \
@@ -27,10 +28,14 @@ assert_dir_exist "${TESTDIR}/packages"
 
 # --- Scripts are executable (post_install_actions chmod) ------------------------
 assert_file_executable "${TESTDIR}/.ddev/commands/host/tryout"
+# DDEV only wires up completion for an executable script.
+assert_file_executable "${TESTDIR}/.ddev/commands/host/autocomplete/tryout"
 assert_file_executable "${TESTDIR}/.ddev/tryout/post-start.sh"
 
 # --- Ownership markers, so DDEV may update and remove these --------------------
 run grep -q '#ddev-generated' "${TESTDIR}/.ddev/commands/host/tryout"
+assert_success
+run grep -q '#ddev-generated' "${TESTDIR}/.ddev/commands/host/autocomplete/tryout"
 assert_success
 run grep -q '#ddev-generated' "${TESTDIR}/.ddev/config.tryout.yaml"
 assert_success

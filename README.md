@@ -38,6 +38,53 @@ Once finished, open the backend:
 To update the add-on later, run `ddev add-on get bmack/tryout` again; to remove it,
 `ddev add-on remove tryout`.
 
+### Installing from the repository
+
+`ddev add-on get` takes a local directory, a GitHub repo or a tarball URL, so you can
+install an unreleased version — a branch, a commit, or a working checkout — the same
+way you install a release.
+
+**From a local checkout** — what you want when developing the add-on itself. No
+commit, push or release is needed; DDEV copies the working tree as it is:
+
+```bash
+git clone https://github.com/bmack/tryout.git ~/src/tryout
+
+mkdir my-typo3-site && cd my-typo3-site
+ddev config --project-type=typo3 --docroot=public --php-version=8.5
+ddev add-on get ~/src/tryout
+ddev start
+```
+
+Re-run `ddev add-on get ~/src/tryout` after every change you want to try; it
+overwrites the installed payload in `.ddev/` and leaves your data alone.
+
+**From a branch or commit** — `--version` takes a tag, a branch name, or a SHA:
+
+```bash
+ddev add-on get bmack/tryout --version main        # the default branch
+ddev add-on get bmack/tryout --version v1.2.0      # a tag
+ddev add-on get bmack/tryout --version b50ac77     # a commit
+```
+
+**From a fork:**
+
+```bash
+ddev add-on get ochorocho/tryout --version main
+```
+
+After any of these, `ddev restart` picks up changed DDEV config, and `ddev start`
+provisions Core on a fresh project. To see what is installed:
+
+```bash
+ddev add-on list --installed
+```
+
+> An install **overwrites** every file the add-on owns — those carrying a
+> `#ddev-generated` marker. Files you have taken ownership of by deleting that line
+> are left alone, as are your `config.yaml`, your `composer.json`, the Gerrit patch
+> list and the `typo3-core*` checkouts.
+
 ### Adding tryout to an existing project
 
 tryout can be installed into a project that already has its own `composer.json`.
@@ -89,6 +136,39 @@ ddev tryout cs                  Prepare instance for Core contribution
 ddev tryout cs doctor           Check hooks, template, and push URL
 ddev tryout cs uninstall        Remove hooks and reset push URL
 ```
+
+### Tab completion
+
+Every command, subcommand and flag completes with <kbd>Tab</kbd>, as do the names
+the add-on knows about at that moment:
+
+```console
+$ ddev tryout <TAB>
+status  download  checkout  composer  patch  worktree  cs  exec  reset  delete  help
+
+$ ddev tryout cs <TAB>
+setup  doctor  uninstall  help
+
+$ ddev tryout worktree use <TAB>
+main  v13                       # your Core worktrees
+
+$ ddev tryout checkout <TAB>
+main  13.4  12.4  11.5  ...     # branches already fetched into typo3-core/
+
+$ ddev tryout exec <TAB>
+@primary  v13                   # the primary site and every served worktree
+```
+
+Branches come from the refs already in `typo3-core/`, never from the network, so a
+<kbd>Tab</kbd> never stalls; `ddev tryout download` and `checkout` both fetch, so the
+list stays current.
+
+This needs DDEV's own shell completion to be installed — the add-on cannot do that
+for you. Homebrew installs the scripts with DDEV, but Bash also needs
+`brew install bash-completion` and Zsh needs `$(brew --prefix)/share/zsh/site-functions`
+on `FPATH` before `compinit`. See
+[DDEV's shell completion docs](https://docs.ddev.com/en/stable/users/install/shell-completion/)
+for your shell and platform.
 
 ## Contributing to TYPO3 Core
 
@@ -255,7 +335,9 @@ root holds the Core checkout and the Composer overlay:
 my-typo3-site/
 ├── .ddev/
 │   ├── commands/host/
-│   │   └── tryout                # The ddev tryout command (runs on the host)
+│   │   ├── tryout                # The ddev tryout command (runs on the host)
+│   │   └── autocomplete/
+│   │       └── tryout            # Tab-completion for it (DDEV runs this on TAB)
 │   ├── tryout/                   # Add-on payload, namespaced so it cannot collide
 │   │   ├── functions.sh          # Shared helpers (Gerrit API, patching, hooks)
 │   │   ├── post-start.sh         # Runs on ddev start (clone, patch, setup)
@@ -555,7 +637,7 @@ bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no 
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
 bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
-bats tests --filter-tags '!release,!lifecycle'   # the 42 fast tests
+bats tests --filter-tags '!release,!lifecycle'   # the 54 fast tests
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 

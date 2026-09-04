@@ -334,6 +334,7 @@ JSON
 
   assert_dir_not_exist "${TESTDIR}/.ddev/tryout"
   assert_file_not_exist "${TESTDIR}/.ddev/commands/host/tryout"
+  assert_file_not_exist "${TESTDIR}/.ddev/commands/host/autocomplete/tryout"
   assert_file_not_exist "${TESTDIR}/.ddev/config.tryout.yaml"
   assert_file_not_exist "${TESTDIR}/.ddev/config.tryout-patches.yaml"
   assert_file_not_exist "${TESTDIR}/composer.tryout.json"

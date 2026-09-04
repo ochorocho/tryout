@@ -367,6 +367,21 @@ list_core_worktrees() {
     done
 }
 
+# Branch names on origin, one per line, version-sorted. The remote form asks
+# origin and so needs the network; the local form reads refs already fetched,
+# which is what tab-completion uses so a TAB never blocks.
+list_remote_core_branches() {
+    git -C "${CORE_DIR}" ls-remote --heads origin 2>/dev/null \
+        | awk -F/ '{print $NF}' \
+        | sort -V
+}
+
+list_local_core_branches() {
+    git -C "${CORE_DIR}" for-each-ref --format='%(refname:strip=3)' refs/remotes/origin 2>/dev/null \
+        | grep -vx 'HEAD' \
+        | sort -V
+}
+
 # True when vendor/ was built from a different Core than the active one. This is
 # the silent failure mode of a symlink swap without a reinstall.
 vendor_core_mismatch() {

@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+#ddev-generated
+
+# Tab-completion for `ddev tryout`.
+#
+# DDEV runs this on every TAB with the command line as argv and reads the
+# candidates from stdout, one per line:
+#
+#   ddev tryout cs <TAB>      ->  $1=tryout $2=cs $3=''
+#   ddev tryout cs doc<TAB>   ->  $1=tryout $2=cs $3=doc
+#
+# An empty word arrives as the two-character literal '' (DDEV execs us directly,
+# so no shell strips the quotes). We do not filter by the partial word — cobra
+# does that with whatever we return.
+#
+# Deliberately NOT `set -euo pipefail`, unlike every other script here: DDEV
+# merges our stderr into the candidate list and drops every suggestion if we
+# exit non-zero. So diagnostics go to /dev/null and we always exit 0.
+
+# --- Locate the project ---------------------------------------------------
+# DDEV does NOT export DDEV_APPROOT to a completion script (it never calls
+# DockerEnv() on this path), and our cwd is wherever the user pressed TAB —
+# anywhere at or below the project root. So resolve it ourselves.
+resolve_approot() {
+    if [ -n "${DDEV_APPROOT:-}" ] && [ -d "${DDEV_APPROOT}/.ddev" ]; then
+        echo "${DDEV_APPROOT}"
+        return 0
+    fi
+
+    # We live at <approot>/.ddev/commands/host/autocomplete/tryout, so our own
+    # location names the project directly. Resolve $0 to an absolute path first:
+    # DDEV invokes us absolutely, but a relative $0 must not walk out of the tree.
+    local self
+    self="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    if [ -n "${self}" ]; then
+        local from_self="${self%/.ddev/commands/host/autocomplete}"
+        if [ "${from_self}" != "${self}" ] && [ -d "${from_self}/.ddev" ]; then
+            echo "${from_self}"
+            return 0
+        fi
+    fi
+
+    # Otherwise walk up from the cwd, as DDEV's own CheckForConf does. Match any
+    # .ddev/config*.yaml — a project whose config lives only in a layered file
+    # (config.tryout.yaml) still has no plain config.yaml.
+    local dir="${PWD}"
+    while [ -n "${dir}" ] && [ "${dir}" != "/" ]; do
+        if [ -d "${dir}/.ddev" ] && compgen -G "${dir}/.ddev/config*.yaml" >/dev/null 2>&1; then
+            echo "${dir}"
+            return 0
+        fi
+        dir="$(dirname "${dir}")"
+    done
+}
+
+APPROOT="$(resolve_approot)"
+[ -z "${APPROOT}" ] && exit 0
+
+DDEV_APPROOT="${APPROOT}"
+export DDEV_APPROOT
+
+FUNCTIONS="${APPROOT}/.ddev/tryout/functions.sh"
+# Guard the source: a partial install must not break TAB.
+if [ -f "${FUNCTIONS}" ]; then
+    # shellcheck disable=SC1090
+    . "${FUNCTIONS}" 2>/dev/null
+fi
+
+# --- Candidate sources ----------------------------------------------------
+# Each prints one candidate per line and swallows every error.
+
+worktree_names() {
+    declare -F list_core_worktrees >/dev/null 2>&1 || return 0
+    list_core_worktrees 2>/dev/null | cut -f1
+}
+
+site_names() {
+    echo "${PRIMARY_SITE:-@primary}"
+    declare -F served_site_names >/dev/null 2>&1 || return 0
+    served_site_names 2>/dev/null
+}
+
+# Local refs only — a TAB must never wait on the network. `download` and
+# `checkout` both fetch, so this list is as fresh as the last one.
+branch_names() {
+    declare -F list_local_core_branches >/dev/null 2>&1 || return 0
+    list_local_core_branches 2>/dev/null
+}
+
+# --- Dispatch -------------------------------------------------------------
+# $1 is the command name ("tryout"); $2 the verb, $3 its subcommand, and the
+# last argument is the word being completed.
+VERB="${2:-}"
+SUB="${3:-}"
+
+case "${VERB}" in
+    '' | "''")
+        # ddev tryout <TAB> — the verbs the dispatch case accepts.
+        printf '%s\n' status download checkout composer patch worktree cs herdr exec reset delete help
+        ;;
+
+    status | composer)
+        ;;
+
+    download)
+        printf '%s\n' --reset
+        ;;
+
+    checkout)
+        # checkout <branch> [<site>]
+        if [ "$#" -le 3 ]; then
+            branch_names
+        else
+            site_names
+        fi
+        ;;
+
+    patch | reset)
+        # patch [<change-id>] [<site>] / reset [<site>]
+        site_names
+        ;;
+
+    exec)
+        # exec <site> <cmd>… — only the site is ours to complete.
+        [ "$#" -le 3 ] && site_names
+        ;;
+
+    delete)
+        site_names
+        printf '%s\n' --all
+        ;;
+
+    cs)
+        [ "$#" -le 3 ] && printf '%s\n' setup doctor uninstall help
+        ;;
+
+    herdr)
+        # herdr [<worktree>|new|setup-keys|unsetup-keys] [flags]
+        if [ "$#" -le 3 ]; then
+            printf '%s\n' new setup-keys unsetup-keys
+            worktree_names
+            printf '%s\n' --no-agent --no-focus --no-attach
+        else
+            case "${SUB}" in
+                setup-keys) printf '%s\n' --yes ;;
+                new)        : ;;   # a new worktree's name — nothing to suggest
+                *)          printf '%s\n' --no-agent --no-focus --no-attach ;;
+            esac
+        fi
+        ;;
+
+    worktree)
+        case "${SUB}" in
+            '' | "''")
+                printf '%s\n' add list use serve unserve remove adopt help
+                ;;
+            add)
+                # add <name> [<branch>] [--branch] [--serve] [--php 8.2] [--herdr]
+                if [ "$#" -le 4 ]; then
+                    :  # the new worktree's name — nothing to suggest
+                else
+                    branch_names
+                    printf '%s\n' --branch --serve --php --herdr
+                fi
+                ;;
+            use)
+                [ "$#" -le 4 ] && worktree_names
+                printf '%s\n' --force
+                ;;
+            remove | rm)
+                [ "$#" -le 4 ] && worktree_names
+                printf '%s\n' --force
+                ;;
+            serve)
+                [ "$#" -le 4 ] && worktree_names
+                printf '%s\n' --php
+                ;;
+            unserve)
+                [ "$#" -le 4 ] && worktree_names
+                printf '%s\n' --drop-db
+                ;;
+            adopt)
+                printf '%s\n' --dry-run
+                ;;
+        esac
+        ;;
+esac
+
+exit 0

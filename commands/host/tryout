@@ -5,7 +5,11 @@
 ## Description: TYPO3 development toolkit — manage Core, patches, and extensions
 ## Usage: tryout [command] [args]
 ## Example: "ddev tryout status\nddev tryout download\nddev tryout patch 56947\nddev tryout reset\nddev tryout delete"
-## AutocompleteTerms: ["status","download","checkout","composer","patch","worktree","serve","unserve","cs","exec","reset","delete","help"]
+# NO ## AutocompleteTerms: header on purpose. It sets cobra's ValidArgs, which
+# then rejects any second argument during completion — so ValidArgsFunction,
+# i.e. commands/host/autocomplete/tryout, is never called and
+# `ddev tryout cs <TAB>` completes nothing. The two are mutually exclusive;
+# the script supersedes the flat list. See tests/unit.bats.
 
 set -euo pipefail
 
@@ -363,9 +367,7 @@ cmd_checkout() {
         if [ -d "${CORE_DIR}/.git" ]; then
             echo ""
             echo "Available remote branches:"
-            git -C "${CORE_DIR}" ls-remote --heads origin 2>/dev/null \
-                | awk -F/ '{print "  " $NF}' \
-                | sort -V
+            list_remote_core_branches | sed 's/^/  /'
         fi
         return 1
     fi
@@ -390,9 +392,7 @@ cmd_checkout() {
         error "Branch '${target_branch}' does not exist on origin"
         echo ""
         echo "Available branches:"
-        git -C "${CORE_DIR}" ls-remote --heads origin 2>/dev/null \
-            | awk -F/ '{print "  " $NF}' \
-            | sort -V
+        list_remote_core_branches | sed 's/^/  /'
         return 1
     fi
 
