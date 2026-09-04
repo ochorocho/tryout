@@ -9,6 +9,45 @@
 setup() { load setup.sh; }
 teardown() { load teardown.sh; }
 
+# A backend that ANSWERS is not a backend that WORKS: a misconfigured instance
+# returns 200 with a broken page, and a HEAD request cannot tell the difference.
+# The login page's <title> is the cheap proof that TYPO3 booted, resolved its site
+# configuration and rendered — so assert on the body, not just the status.
+assert_backend_loads() {
+  local url="$1"
+  # DDEV puts project hostnames in /etc/hosts, which needs sudo — and the suite runs
+  # with DDEV_NONINTERACTIVE=true, so it never gets one. Where *.ddev.site does not
+  # resolve on its own (a plain dev machine), skip rather than report a false
+  # failure; CI and any host with a wildcard resolver still run the assertion.
+  curl -sfI --max-time 10 "${url}" >/dev/null 2>&1 || {
+    case "$?" in
+      6) skip "${url} does not resolve — no /etc/hosts entry (needs sudo)" ;;
+    esac
+  }
+
+  run curl -sfI "${url}"
+  assert_success
+  assert_output --partial "HTTP/2 200"
+
+  run curl -sf --max-time 30 "${url}"
+  assert_success
+  assert_output --partial "<title>TYPO3 CMS Login"
+}
+
+# The inverse: an unserved hostname must stop answering entirely.
+assert_backend_gone() {
+  local url="$1"
+  # Only meaningful where the hostname could resolve in the first place.
+  curl -sfI --max-time 10 "https://${PROJNAME}.ddev.site/typo3/" >/dev/null 2>&1 || {
+    case "$?" in
+      6) skip "ddev.site does not resolve here — no /etc/hosts entry (needs sudo)" ;;
+    esac
+  }
+
+  run curl -sfI --max-time 20 "${url}"
+  assert_failure
+}
+
 # Clone only what the test needs. `ddev start` runs the post-start hook, which
 # clones Core, syncs the overlay, installs dependencies and sets up TYPO3.
 addon_start() {
@@ -42,9 +81,7 @@ addon_start() {
 
   # TYPO3 was set up and answers on the backend.
   assert_file_exist "${TESTDIR}/config/system/settings.php"
-  run curl -sfI "https://${PROJNAME}.ddev.site/typo3/"
-  assert_success
-  assert_output --partial "HTTP/2 200"
+  assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
 
   # And the status command reflects all of it.
   run ddev tryout status
@@ -80,9 +117,7 @@ addon_start() {
   run grep -q 'wikimedia/composer-merge-plugin' "${TESTDIR}/composer.tryout.json"
   assert_success
 
-  run curl -sfI "https://${PROJNAME}.ddev.site/typo3/"
-  assert_success
-  assert_output --partial "HTTP/2 200"
+  assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
 }
 
 # bats test_tags=lifecycle
@@ -153,12 +188,8 @@ addon_start() {
   assert_success
 
   # Both sites answer, on different TYPO3 and PHP versions.
-  run curl -sfI "https://${PROJNAME}.ddev.site/typo3/"
-  assert_success
-  assert_output --partial "HTTP/2 200"
-  run curl -sfI "https://v13.${PROJNAME}.ddev.site/typo3/"
-  assert_success
-  assert_output --partial "HTTP/2 200"
+  assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
+  assert_backend_loads "https://v13.${PROJNAME}.ddev.site/typo3/"
 
   run ddev tryout exec v13 vendor/bin/typo3 --version
   assert_success
@@ -170,11 +201,77 @@ addon_start() {
   assert_output --partial "v13"
   assert_output --partial "db_v13"
 
+  # Each site must have its OWN database, populated by its own TYPO3 setup — a
+  # misrouted site would still answer 200 while sharing the primary's tables.
+  run ddev mysql -uroot -proot -N -e \
+    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='db_v13';"
+  assert_success
+  refute_output "0"
+
   # Unserving drops the site but keeps the worktree and its git state.
   run ddev tryout worktree unserve v13
   assert_success
   assert_dir_not_exist "${TESTDIR}/sites/v13"
   assert_dir_exist "${TESTDIR}/typo3-core-v13"
+
+  # ...and the hostname stops answering, while the primary is unaffected.
+  run ddev restart -y
+  assert_success
+  assert_backend_gone "https://v13.${PROJNAME}.ddev.site/typo3/"
+  assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
+
+  # The database survives unserve by design, so re-serving restores the site.
+  run ddev tryout worktree serve v13
+  assert_success
+  run ddev restart -y
+  assert_success
+  assert_backend_loads "https://v13.${PROJNAME}.ddev.site/typo3/"
+}
+
+# bats test_tags=lifecycle
+@test "several worktrees are served side by side, each on its own database" {
+  set -eu -o pipefail
+  addon_start
+
+  run ddev tryout worktree add v13 13.4 --serve
+  assert_success
+  run ddev tryout worktree add v12 12.4 --serve
+  assert_success
+  run ddev restart -y
+  assert_success
+
+  # Three instances at once: the primary plus two served worktrees.
+  assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
+  assert_backend_loads "https://v13.${PROJNAME}.ddev.site/typo3/"
+  assert_backend_loads "https://v12.${PROJNAME}.ddev.site/typo3/"
+
+  # Each on its own Core, and its own database.
+  run ddev tryout exec v13 vendor/bin/typo3 --version
+  assert_success
+  assert_output --partial "TYPO3 CMS 13.4"
+
+  run ddev tryout exec v12 vendor/bin/typo3 --version
+  assert_success
+  assert_output --partial "TYPO3 CMS 12.4"
+
+  # Separate databases, each with its own schema.
+  run ddev mysql -uroot -proot -N -e \
+    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='db_v13';"
+  assert_success
+  refute_output "0"
+  run ddev mysql -uroot -proot -N -e \
+    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='db_v12';"
+  assert_success
+  refute_output "0"
+
+  # Dropping one leaves the others serving.
+  run ddev tryout worktree unserve v12
+  assert_success
+  run ddev restart -y
+  assert_success
+  assert_backend_gone  "https://v12.${PROJNAME}.ddev.site/typo3/"
+  assert_backend_loads "https://v13.${PROJNAME}.ddev.site/typo3/"
+  assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
 }
 
 # bats test_tags=lifecycle

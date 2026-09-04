@@ -869,6 +869,18 @@ bats tests --filter-tags '!release,!lifecycle'   # the 84 fast tests
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 
+The lifecycle suite asserts that each served worktree really is a separate instance:
+every URL check fetches the page body and looks for the TYPO3 login `<title>`, not
+just a 200, because a misconfigured site answers 200 with a broken page. It runs the
+primary and two served worktrees side by side, checks each has its own populated
+database, and that `unserve` stops one hostname answering while the others keep
+serving.
+
+> Those URL assertions **skip** on a machine where `*.ddev.site` does not resolve.
+> DDEV writes project hostnames to `/etc/hosts`, which needs sudo, and the suite runs
+> with `DDEV_NONINTERACTIVE=true` — so a throwaway test project never gets an entry.
+> CI, and any host with a wildcard resolver, runs them for real.
+
 `tests/test.bats` carries an `install from release` test tagged `release`; it needs
 a published GitHub release, so exclude it locally with `--filter-tags '!release'`.
 CI runs the fast suites on every push and the lifecycle and release suites nightly.
