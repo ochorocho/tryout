@@ -145,6 +145,7 @@ worktree_menu() {
     printf "  ${BOLD}4${NC} serve         ${DIM}own URL, PHP and database${NC}\n"
     printf "  ${BOLD}5${NC} unserve       ${DIM}drop the site, keep the worktree${NC}\n"
     printf "  ${BOLD}6${NC} remove        ${DIM}delete the checkout${NC}\n"
+    printf "  ${BOLD}7${NC} adopt         ${DIM}move stray checkouts into the project${NC}\n"
     printf "  ${BOLD}q${NC} back\n"
     printf "\n  choose: "
     read -r -n1 key
@@ -172,6 +173,31 @@ worktree_menu() {
            ask_name "worktree" "$(worktree_names)"; name="${ASKED}"
            confirm_destructive "Removes the checkout typo3-core-${name} and any uncommitted work in it." "${name}"
            run_in_pane worktree remove "${name}" --force ;;
+        7) run_here worktree adopt ;;
+        *) exit 0 ;;
+    esac
+}
+
+cs_menu() {
+    local key user
+    printf "\n${BOLD}cs${NC} — Gerrit contribution setup\n\n"
+    printf "  ${BOLD}1${NC} doctor        ${DIM}check hooks, template, push URL${NC}\n"
+    printf "  ${BOLD}2${NC} setup         ${DIM}install them (asks for your Gerrit user)${NC}\n"
+    printf "  ${BOLD}3${NC} uninstall     ${DIM}remove hooks, reset the push URL${NC}\n"
+    printf "  ${BOLD}q${NC} back\n"
+    printf "\n  choose: "
+    read -r -n1 key
+    read -r -t 0.01 _drain 2>/dev/null || true
+    printf '\n'
+
+    case "${key}" in
+        1) run_here cs doctor ;;
+        2) printf '\n  Gerrit user [empty = ask in the pane]: '
+           read -r user || true
+           # cs setup probes Gerrit over SSH, so it belongs in a pane.
+           run_in_pane cs setup ${user:+"${user}"} ;;
+        3) confirm_destructive "Removes the Gerrit hooks and resets origin's push URL." "uninstall"
+           run_in_pane cs uninstall ;;
         *) exit 0 ;;
     esac
 }
@@ -186,7 +212,7 @@ main_menu() {
     printf "  ${BOLD}5${NC} checkout      ${DIM}switch TYPO3 version${NC}\n"
     printf "  ${BOLD}6${NC} download      ${DIM}clone or update Core${NC}\n"
     printf "  ${BOLD}7${NC} composer      ${DIM}regenerate the overlay${NC}\n"
-    printf "  ${BOLD}8${NC} cs doctor     ${DIM}check the Gerrit setup${NC}\n"
+    printf "  ${BOLD}8${NC} cs…           ${DIM}Gerrit contribution setup${NC}\n"
     printf "  ${BOLD}9${NC} reset         ${DIM}Core to its branch + rebuild${NC}\n"
     printf "  ${BOLD}0${NC} delete        ${DIM}wipe a site's DB + fileadmin${NC}\n"
     printf "  ${BOLD}e${NC} exec          ${DIM}run a command in a site${NC}\n"
@@ -210,7 +236,7 @@ main_menu() {
            run_in_pane checkout "${name}" ;;
         6) run_in_pane download ;;
         7) run_in_pane composer ;;
-        8) run_here cs doctor ;;
+        8) cs_menu ;;
         9) run_in_pane reset ;;
         0) printf '\n'
            ask_name "site" "$(served_names)"; name="${ASKED}"

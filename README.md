@@ -624,16 +624,20 @@ That binds **two** keys:
 | Key | What it opens |
 |---|---|
 | `prefix+shift+G` | New Core worktree — asks for a name and branch |
-| `prefix+shift+T` | The tryout menu — status, worktrees, patches, `cs doctor`, … |
+| `prefix+shift+T` | The tryout menu — every `ddev tryout` command |
 
 `prefix` is herdr's own, `ctrl+b` by default — so the menu is <kbd>ctrl+b</kbd> then
 <kbd>shift</kbd>+<kbd>T</kbd>, pressed in sequence. `ddev tryout herdr` reminds you of
 the key when it finishes, and `ctrl+b ?` lists every active binding.
 
-The menu runs instant commands (`status`, `worktree list`, `cs doctor`) in the popup
-itself, and pushes anything slow (`serve`, `use`, `reset`, `checkout`) into a new pane
-you can watch. Destructive ones — `delete`, `worktree remove`, `unserve --drop-db` —
-make you type the name back first.
+The menu covers every command the CLI dispatches, with `worktree` and `cs` as
+submenus. It runs instant commands (`status`, `worktree list`, `cs doctor`) in the
+popup itself, and pushes anything slow (`serve`, `use`, `reset`, `checkout`,
+`cs setup`) into a new pane you can watch. Destructive ones — `delete`,
+`worktree remove`, `cs uninstall` — make you type a confirmation first.
+
+Flags are the exception: the menu prompts for names, not options, so
+`download --reset`, `worktree add --php 8.2` and `delete --all` stay CLI-only.
 
 It backs your config up first (`config.toml.tryout-backup-<timestamp>`) and delimits
 its block with markers, so `unsetup-keys` restores the file byte for byte.
@@ -808,7 +812,7 @@ bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no 
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
 bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
-bats tests --filter-tags '!release,!lifecycle'   # the 73 fast tests
+bats tests --filter-tags '!release,!lifecycle'   # the 74 fast tests
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 

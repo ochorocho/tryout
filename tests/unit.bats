@@ -585,6 +585,29 @@ complete() {
   done
 }
 
+@test "the menu covers the worktree and cs subcommands too" {
+  # Checking only the top-level verbs is what let `worktree adopt` ship without a
+  # menu entry: `worktree` matched, the subcommand went unnoticed.
+  set -eu -o pipefail
+  local subs sub
+
+  # worktree's own case labels, minus the aliases and help.
+  subs=$(sed -n '/^cmd_worktree()/,/^}$/p' "${DIR}/commands/host/tryout" \
+    | sed -n 's/^        \([a-z|]*\))$/\1/p' | tr '|' '\n' \
+    | grep -vE '^(rm|help)$')
+  [ -n "${subs}" ]
+  for sub in ${subs}; do
+    grep -qE "worktree ${sub}\b" "${DIR}/tryout/herdr-menu.sh" \
+      || { echo "menu is missing 'worktree ${sub}'"; false; }
+  done
+
+  # cs: setup, doctor and uninstall must all be reachable.
+  for sub in setup doctor uninstall; do
+    grep -qE "cs ${sub}\b" "${DIR}/tryout/herdr-menu.sh" \
+      || { echo "menu is missing 'cs ${sub}'"; false; }
+  done
+}
+
 @test "the menu keeps destructive commands behind a confirmation" {
   set -eu -o pipefail
   # Each destructive path must call confirm_destructive before running anything.
