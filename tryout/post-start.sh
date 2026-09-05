@@ -53,6 +53,11 @@ else
 fi
 
 # --- Step 3: Composer install ---
+# Everything above touched typo3-core/ on the host. With Mutagen the container has
+# not necessarily caught up yet — a fresh clone is tens of thousands of files — so
+# flush the sync now, or sync-composer.php fails with "sysext not found".
+sync_to_container
+
 # The overlay ships with an empty require block, so it must be synced against the
 # sysexts actually present in this Core checkout before install can resolve the
 # path repository. Doing it every start also keeps it correct after a branch switch.

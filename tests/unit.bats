@@ -1646,3 +1646,23 @@ STUB
   run grep -nE 'have_gum && \[ -t 2 \]' "${DIR}/tryout/functions.sh"
   assert_success
 }
+
+@test "a fresh Core clone is flushed to the container before anything runs in there" {
+  # With Mutagen a directory created on the host is not yet visible in the
+  # container. post-start.sh once ran sync-composer.php straight after `git clone`
+  # and died with "typo3-core/typo3/sysext not found" on a fresh install. Every
+  # clone must therefore be followed by sync_to_container before the next
+  # container-side call — in any script that clones.
+  set -eu -o pipefail
+  local file clone sync container
+  for file in "${DIR}/tryout/post-start.sh" "${DIR}/commands/host/tryout"; do
+    clone=$(grep -nE '^[[:space:]]*(if ! )?git clone ' "${file}" | head -1 | cut -d: -f1)
+    [ -n "${clone}" ] || fail "no git clone in ${file}"
+    sync=$(awk -v from="${clone}" 'NR > from && /^[[:space:]]*sync_to_container/ { print NR; exit }' "${file}")
+    container=$(awk -v from="${clone}" 'NR > from && /^[[:space:]]*(if ! )?ddev (php|exec|composer|typo3) / { print NR; exit }' "${file}")
+    [ -n "${sync}" ] || fail "${file}: git clone at line ${clone} is never followed by sync_to_container"
+    [ -n "${container}" ] || fail "${file}: expected a container-side call after the clone at line ${clone}"
+    [ "${sync}" -lt "${container}" ] \
+      || fail "${file}: sync_to_container (line ${sync}) must come before the first container call (line ${container}) after the clone at line ${clone}"
+  done
+}
