@@ -539,25 +539,83 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
   done
 }
 
-@test "setup-keys refuses to write a second block and backs the config up" {
+@test "setup-keys keeps a single global block and backs the config up" {
+  # The popups resolve the project from the cwd, so one block serves every
+  # project. A second run from the same project changes nothing.
   set -eu -o pipefail
   printf 'a = 1\n' > "${FAKEROOT}/cfg.toml"
+  mkdir -p "${FAKEROOT}/.ddev/tryout" && : > "${FAKEROOT}/.ddev/tryout/herdr-menu.sh"
 
   run env DDEV_SITENAME=myproj HERDR_CONFIG="${FAKEROOT}/cfg.toml" bash -c "
     export DDEV_APPROOT='${FAKEROOT}'
     source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
     command -v herdr >/dev/null 2>&1 || skip 'herdr not installed'
     herdr_setup_keys true >/dev/null 2>&1
-    herdr_setup_keys true >/dev/null 2>&1
+    herdr_setup_keys true 2>&1 | grep -c 'already in'
     grep -c '>>> tryout' '${FAKEROOT}/cfg.toml'
+    grep -c 'tryout myproj' '${FAKEROOT}/cfg.toml' || true
   "
   assert_success
-  assert_output "1"
+  # second run said "already in"; one block; and it carries no project name.
+  assert_output $'1\n1\n0'
 
   # The backup must hold the pre-write content.
   run bash -c "cat '${FAKEROOT}'/cfg.toml.tryout-backup-*"
   assert_success
   assert_output "a = 1"
+}
+
+@test "setup-keys folds per-project blocks into the one global block" {
+  # Older versions wrote "# >>> tryout <project> >>>" once per project, so two
+  # projects bound the same three keys twice. Both legacy blocks must go, exactly
+  # one global block must remain, and unsetup must still give the file back byte
+  # for byte.
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/.ddev/tryout" && : > "${FAKEROOT}/.ddev/tryout/herdr-menu.sh"
+  local legacy proj
+  {
+    printf 'a = 1\n'
+    for proj in oldproj otherproj; do
+      printf '\n# >>> tryout %s >>> newline_added=false blank_added=true\n' "${proj}"
+      printf '[[keys.command]]\nkey = "prefix+shift+t"\ncommand = "/gone/%s/.ddev/tryout/herdr-menu.sh"\n' "${proj}"
+      printf '# <<< tryout %s <<<\n' "${proj}"
+    done
+  } > "${FAKEROOT}/cfg.toml"
+
+  run env DDEV_SITENAME=myproj HERDR_CONFIG="${FAKEROOT}/cfg.toml" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    command -v herdr >/dev/null 2>&1 || skip 'herdr not installed'
+    herdr_setup_keys true 2>&1 | grep -o 'Merged 2 tryout block'
+    grep -c '>>> tryout' '${FAKEROOT}/cfg.toml'
+    grep -c 'oldproj\|otherproj' '${FAKEROOT}/cfg.toml' || true
+    grep -c '${FAKEROOT}/.ddev/tryout/herdr-menu.sh' '${FAKEROOT}/cfg.toml'
+    herdr_unsetup_keys >/dev/null 2>&1
+    cat '${FAKEROOT}/cfg.toml'
+  "
+  assert_success
+  assert_output $'Merged 2 tryout block\n1\n0\n1\na = 1'
+}
+
+@test "setup-keys replaces a block whose project is gone" {
+  # A block pointing at a deleted project is a dead key in every session.
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/.ddev/tryout" && : > "${FAKEROOT}/.ddev/tryout/herdr-menu.sh"
+  {
+    printf 'a = 1\n\n# >>> tryout >>> newline_added=false blank_added=true\n'
+    printf '[[keys.command]]\ncommand = "/gone/.ddev/tryout/herdr-menu.sh"\n# <<< tryout <<<\n'
+  } > "${FAKEROOT}/cfg.toml"
+
+  run env DDEV_SITENAME=myproj HERDR_CONFIG="${FAKEROOT}/cfg.toml" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    command -v herdr >/dev/null 2>&1 || skip 'herdr not installed'
+    herdr_setup_keys true >/dev/null 2>&1
+    grep -c '/gone/' '${FAKEROOT}/cfg.toml' || true
+    grep -c '${FAKEROOT}/.ddev/tryout/herdr-menu.sh' '${FAKEROOT}/cfg.toml'
+  "
+  assert_success
+  assert_output $'0\n1'
 }
 
 @test "the popup script trusts the cwd, not its own location" {

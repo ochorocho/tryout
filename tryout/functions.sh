@@ -937,10 +937,19 @@ reap_tryout_jobs() {
 
 herdr_config_path() { echo "${HERDR_CONFIG:-${HOME}/.config/herdr/config.toml}"; }
 
-# Delimiters so unsetup-keys can remove exactly our block and nothing else. The
-# project name is in the marker: this file is global and may serve several projects.
-herdr_key_marker_start() { echo "# >>> tryout ${DDEV_SITENAME:-tryout} >>>"; }
-herdr_key_marker_end()   { echo "# <<< tryout ${DDEV_SITENAME:-tryout} <<<"; }
+# Delimiters so unsetup-keys can remove exactly our block and nothing else.
+#
+# ONE block for the whole machine, not one per project. The popups resolve the
+# project from the pane's cwd, never from their own path, so a second block would
+# only bind the same three keys again — and a block whose project was deleted is a
+# dead key. Older versions put the project name in the marker ("# >>> tryout
+# <project> >>>"); those blocks are still recognised so setup-keys can fold them
+# into the one global block and unsetup-keys can remove them.
+herdr_key_marker_start() { echo "# >>> tryout >>>"; }
+herdr_key_marker_end()   { echo "# <<< tryout <<<"; }
+# What every start/end marker begins with, current or legacy shape.
+herdr_key_marker_start_prefix() { echo "# >>> tryout "; }
+herdr_key_marker_end_prefix()   { echo "# <<< tryout "; }
 
 herdr_key_block() {
     printf '%s\n%s\n' "$(herdr_key_marker_start)" "$(herdr_key_block_body)"
@@ -980,10 +989,61 @@ $(herdr_key_marker_end)
 BLOCK
 }
 
-herdr_keys_installed() {
+# The marker lines opening tryout blocks in the config, of either shape.
+herdr_key_block_starts() {
     local cfg
     cfg="$(herdr_config_path)"
-    [ -f "${cfg}" ] && grep -qF "$(herdr_key_marker_start)" "${cfg}"
+    [ -f "${cfg}" ] || return 0
+    grep -E '^# >>> tryout( [^ ]+)? >>>' "${cfg}" || true
+}
+
+herdr_keys_installed() { [ -n "$(herdr_key_block_starts)" ]; }
+
+# True when the config holds exactly one block, in the global shape, whose scripts
+# still exist. Anything else — per-project blocks, several blocks, a block left
+# behind by a deleted project — is what setup-keys replaces.
+herdr_keys_current() {
+    local cfg starts dir
+    cfg="$(herdr_config_path)"
+    starts="$(herdr_key_block_starts)"
+    [ "$(printf '%s\n' "${starts}" | grep -c .)" = "1" ] || return 1
+    printf '%s' "${starts}" | grep -qF "$(herdr_key_marker_start)" || return 1
+    dir=$(sed -n 's|^command = "\(.*\)/herdr-menu.sh"$|\1|p' "${cfg}" | head -1)
+    [ -n "${dir}" ] && [ -f "${dir}/herdr-menu.sh" ]
+}
+
+# Delete every tryout block from the config, in place, plus the single blank line
+# setup-keys put before each — so a setup/unsetup round trip leaves the file byte
+# for byte as it was. Blank lines are held back and only emitted once a real line
+# follows, which is how the blank line before a block is dropped with it.
+herdr_strip_key_blocks() {
+    local cfg tmp strip_newline="false"
+    cfg="$(herdr_config_path)"
+    tmp="${cfg}.tryout-tmp.$$"
+    grep -q "newline_added=true" "${cfg}" && strip_newline="true"
+
+    awk -v start="$(herdr_key_marker_start_prefix)" -v end="$(herdr_key_marker_end_prefix)" '
+        index($0, start) == 1 {
+            inblock = 1
+            # We added one blank line before this block; give back any others.
+            if ($0 ~ /blank_added=true/) sub(/\n$/, "", pending)
+            printf "%s", pending
+            pending = ""
+            next
+        }
+        index($0, end) == 1 { inblock = 0; next }
+        inblock             { next }
+        /^[[:space:]]*$/ { pending = pending $0 "\n"; next }
+        { printf "%s%s\n", pending, $0; pending = "" }
+        END { printf "%s", pending }
+    ' "${cfg}" > "${tmp}" || { error "Could not rewrite ${cfg}"; rm -f "${tmp}"; return 1; }
+
+    # Give back the terminating newline we added, if we added it.
+    if [ "${strip_newline}" = "true" ] && [ -s "${tmp}" ]; then
+        printf '%s' "$(cat "${tmp}")" > "${tmp}.n" && mv "${tmp}.n" "${tmp}"
+    fi
+
+    mv "${tmp}" "${cfg}" || { error "Could not replace ${cfg}"; rm -f "${tmp}"; return 1; }
 }
 
 TRYOUT_HERDR_PLUGIN_ID="tryout.worktree-guard"
@@ -1018,14 +1078,24 @@ herdr_setup_keys() {
 
     herdr_available || return 1
 
-    if herdr_keys_installed; then
+    if herdr_keys_current; then
         info "The tryout keybinding is already in ${cfg}"
         info "  ${DIM}→ ddev tryout herdr unsetup-keys   to remove it${NC}"
         return 0
     fi
 
+    # Older versions wrote one block per project, binding the same keys several
+    # times; a block can also outlive its project. Fold whatever is there into
+    # one global block pointing at this project.
+    local replacing=0
+    replacing=$(herdr_key_block_starts | grep -c . || true)
+
     echo ""
-    echo -e "${BOLD}This adds the following to ${cfg}:${NC}"
+    if [ "${replacing}" -gt 0 ]; then
+        echo -e "${BOLD}This replaces ${replacing} tryout block(s) in ${cfg} with:${NC}"
+    else
+        echo -e "${BOLD}This adds the following to ${cfg}:${NC}"
+    fi
     echo ""
     herdr_key_block | sed 's/^/  /'
     echo ""
@@ -1056,6 +1126,10 @@ herdr_setup_keys() {
         : > "${cfg}"
     fi
 
+    if [ "${replacing}" -gt 0 ]; then
+        herdr_strip_key_blocks || return 1
+    fi
+
     # Never fuse onto the user's last line: if the file does not end in a newline,
     # terminate it first. That byte is theirs, so unsetup-keys must not give it back —
     # hence the marker records whether we added one.
@@ -1079,7 +1153,11 @@ herdr_setup_keys() {
         error "Could not write ${cfg}"
         return 1
     }
-    success "Bound prefix+shift+G (worktree), +T (menu), +D (dashboard)"
+    if [ "${replacing}" -gt 0 ]; then
+        success "Merged ${replacing} tryout block(s) into one, bound to this project"
+    else
+        success "Bound prefix+shift+G (worktree), +T (menu), +D (dashboard)"
+    fi
 
     # The plugin covers the route a keybinding cannot: herdr's own New-worktree entry
     # in the sidebar right-click menu.
@@ -1091,7 +1169,7 @@ herdr_setup_keys() {
 }
 
 herdr_unsetup_keys() {
-    local cfg tmp
+    local cfg
     cfg="$(herdr_config_path)"
 
     if ! herdr_keys_installed; then
@@ -1099,39 +1177,7 @@ herdr_unsetup_keys() {
         return 0
     fi
 
-    tmp="${cfg}.tryout-tmp.$$"
-    # Delete the marked block, plus the single blank line setup-keys put before it,
-    # so a setup/unsetup round trip leaves the file byte for byte as it was.
-    # Hold back blank lines and only emit them once a real line follows. The blank
-    # line setup-keys wrote before the block is then dropped with it, so a
-    # setup/unsetup round trip leaves the file byte for byte as it was.
-    local strip_newline="false" drop_blank="false"
-    grep -q "newline_added=true" "${cfg}" && strip_newline="true"
-    grep -q "blank_added=true" "${cfg}" && drop_blank="true"
-
-    awk -v start="$(herdr_key_marker_start)" -v end="$(herdr_key_marker_end)" \
-        -v dropblank="${drop_blank}" '
-        index($0, start) == 1 {
-            inblock = 1
-            # We added one blank line before the block; give back any others.
-            if (dropblank == "true") sub(/\n$/, "", pending)
-            printf "%s", pending
-            pending = ""
-            next
-        }
-        $0 == end             { inblock = 0; next }
-        inblock               { next }
-        /^[[:space:]]*$/ { pending = pending $0 "\n"; next }
-        { printf "%s%s\n", pending, $0; pending = "" }
-        END { printf "%s", pending }
-    ' "${cfg}" > "${tmp}" || { error "Could not rewrite ${cfg}"; rm -f "${tmp}"; return 1; }
-
-    # Give back the terminating newline we added, if we added it.
-    if [ "${strip_newline}" = "true" ] && [ -s "${tmp}" ]; then
-        printf '%s' "$(cat "${tmp}")" > "${tmp}.n" && mv "${tmp}.n" "${tmp}"
-    fi
-
-    mv "${tmp}" "${cfg}" || { error "Could not replace ${cfg}"; rm -f "${tmp}"; return 1; }
+    herdr_strip_key_blocks || return 1
     success "Removed the tryout keybinding from ${cfg}"
     herdr_unlink_plugin
 

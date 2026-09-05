@@ -759,6 +759,14 @@ writes anything: every change goes through the menu.
 It backs your config up first (`config.toml.tryout-backup-<timestamp>`) and delimits
 its block with markers, so `unsetup-keys` restores the file byte for byte.
 
+There is **one block for the whole machine**, not one per project: the popups find
+the project from the pane's working directory, so the same block serves every tryout
+project. Running `setup-keys` from another project, or after the project the block
+points at was deleted, replaces the block with one pointing at the current project.
+Blocks written by older versions carried the project name and stacked up, binding
+the same keys several times; `setup-keys` folds them into the single block, and
+`unsetup-keys` removes them too.
+
 #### Worktrees always land in the project
 
 A TYPO3 Core worktree has to be at `<project>/typo3-core-<name>` — that is what the
