@@ -19,14 +19,6 @@ bats_load_library bats-assert
 bats_load_library bats-file
 bats_load_library bats-support
 
-# gum is a hard requirement of the add-on: install fails without it, so every
-# DDEV-backed test would fail with a confusing error instead of a clear one.
-if ! command -v gum >/dev/null 2>&1; then
-    echo "these tests need 'gum' on the host — brew install gum" >&2
-    echo "https://github.com/charmbracelet/gum#installation" >&2
-    exit 1
-fi
-
 export DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." >/dev/null 2>&1 && pwd)"
 export PROJNAME="test-$(basename "${GITHUB_REPO}")"
 mkdir -p "${HOME}/tmp"

@@ -31,19 +31,32 @@ jobs:
   # install suite costs a full DDEV project lifecycle, so the slow tests that
   # clone TYPO3 Core are sharded into their own job below.
   tests:
-    name: ${{ matrix.suite }} (${{ matrix.ddev_version }})
+    name: ${{ matrix.suite }} (${{ matrix.ddev_version }}${{ matrix.gum == 'absent' && ', no gum' || '' }})
     strategy:
       matrix:
         ddev_version: [stable, HEAD]
         suite: [unit, install]
+        gum: [present]
+        # gum is optional, so one extra shard runs without it to prove the
+        # plain-text fallback still passes — otherwise CI would only ever
+        # exercise the styled path. This is `include` adding a combination, not
+        # merging into one: it sets a value for `gum`, which the base matrix
+        # already defines, so it cannot silently overwrite a existing job.
+        include:
+          - ddev_version: stable
+            suite: unit
+            gum: absent
       fail-fast: false
 
     runs-on: ubuntu-latest
 
     steps:
-      # gum is a hard requirement of the add-on (checked in pre_install_actions),
-      # so every job needs it on the runner before the add-on is installed.
+      # gum is optional — the ui_* helpers fall back to plain text without it.
+      # Most jobs install it so the gum path is what CI exercises; the `unit`
+      # suite additionally runs a gumless variant (see the matrix) to prove the
+      # fallback, which is the path a user without gum actually gets.
       - name: Install gum
+        if: matrix.gum != 'absent'
         run: |
           sudo mkdir -p /etc/apt/keyrings
           curl -fsSL https://repo.charm.sh/apt/gpg.key \
@@ -82,8 +95,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # gum is a hard requirement of the add-on (checked in pre_install_actions),
-      # so every job needs it on the runner before the add-on is installed.
+      # gum is optional, but installing it means CI exercises the styled path.
       - name: Install gum
         run: |
           sudo mkdir -p /etc/apt/keyrings
@@ -116,8 +128,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # gum is a hard requirement of the add-on (checked in pre_install_actions),
-      # so every job needs it on the runner before the add-on is installed.
+      # gum is optional, but installing it means CI exercises the styled path.
       - name: Install gum
         run: |
           sudo mkdir -p /etc/apt/keyrings

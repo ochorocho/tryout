@@ -1287,18 +1287,55 @@ STUB
   assert_success
 }
 
-@test "install.yaml requires gum on the host, like git" {
+@test "gum is optional: install notes its absence but does not refuse" {
   set -eu -o pipefail
 
-  # gum renders every table and prompt; without the pre-install check the
-  # failure surfaces much later as a confusing error inside a command.
+  # gum only changes how output looks — every command works without it — so a
+  # missing binary must never block installing the add-on.
   run grep -A2 'command -v gum' "${DIR}/install.yaml"
   assert_success
   assert_output --partial "gum"
 
-  # And the message has to say how to get it.
+  # The note has to say where to get it...
   run grep -q 'github.com/charmbracelet/gum' "${DIR}/install.yaml"
   assert_success
+
+  # ...and must not exit: the git check above it does, this one may not.
+  run helper_eval '
+    block=$(awk "/command -v gum/,/^    fi$/" "'"${DIR}"'/install.yaml")
+    printf "%s" "${block}" | grep -q "exit 1" && exit 1
+    exit 0'
+  assert_success
+}
+
+@test "every ui_ helper degrades to plain output when gum is absent" {
+  set -eu -o pipefail
+
+  # This is the path a user without gum actually gets, so it has to carry the
+  # same information as the styled one — just unstyled.
+  local nogum="PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+
+  run helper_eval "printf 'NAME,STATE\nmain,clean\n' | ${nogum} ui_table"
+  assert_success
+  assert_output --partial "NAME"
+  assert_output --partial "main"
+  assert_output --partial "clean"
+
+  run helper_eval "printf 'Core: main\n' | ${nogum} ui_box 'Status'"
+  assert_success
+  assert_output --partial "Status"
+  assert_output --partial "Core: main"
+
+  # Exit codes still have to survive the un-spun path.
+  run helper_eval "${nogum} ui_spin 'work' true"
+  assert_success
+  run helper_eval "${nogum} ui_spin 'work' false"
+  assert_failure
+
+  # And a piped answer still selects, without gum's chooser.
+  run helper_eval "printf 'main\n' | ${nogum} ui_choose 'pick' benni main"
+  assert_success
+  assert_output --partial "main"
 }
 
 @test "have_tty tests stderr, not stdout, so the chooser survives \$(...)" {

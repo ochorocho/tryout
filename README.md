@@ -843,19 +843,22 @@ git -C ~/typo3-core-shared worktree prune
 - [DDEV](https://ddev.readthedocs.io/en/stable/) v1.24.10+ (enforced by the add-on)
 - Docker Desktop or Colima
 - Git
-- [gum](https://github.com/charmbracelet/gum) — renders the tables, prompts and
-  spinners the commands produce (`brew install gum`, or your package manager).
-  Installation stops with the right command for your platform if it is missing.
 - A `bash` shell on the host — the `ddev tryout`/`ddev tryout cs` commands and the
   post-start hook run on the host rather than inside the container. On
   Windows this means Git Bash (bundled with Git for Windows); DDEV finds it
   automatically. An SSH client is also needed for `ddev tryout cs` to reach Gerrit.
+- Optional: [gum](https://github.com/charmbracelet/gum) — draws the tables,
+  pick-from-a-list prompts and spinners (`brew install gum`, or your package
+  manager). Without it every command still works and prints the same
+  information, just as plain text with a typed prompt instead of a chooser.
+  Installation says so once and carries on.
 - Optional, for `ddev tryout herdr` only: [herdr](https://herdr.dev) and `jq` on the
   host. The add-on installs neither; without them that one command exits with the
   install command for your platform and everything else works as usual.
 
-Output is meant to be read by people: `ddev tryout worktree list` draws a table,
-and `ddev tryout status` a bordered report. **For scripting, use
+Output is meant to be read by people: with gum installed,
+`ddev tryout worktree list` draws a table and `ddev tryout status` a bordered
+report; without it, the same content in plain columns. **For scripting, use
 `ddev tryout worktree list --plain`** — space-padded columns
 (`NAME HEAD BRANCH STATE PHP DB URL`), which is the format the Playwright suite
 parses and the one that stays stable.

@@ -13,11 +13,13 @@ pre_install_actions:
       exit 1
     fi
 
-    # gum renders every table, prompt and spinner the commands produce. It cannot
-    # be sourced from functions.sh here — the payload is not copied yet — so the
-    # platform hint is spelled out inline, matching missing_tool()'s wording.
+    # gum draws the tables, prompts and spinners. It is OPTIONAL: without it the
+    # ui_* helpers in functions.sh fall back to plain text and a typed prompt, so
+    # every command still works — it just looks plainer. Hence a note, not an
+    # exit. It cannot be sourced from functions.sh here (the payload is not
+    # copied yet), so the platform hint is spelled out inline.
     if ! command -v gum >/dev/null 2>&1; then
-      echo "tryout needs 'gum' on the host (it renders the tables and prompts)."
+      echo "Optional: 'gum' is not installed — tryout will use plain output."
       case "$(uname -s 2>/dev/null || echo "${OSTYPE:-}")" in
         Darwin|darwin*) echo "  -> brew install gum" ;;
         Linux|linux*)
@@ -34,7 +36,6 @@ pre_install_actions:
         *) echo "  -> see https://github.com/charmbracelet/gum#installation" ;;
       esac
       echo "  https://github.com/charmbracelet/gum#installation"
-      exit 1
     fi
 
 project_files:
