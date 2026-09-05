@@ -530,6 +530,12 @@ read from `require.php` in that branch's `composer.json`, not from the project's
 PHP version. A 13.4 worktree (`^8.2`) and a main one (`^8.5`) therefore get the
 right runtime each, and a branch with an upper bound like `>=8.2 <8.4` gets 8.3.
 
+The same constraint guards every Composer run. A project on PHP 8.4 with Core
+`main` (`^8.5`), or a `--php` the branch rejects, stops **before** `composer
+install` with the constraint, the version in use and the command that changes
+it — `ddev config --php-version=8.5 && ddev restart` for the project, `worktree
+serve <name> --php <version>` for a site — instead of Composer's resolver trace.
+
 `add` takes `--branch` (a real local branch instead of a detached HEAD), `--serve`,
 `--php 8.2` (which implies `--serve`), and `--herdr` to open it as a
 [herdr workspace](#opening-worktrees-in-herdr) straight away.

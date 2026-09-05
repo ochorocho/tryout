@@ -288,6 +288,7 @@ rebuild_typo3() {
     local name="${1:-${PRIMARY_SITE}}"
 
     if site_is_primary "${name}"; then
+        check_php_for_core || return 1
         info "Running composer install..."
         ddev composer install || { error "Composer install failed"; return 1; }
         info "Running extension:setup..."
@@ -301,6 +302,7 @@ rebuild_typo3() {
 
     local php
     php=$(site_php_version "${name}")
+    check_php_for_core "$(site_core_dir "${name}")" "${php}" "${name}" || return 1
     info "Running composer install for '${name}' on PHP ${php}..."
     ddev exec "php${php}" /usr/local/bin/composer install \
         --working-dir="/var/www/html/sites/${name}" --no-interaction \
@@ -1535,6 +1537,56 @@ available_php_versions() {
         | sort -V
 }
 
+# The PHP constraint a Core checkout states, from require.php in its composer.json.
+# Empty when there is none or the file cannot be read; that is the caller's cue to
+# fall back rather than guess.
+core_php_constraint() {
+    local file="$1"
+    [ -f "${file}" ] || return 0
+    # require.php specifically — a naive grep for "php" finds config.platform.php
+    # first, which is a pinned build version, not the constraint.
+    php -r '
+        $f = $argv[1];
+        $d = json_decode(@file_get_contents($f), true);
+        echo is_array($d) ? ($d["require"]["php"] ?? "") : "";
+    ' "${file}" 2>/dev/null || true
+}
+
+# Does PHP <version> (major.minor) satisfy <constraint>? Exit 0 = yes, 1 = no.
+#
+# Let PHP judge each candidate against the constraint. Core uses "^8.x", but an
+# upper bound like ">=8.2 <8.4" has to be honoured too — reading only the floor
+# would hand a capped branch a PHP it rejects.
+php_satisfies() {
+    local constraint="$1" version="$2"
+    php -r '
+        $c = $argv[1]; $v = $argv[2] . ".0"; $ok = true;
+        // Split on whitespace and commas: every clause must hold.
+        foreach (preg_split("/[\s,]+/", trim($c), -1, PREG_SPLIT_NO_EMPTY) as $part) {
+            if (preg_match("/^\^(\d+)\.(\d+)/", $part, $m)) {
+                // ^8.2 means >=8.2 and <9.0
+                $ok = $ok && version_compare($v, "{$m[1]}.{$m[2]}.0", ">=")
+                          && version_compare($v, ($m[1] + 1) . ".0.0", "<");
+            } elseif (preg_match("/^(>=|<=|>|<|=)?\s*(\d+(?:\.\d+){0,2})$/", $part, $m)) {
+                $op = $m[1] ?: ">=";
+                $ok = $ok && version_compare($v, $m[2], $op === "=" ? "==" : $op);
+            }
+        }
+        exit($ok ? 0 : 1);
+    ' "${constraint}" "${version}" 2>/dev/null
+}
+
+# The PHP versions the web container provides that satisfy <constraint>, ascending.
+matching_php_versions() {
+    local constraint="$1" v
+    while IFS= read -r v; do
+        [ -n "${v}" ] || continue
+        php_satisfies "${constraint}" "${v}" && echo "${v}"
+    done <<EOF
+$(available_php_versions)
+EOF
+}
+
 # The highest available PHP a worktree's Core will accept.
 #
 # Core states its requirement per branch — "^8.5" on main, "^8.2" on 13.4 — so the
@@ -1542,45 +1594,40 @@ available_php_versions() {
 # back to the project version when the constraint cannot be read, which keeps a
 # missing or unparsable composer.json from blocking a serve.
 best_php_for_worktree() {
-    local name="$1" dir constraint v best=""
-    dir="$(core_worktree_dir "${name}")"
-    [ -f "${dir}/composer.json" ] || { echo "${DDEV_PHP_VERSION:-8.5}"; return; }
-
-    # require.php specifically — a naive grep for "php" finds config.platform.php
-    # first, which is a pinned build version, not the constraint.
-    constraint="$(php -r '
-        $f = $argv[1];
-        $d = json_decode(@file_get_contents($f), true);
-        echo is_array($d) ? ($d["require"]["php"] ?? "") : "";
-    ' "${dir}/composer.json" 2>/dev/null)"
+    local name="$1" constraint best
+    constraint="$(core_php_constraint "$(core_worktree_dir "${name}")/composer.json")"
     [ -n "${constraint}" ] || { echo "${DDEV_PHP_VERSION:-8.5}"; return; }
-
-    # Let PHP judge each candidate against the constraint. Core uses "^8.x", but an
-    # upper bound like ">=8.2 <8.4" has to be honoured too — reading only the floor
-    # would hand a capped branch a PHP it rejects.
-    while IFS= read -r v; do
-        [ -n "${v}" ] || continue
-        php -r '
-            $c = $argv[1]; $v = $argv[2] . ".0"; $ok = true;
-            // Split on whitespace and commas: every clause must hold.
-            foreach (preg_split("/[\s,]+/", trim($c), -1, PREG_SPLIT_NO_EMPTY) as $part) {
-                if (preg_match("/^\^(\d+)\.(\d+)/", $part, $m)) {
-                    // ^8.2 means >=8.2 and <9.0
-                    $ok = $ok && version_compare($v, "{$m[1]}.{$m[2]}.0", ">=")
-                              && version_compare($v, ($m[1] + 1) . ".0.0", "<");
-                } elseif (preg_match("/^(>=|<=|>|<|=)?\s*(\d+(?:\.\d+){0,2})$/", $part, $m)) {
-                    $op = $m[1] ?: ">=";
-                    $ok = $ok && version_compare($v, $m[2], $op === "=" ? "==" : $op);
-                }
-            }
-            exit($ok ? 0 : 1);
-        ' "${constraint}" "${v}" 2>/dev/null && best="${v}"
-    done <<EOF
-$(available_php_versions)
-EOF
-
+    best="$(matching_php_versions "${constraint}" | tail -1)"
     [ -n "${best}" ] || best="${DDEV_PHP_VERSION:-8.5}"
     echo "${best}"
+}
+
+# Fail fast when a site's PHP cannot run the Core it is built on.
+#
+# Composer reports the same mismatch, but as a resolver trace ("your php version
+# (8.4.20) does not satisfy that requirement") followed by our hint to re-download,
+# which is not the fix. Say what Core wants, what the site has, and the command
+# that changes it. Skips when the constraint cannot be read — no host php, no
+# composer.json yet — because Composer is the authority then.
+check_php_for_core() {
+    local dir="${1:-${CORE_DIR}}" php="${2:-${DDEV_PHP_VERSION:-}}" site="${3:-}"
+    local constraint branch best
+    [ -n "${php}" ] || return 0
+    constraint="$(core_php_constraint "${dir}/composer.json")"
+    [ -n "${constraint}" ] || return 0
+    command -v php >/dev/null 2>&1 || return 0
+    php_satisfies "${constraint}" "${php}" && return 0
+
+    branch=$(git -C "${dir}" branch --show-current 2>/dev/null)
+    error "TYPO3 Core${branch:+ (${branch})} requires PHP ${constraint}, but $([ -n "${site}" ] && echo "site '${site}' runs" || echo "the project runs") PHP ${php}"
+    best="$(matching_php_versions "${constraint}" | tail -1)"
+    if [ -n "${site}" ]; then
+        error "  → ddev tryout worktree serve ${site} --php ${best:-<version>}"
+    else
+        error "  → ddev config --php-version=${best:-<version>} && ddev restart"
+    fi
+    error "  → or switch Core to a branch this PHP can run: ddev tryout checkout <branch>"
+    return 1
 }
 
 # --- Serve / unserve ---
@@ -1612,6 +1659,9 @@ serve_worktree() {
         php="$(best_php_for_worktree "${name}")"
         info "PHP ${php} (highest this Core accepts; --php overrides)"
     fi
+    # An explicit --php can still be one this Core rejects. Refuse before a
+    # database and vhost exist for a site that could never install.
+    check_php_for_core "$(core_worktree_dir "${name}")" "${php}" "${name}" || return 1
     dir=$(site_dir "${name}")
     mkdir -p "${dir}/config/system" "${dir}/var"
 

@@ -1666,3 +1666,81 @@ STUB
       || fail "${file}: sync_to_container (line ${sync}) must come before the first container call (line ${container}) after the clone at line ${clone}"
   done
 }
+
+@test "a PHP that cannot run the Core on disk is rejected before composer runs" {
+  # Composer reports the same mismatch, but as a resolver trace followed by our
+  # hint to re-download — which is not the fix. The check names the constraint,
+  # the version in use, and the command that changes it.
+  set -eu -o pipefail
+  command -v php >/dev/null 2>&1 || skip 'php not available'
+
+  mkdir -p "${FAKEROOT}/typo3-core" "${FAKEROOT}/typo3-core-v13"
+  printf '{"require":{"php":"^8.5"}}' > "${FAKEROOT}/typo3-core/composer.json"
+  printf '{"require":{"php":"^8.2"}}' > "${FAKEROOT}/typo3-core-v13/composer.json"
+
+  # The project on 8.4 against a main Core: refused, with the concrete fix.
+  run env DDEV_PHP_VERSION=8.4 bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    available_php_versions() { printf '8.2\n8.3\n8.4\n8.5\n'; }
+    check_php_for_core
+  "
+  assert_failure
+  assert_output --partial 'requires PHP ^8.5'
+  assert_output --partial 'the project runs PHP 8.4'
+  assert_output --partial 'ddev config --php-version=8.5 && ddev restart'
+
+  # A served site gets its own remedy, not the project-wide one.
+  run env DDEV_PHP_VERSION=8.5 bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    available_php_versions() { printf '8.2\n8.3\n8.4\n8.5\n'; }
+    check_php_for_core '${FAKEROOT}/typo3-core-v13' 8.1 v13
+  "
+  assert_failure
+  assert_output --partial "site 'v13' runs PHP 8.1"
+  assert_output --partial 'ddev tryout worktree serve v13 --php 8.5'
+}
+
+@test "a PHP the Core accepts passes the check, and so does an unreadable constraint" {
+  # No composer.json yet (fresh project before the clone) or no constraint in
+  # it: Composer is the authority then, so the check must not block.
+  set -eu -o pipefail
+  command -v php >/dev/null 2>&1 || skip 'php not available'
+
+  mkdir -p "${FAKEROOT}/typo3-core" "${FAKEROOT}/typo3-core-bare"
+  printf '{"require":{"php":"^8.5"}}' > "${FAKEROOT}/typo3-core/composer.json"
+  printf '{}' > "${FAKEROOT}/typo3-core-bare/composer.json"
+
+  run env DDEV_PHP_VERSION=8.5 bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    check_php_for_core && check_php_for_core '${FAKEROOT}/typo3-core-bare' 8.1 \
+      && check_php_for_core '${FAKEROOT}/nowhere' 8.1 && echo passed
+  "
+  assert_success
+  assert_output "passed"
+}
+
+@test "every composer install is preceded by the PHP check" {
+  # post-start.sh, rebuild_typo3 and serve_worktree are the places Composer
+  # resolves Core; each must ask first, or the resolver trace is what the user
+  # sees. The guard has to sit in the same function as the install (or anywhere
+  # above it in the flat post-start script).
+  set -eu -o pipefail
+  local file install check
+  for file in "${DIR}/tryout/post-start.sh" "${DIR}/tryout/functions.sh"; do
+    grep -vE '^[[:space:]]*#' "${file}" > "${FAKEROOT}/code"
+    while IFS= read -r install; do
+      # The nearest check_php_for_core above the install that is not separated
+      # from it by a function boundary.
+      check=$(awk -v to="${install}" '
+        /^[a-z_]+\(\) \{/ { fn = NR }
+        /check_php_for_core/ && NR < to { n = NR; nfn = fn }
+        NR == to { print (n && nfn == fn) ? n : ""; exit }' "${FAKEROOT}/code")
+      [ -n "${check}" ] || fail "${file}: composer install at code line ${install} has no check_php_for_core in its function"
+    done <<LINES
+$(grep -nE 'composer install' "${FAKEROOT}/code" | cut -d: -f1)
+LINES
+  done
+}

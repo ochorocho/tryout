@@ -68,6 +68,11 @@ if ! ddev php /var/www/html/.ddev/tryout/sync-composer.php; then
     exit 1
 fi
 
+# Core states its PHP requirement per branch (^8.5 on main). Check it before
+# Composer does: its resolver trace buries the cause, and the hint below it — a
+# re-download — would not fix it.
+check_php_for_core || exit 1
+
 info "[3/5] Running composer install..."
 if ! ddev composer install; then
     error "Composer install failed"
