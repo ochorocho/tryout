@@ -1846,3 +1846,46 @@ LINES
   run grep -q 'This project has a single Core checkout, not worktrees' "${DIR}/commands/host/tryout"
   assert_failure
 }
+
+@test "the extra php-fpm socket lives under /run/php/, in daemon and vhost alike" {
+  # The daemon runs as the web user and /run is root-owned on some providers
+  # (Colima): a bind there fails with "Permission denied" and every request to the
+  # served site is a 502. /run/php/ is where the stock php-fpm writes its pid, so
+  # it is writable everywhere. Both sides must agree on the path, or nginx passes
+  # requests to a socket nobody listens on.
+  set -eu -o pipefail
+  run grep -E '^SOCKET=' "${DIR}/tryout/tryout-php-fpm.sh"
+  assert_output 'SOCKET="${RUN_DIR}/php-fpm-${VERSION}.sock"'
+  run grep -E '^RUN_DIR=' "${DIR}/tryout/tryout-php-fpm.sh"
+  assert_output 'RUN_DIR="/run/php"'
+  run grep -E '^pid = ' "${DIR}/tryout/tryout-php-fpm.sh"
+  assert_output 'pid = ${RUN_DIR}/php-fpm-${VERSION}.pid'
+
+  run grep -E '^[[:space:]]*sock="/run/php/php-fpm-\$\{php\}\.sock"' "${DIR}/tryout/functions.sh"
+  assert_success
+
+  # Nothing may bind straight under /run/ any more.
+  run grep -E '"/run/php-fpm-' "${DIR}/tryout/tryout-php-fpm.sh" "${DIR}/tryout/functions.sh"
+  assert_failure
+}
+
+@test "switching Core drops vendor/ before the rebuild" {
+  # Composer loads the plugins already in vendor/ before resolving, so a Core
+  # switch across majors (class-alias-loader v2 -> v1) dies in the loaded
+  # plugin's hook and leaves the site on 500. Both switch paths must wipe first,
+  # and in the container — a host-side rm races Mutagen.
+  set -eu -o pipefail
+  local fn body
+  for fn in use_core_worktree cmd_checkout; do
+    body=$(sed -n "/^${fn}() {/,/^}/p" "${DIR}/tryout/functions.sh" "${DIR}/commands/host/tryout")
+    [ -n "${body}" ] || fail "no function ${fn}"
+    printf '%s\n' "${body}" | grep -q 'wipe_site_vendor' \
+      || fail "${fn} does not call wipe_site_vendor"
+    # The wipe comes before the rebuild.
+    [ "$(printf '%s\n' "${body}" | grep -n 'wipe_site_vendor' | head -1 | cut -d: -f1)" \
+      -lt "$(printf '%s\n' "${body}" | grep -n 'rebuild_typo3' | tail -1 | cut -d: -f1)" ] \
+      || fail "${fn} rebuilds before wiping"
+  done
+  run grep -E 'ddev exec rm -rf "/var/www/html/\$\{rel\}vendor"' "${DIR}/tryout/functions.sh"
+  assert_success
+}

@@ -281,6 +281,23 @@ require_core() {
     fi
 }
 
+# Drop a site's vendor/ before Composer installs against a different Core.
+#
+# Composer loads the plugins already in vendor/ before resolving. Switching Core
+# majors changes typo3/class-alias-loader (v2 on main, v1 on 13.4), and the loaded
+# v2 plugin then runs its pre-autoload-dump hook against the v1 code it just
+# installed: "Class TYPO3\ClassAliasLoader\IncludeFile\SuffixToken not found",
+# exit 1, and the site answers 500 until vendor/ is wiped by hand. Removing it in
+# the container, not on the host: with Mutagen a host-side deletion is not yet
+# visible when Composer runs a moment later. The lock is sync-composer.php's job.
+wipe_site_vendor() {
+    local name="${1:-${PRIMARY_SITE}}" rel=""
+    site_is_primary "${name}" || rel="sites/${name}/"
+    info "Removing ${rel}vendor/ — Core changed, a stale install cannot be updated in place"
+    ddev exec rm -rf "/var/www/html/${rel}vendor" \
+        || { error "Could not remove ${rel}vendor/"; return 1; }
+}
+
 # Rebuild a site. Called with no argument it targets the primary, exactly as before,
 # so the existing call sites keep their behaviour; pass a served site name to rebuild
 # that one under its own PHP, composer root and database.
@@ -504,6 +521,7 @@ use_core_worktree() {
     # Sysext sets differ between versions, so regenerate before installing.
     info "Syncing composer.tryout.json..."
     ddev php /var/www/html/.ddev/tryout/sync-composer.php || warn "composer sync had warnings"
+    wipe_site_vendor || return 1
     rebuild_typo3
 }
 
@@ -1378,7 +1396,9 @@ generate_site_vhost() {
     docroot="/var/www/html/sites/${name}/public"
     host=$(site_hostname "${name}")
     db=$(site_database "${name}")
-    sock="/run/php-fpm-${php}.sock"
+    # Must match tryout-php-fpm.sh, which binds under /run/php/ because /run is
+    # root-owned on some providers.
+    sock="/run/php/php-fpm-${php}.sock"
     [ "${php}" = "${DDEV_PHP_VERSION:-}" ] && sock="/run/php-fpm.sock"
 
     mkdir -p "$(dirname "${file}")"

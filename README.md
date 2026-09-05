@@ -517,7 +517,7 @@ no second clone.
 ```bash
 ddev tryout worktree add v13 13.4   # create typo3-core-v13 at origin/13.4
 ddev tryout worktree list           # show all, marking the active one
-ddev tryout worktree use v13        # make it the active Core, then rebuild
+ddev tryout worktree use v13        # make it the active Core, then rebuild (drops vendor/)
 ddev tryout worktree serve v13      # give it its own URL, PHP and database
 ddev tryout worktree unserve v13    # drop that site, keep the worktree
 ddev tryout worktree remove v13     # remove the worktree itself

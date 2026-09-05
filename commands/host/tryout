@@ -470,6 +470,7 @@ cmd_checkout() {
             TRYOUT_CORE_DIR="/var/www/html/typo3-core-${site}" \
             php /var/www/html/.ddev/tryout/sync-composer.php
     fi
+    wipe_site_vendor "${site}" || return 1
     rebuild_typo3 "${site}"
 
     echo ""

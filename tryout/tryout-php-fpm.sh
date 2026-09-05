@@ -17,6 +17,12 @@
 #   * `listen` is a pool directive, so it cannot be passed via `php-fpm -d`.
 # Everything under /etc and /run is ephemeral across `ddev restart`, hence the
 # config is regenerated on every launch.
+#
+# The socket and pid live under /run/php/, not /run/: this daemon runs as the web
+# user, and /run itself is root-owned on some Docker providers (Colima), where the
+# bind fails with "Permission denied" and every request answers 502. /run/php/ is
+# where the stock php-fpm writes its own pid, so it is writable wherever DDEV runs.
+# The vhost generator (write_site_vhost in functions.sh) must use the same path.
 
 set -euo pipefail
 
@@ -32,7 +38,8 @@ if [ ! -x "${BIN}" ]; then
     exit 69
 fi
 
-SOCKET="/run/php-fpm-${VERSION}.sock"
+RUN_DIR="/run/php"
+SOCKET="${RUN_DIR}/php-fpm-${VERSION}.sock"
 CONF_DIR="/tmp/tryout-fpm"
 CONF="${CONF_DIR}/php-fpm-${VERSION}.conf"
 POOL="tryout${VERSION//./}"
@@ -43,7 +50,7 @@ mkdir -p "${CONF_DIR}"
 # /etc/php/<v>/fpm/pool.d/, which is where the conflicting stock www pool lives.
 cat > "${CONF}" <<CONF_EOF
 [global]
-pid = /run/php-fpm-${VERSION}.pid
+pid = ${RUN_DIR}/php-fpm-${VERSION}.pid
 error_log = /proc/self/fd/2
 daemonize = no
 
@@ -59,6 +66,11 @@ clear_env = no
 php_admin_value[error_log] = /proc/self/fd/2
 php_admin_flag[log_errors] = on
 CONF_EOF
+
+if [ ! -w "${RUN_DIR}" ]; then
+    echo "tryout-php-fpm: ${RUN_DIR} is not writable by $(id -un) — cannot create ${SOCKET}" >&2
+    exit 73
+fi
 
 # A socket left behind by a killed master would make bind fail.
 rm -f "${SOCKET}"
