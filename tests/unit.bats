@@ -60,6 +60,10 @@ complete() {
     "${FAKEROOT}/.ddev/commands/host/autocomplete/tryout" tryout "$@")
 }
 
+# Candidates carry a TAB-separated description and free-text positions emit an
+# `_activeHelp_` hint line; tests that care about the names alone go through this.
+names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
+
 @test "functions.sh is syntactically valid and sources cleanly" {
   set -eu -o pipefail
   run bash -n "${DIR}/tryout/functions.sh"
@@ -278,7 +282,7 @@ complete() {
     | sed -n 's/^    \([a-z|]*\)).*/\1/p' | tr '|' '\n' | grep -v '^\*$')
   [ -n "${actions}" ]
 
-  run complete "''"
+  run names "''"
   assert_success
   for verb in ${actions}; do
     assert_line "${verb}"
@@ -287,7 +291,7 @@ complete() {
 
 @test "completion suggests the top-level commands" {
   set -eu -o pipefail
-  run complete "''"
+  run names "''"
   assert_success
   for verb in status download checkout composer patch worktree cs exec reset delete help; do
     assert_line "${verb}"
@@ -296,7 +300,7 @@ complete() {
 
 @test "completion is position aware for cs and worktree" {
   set -eu -o pipefail
-  run complete cs "''"
+  run names cs "''"
   assert_success
   assert_line "setup"
   assert_line "doctor"
@@ -305,7 +309,7 @@ complete() {
   # script over the flat AutocompleteTerms list.
   refute_line "download"
 
-  run complete worktree "''"
+  run names worktree "''"
   assert_success
   for sub in add list use serve unserve remove; do
     assert_line "${sub}"
@@ -315,13 +319,13 @@ complete() {
 
 @test "completion offers the flags a subcommand actually parses" {
   set -eu -o pipefail
-  run complete download "''"
+  run names download "''"
   assert_line "--reset"
 
-  run complete worktree unserve "''"
+  run names worktree unserve "''"
   assert_line "--drop-db"
 
-  run complete worktree use "''"
+  run names worktree use "''"
   assert_line "--force"
 }
 
@@ -329,7 +333,7 @@ complete() {
   set -eu -o pipefail
   mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
 
-  run complete worktree use "''"
+  run names worktree use "''"
   assert_success
   assert_line "main"
   assert_line "v13"
@@ -340,7 +344,7 @@ complete() {
   mkdir -p "${FAKEROOT}/sites/v13"
   printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
 
-  run complete exec "''"
+  run names exec "''"
   assert_success
   assert_line "@primary"
   assert_line "v13"
@@ -365,11 +369,11 @@ complete() {
 @test "completion survives a missing functions.sh" {
   # A partial install must degrade to the static candidates, never break TAB.
   set -eu -o pipefail
-  run complete "''"
+  run names "''"
   assert_success
   rm -f "${FAKEROOT}/.ddev/tryout/functions.sh"
 
-  run complete worktree use "''"
+  run names worktree use "''"
   assert_success
   assert_line "--force"
 }
@@ -1172,24 +1176,24 @@ STUB
   set -eu -o pipefail
   mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
 
-  run complete herd
+  run names herd
   assert_success
   assert_line "herdr"
 
-  run complete cs doc
+  run names cs doc
   assert_success
   assert_line "doctor"
 
-  run complete worktree us
+  run names worktree us
   assert_success
   assert_line "use"
 
-  run complete worktree use ma
+  run names worktree use ma
   assert_success
   assert_line "main"
 
   # An empty word must keep working too.
-  run complete "''"
+  run names "''"
   assert_success
   assert_line "herdr"
 }
@@ -1198,16 +1202,185 @@ STUB
   set -eu -o pipefail
   mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
 
-  run complete "''"
+  run names "''"
   assert_success
   assert_line "herdr"
 
-  run complete herdr "''"
+  run names herdr "''"
   assert_success
   assert_line "main"
   assert_line "v13"
   assert_line "--no-agent"
   assert_line "--no-focus"
+}
+
+@test "completion describes every candidate or explains the free-text word" {
+  # DDEV passes each line to cobra verbatim, so `value<TAB>description` renders
+  # as two columns and `_activeHelp_ text` as a hint. A bare word would look like
+  # a regression in zsh: no description beside it.
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/sites/v13"
+  printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  local args line
+  for args in "''" "worktree ''" "worktree add ''" "worktree add x ''" "worktree use ''" \
+              "worktree serve ''" "worktree list ''" "cs ''" "cs setup ''" "herdr ''" \
+              "herdr new ''" "checkout ''" "patch ''" "exec ''" "exec v13 ''" \
+              "delete ''" "download ''" "status ''"; do
+    # shellcheck disable=SC2086
+    while IFS= read -r line; do
+      [ -n "${line}" ] || continue
+      case "${line}" in
+        "_activeHelp_ "?*) ;;
+        *"	"?*) ;;
+        *) echo "bare candidate for '${args}': ${line}"; false ;;
+      esac
+    done < <(complete ${args})
+  done
+}
+
+@test "completion hints at free-text words instead of staying silent" {
+  # DDEV always returns cobra's Default directive, so silence means the shell
+  # lists files. A hint above them is the best we can do — so there must be one.
+  set -eu -o pipefail
+  run complete worktree add "''"
+  assert_success
+  assert_line --regexp '^_activeHelp_ name for the new worktree'
+
+  run complete worktree rename main "''"
+  assert_line --regexp '^_activeHelp_ new name for main'
+
+  run complete cs setup "''"
+  assert_line --regexp '^_activeHelp_ .*Gerrit username'
+
+  run complete exec v13 "''"
+  assert_line --regexp '^_activeHelp_ command to run in v13'
+}
+
+@test "completion offers --plain for worktree list" {
+  set -eu -o pipefail
+  run names worktree list "''"
+  assert_success
+  assert_line "--plain"
+}
+
+@test "completion offers serve only unserved worktrees and unserve only served ones" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13" "${FAKEROOT}/typo3-core-v12"
+  mkdir -p "${FAKEROOT}/sites/v13"
+  printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+
+  run names worktree serve "''"
+  assert_success
+  assert_line "main"
+  assert_line "v12"
+  refute_line "v13"
+
+  run names worktree unserve "''"
+  assert_success
+  assert_line "v13"
+  refute_line "main"
+  refute_line "v12"
+
+  # The served one says so, with its PHP version.
+  run complete worktree unserve "''"
+  assert_line --regexp $'^v13\t.*PHP 8\\.2'
+}
+
+@test "completion omits the primary from use and remove" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+
+  run names worktree use "''"
+  assert_success
+  assert_line "v13"
+  refute_line "main"
+
+  run names worktree remove "''"
+  refute_output --partial "main"
+
+  # Elsewhere the primary is offered, and labelled.
+  run complete herdr "''"
+  assert_line --regexp $'^main\tprimary'
+}
+
+@test "completion does not offer a flag already on the line" {
+  set -eu -o pipefail
+  run names worktree add x --serve --
+  assert_success
+  refute_line "--serve"
+  assert_line "--php"
+
+  # refute_line cannot cope with empty output, and nothing is a valid answer here.
+  run names download --reset "''"
+  refute_output --partial "--reset"
+
+  run names delete --all "''"
+  refute_output --partial "--all"
+  refute_output --partial "@primary"
+  assert_line "--yes"
+}
+
+@test "completion shows only flags once a dash is typed" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main"
+  run names worktree use --
+  assert_success
+  assert_line "--force"
+  refute_line "main"
+}
+
+@test "completion offers PHP versions after --php" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-v13"
+  run names worktree serve v13 --php "''"
+  assert_success
+  assert_line "8.2"
+  assert_line "8.5"
+
+  run names worktree add x --php "''"
+  assert_line "8.4"
+}
+
+@test "completion offers the configured patch numbers" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/.ddev"
+  printf 'web_environment:\n  - TRYOUT_PATCHES=56947,12345\n' > "${FAKEROOT}/.ddev/config.tryout-patches.yaml"
+  run names patch "''"
+  assert_success
+  assert_line "56947"
+  assert_line "12345"
+}
+
+@test "completion covers every worktree, cs and herdr subcommand the command dispatches" {
+  set -eu -o pipefail
+  local subs sub
+  for verb in worktree cs herdr; do
+    # The first name of each case label; aliases (remove|rm) are deliberately
+    # not offered — two spellings of one thing would only lengthen the list.
+    subs=$(sed -n "/^cmd_${verb}()/,/^}/p" "${DIR}/commands/host/tryout" \
+      | sed -n 's/^        \([a-z][a-z|-]*\)).*/\1/p' | cut -d'|' -f1)
+    [ -n "${subs}" ]
+    run names "${verb}" "''"
+    assert_success
+    for sub in ${subs}; do
+      assert_line "${sub}"
+    done
+  done
+}
+
+@test "completion answers instantly" {
+  # list_core_worktrees runs a `git status` per worktree; using it for names
+  # once made a TAB cost a third of a second. Generous bound, coarse clock.
+  set -eu -o pipefail
+  local n start end
+  for n in 1 2 3 4 5 6; do mkdir -p "${FAKEROOT}/typo3-core-wt${n}"; done
+  start=$(date +%s)
+  complete worktree use "''" >/dev/null
+  complete herdr "''" >/dev/null
+  complete exec "''" >/dev/null
+  end=$(date +%s)
+  [ $(( end - start )) -le 1 ]
 }
 
 # --- gum presentation layer -------------------------------------------------

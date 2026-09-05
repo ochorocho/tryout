@@ -156,32 +156,53 @@ optional site name and `delete` takes `--all` — see
 
 ### Tab completion
 
-Every command, subcommand and flag completes with <kbd>Tab</kbd>, as do the names
-the add-on knows about at that moment:
+Every command, subcommand and flag completes with <kbd>Tab</kbd>, each with a short
+description, and so do the names the add-on knows about at that moment — only the
+ones that make sense where you are:
 
 ```console
 $ ddev tryout <TAB>
-status  download  checkout  composer  patch  worktree  cs  herdr  exec  reset  delete  help
+status    -- Show project overview
+download  -- Clone or update Core
+checkout  -- Switch TYPO3 version (main, 13.4, 12.4, ...)
+worktree  -- Manage side-by-side Core checkouts
+...
 
-$ ddev tryout cs <TAB>
-setup  doctor  uninstall  help
+$ ddev tryout worktree serve <TAB>            # only worktrees not served yet
+fancy-pants  -- not served
+main         -- primary — at the project URL
 
-$ ddev tryout herdr <TAB>
-new  setup-keys  unsetup-keys  main  v13  --no-agent  --no-focus  --no-attach
+$ ddev tryout worktree unserve <TAB>          # only the served ones
+benni   -- served · PHP 8.5
+jochen  -- served · PHP 8.2
 
-$ ddev tryout worktree use <TAB>
-main  v13                       # your Core worktrees
+$ ddev tryout worktree serve wonka --php <TAB>   # what that Core's composer.json accepts
+8.5  -- default for wonka
+
+$ ddev tryout worktree add <TAB>
+name for the new worktree (becomes typo3-core-<name>)
 
 $ ddev tryout checkout <TAB>
-main  13.4  12.4  11.5  ...     # branches already fetched into typo3-core/
+main  -- latest development — checked out
+14.3  -- release branch
+13.4  -- release branch
+...
 
 $ ddev tryout exec <TAB>
-@primary  v13                   # the primary site and every served worktree
+@primary  -- the primary site at the project URL
+benni     -- served worktree · PHP 8.5
 ```
+
+Flags already on the line are not offered again, `use` and `remove` leave out the
+primary, `--` shows flags alone, and where the next word is free text a hint says
+what it is for. Descriptions show in Zsh and Fish (Bash needs 4.4+; older versions
+just show the names). One limit is DDEV's: it cannot suppress file-name completion,
+so under a hint your shell still lists files.
 
 Branches come from the refs already in `typo3-core/`, never from the network, so a
 <kbd>Tab</kbd> never stalls; `ddev tryout download` and `checkout` both fetch, so the
-list stays current.
+list stays current. Everything else is a directory listing or a marker file — a
+<kbd>Tab</kbd> answers in a few tens of milliseconds.
 
 This needs DDEV's own shell completion to be installed — the add-on cannot do that
 for you. Homebrew installs the scripts with DDEV, but Bash also needs
