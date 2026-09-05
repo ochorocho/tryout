@@ -95,8 +95,13 @@ ui_choose() {
 
     if have_gum && have_tty; then
         local picked
-        picked="$(printf '%s
-' "$@" | gum choose --header "${prompt}" 2>/dev/null)"
+        # gum draws its interface on STDERR — never redirect it here, or the
+        # user is asked to choose from a list they cannot see. have_tty above
+        # is what keeps gum's "could not open TTY" complaint off a pipe.
+        # Always `gum choose`, never `gum filter` for long lists: filter cannot
+        # be cancelled with ESC (only Ctrl-C), and ESC-cancels is the one rule
+        # every prompt here follows. A taller list is the trade.
+        picked="$(printf '%s\n' "$@" | gum choose --header "${prompt}" --height 15)"
         # An empty answer means no TTY or a cancel; either way, nothing was chosen.
         [ -n "${picked}" ] && { printf '%s' "${picked}"; return 0; }
         return 1
@@ -106,8 +111,7 @@ ui_choose() {
     # prompt itself is only drawn when there is a terminal to draw it on —
     # otherwise it lands in whatever is capturing this.
     if [ -t 2 ]; then
-        printf '  %s
-' "$*" >&2
+        printf '  %s\n' "$*" >&2
         printf '  %s: ' "${prompt}" >&2
     fi
     local answer=""
@@ -127,7 +131,8 @@ ui_input() {
     local prompt="$1" placeholder="${2:-}"
     if have_gum && have_tty; then
         local v
-        v="$(gum input --header "${prompt}" --placeholder "${placeholder}" 2>/dev/null)"
+        # stderr is gum's screen — see ui_choose.
+        v="$(gum input --header "${prompt}" --placeholder "${placeholder}")"
         [ -n "${v}" ] && { printf '%s' "${v}"; return 0; }
         return 1
     fi
@@ -144,13 +149,77 @@ ui_input() {
 # piped, gum would emit escape sequences into whatever is reading.
 ui_spin() {
     local title="$1"; shift
-    if have_gum && [ -t 1 ]; then
+    # gum draws the spinner on stderr, so that is the stream that must be a
+    # terminal. Not stdout: DDEV pipes a host command's stdout, always.
+    if have_gum && [ -t 2 ]; then
         gum spin --spinner dot --title "${title}" --show-error -- "$@"
         return $?
     fi
     if [ -t 2 ]; then info "${title}" >&2; fi
     "$@"
 }
+
+# --- Guided arguments -------------------------------------------------------
+# A command run without its argument asks for it instead of failing — when
+# someone is there to answer. Each ask_* helper prints the answer; on a cancel
+# or with no terminal it prints nothing and returns 1, so the caller falls
+# through to explain_missing, which shows the usage line only where nobody
+# could have answered a prompt.
+
+explain_missing() {
+    local usage="$1"
+    if have_tty; then
+        warn "Cancelled"
+    else
+        error "Usage: ${usage}"
+    fi
+}
+
+# core_worktree_names [all|nonprimary|served|unserved]
+# From the directory glob, not list_core_worktrees: no git status per tree.
+core_worktree_names() {
+    local mode="${1:-all}" d name primary
+    primary="$(active_worktree_name 2>/dev/null)"
+    for d in "${CORE_WORKTREE_PREFIX}"*; do
+        [ -d "${d}" ] || continue
+        name="${d#"${CORE_WORKTREE_PREFIX}"}"
+        case "${mode}" in
+            nonprimary) [ "${name}" = "${primary}" ] && continue ;;
+            served)     [ -f "$(site_dir "${name}")/.tryout-site" ] || continue ;;
+            unserved)   [ -f "$(site_dir "${name}")/.tryout-site" ] && continue ;;
+        esac
+        echo "${name}"
+    done
+}
+
+ask_worktree() {
+    local prompt="$1" mode="${2:-all}" names=() n
+    while IFS= read -r n; do [ -n "${n}" ] && names+=("${n}"); done < <(core_worktree_names "${mode}")
+    if [ ${#names[@]} -eq 0 ]; then
+        error "No worktree to choose from"
+        error "  → ddev tryout worktree add <name> [<branch>]"
+        return 1
+    fi
+    ui_choose "${prompt}" "${names[@]}"
+}
+
+ask_site() {
+    local prompt="$1" sites=("${PRIMARY_SITE}") n
+    while IFS= read -r n; do [ -n "${n}" ] && sites+=("${n}"); done < <(served_site_names)
+    ui_choose "${prompt}" "${sites[@]}"
+}
+
+# Local refs, ordered by usefulness: main, releases newest first, the pre-9
+# TYPO3_x-y refs last. checkout fetches afterwards anyway.
+ask_branch() {
+    local prompt="$1" branches=(main) b
+    while IFS= read -r b; do
+        [ -n "${b}" ] && [ "${b}" != "main" ] && branches+=("${b}")
+    done < <(list_local_core_branches | sort -rV | awk '/^[0-9]/{print; next}{l=l $0 "\n"} END{printf "%s", l}')
+    ui_choose "${prompt}" "${branches[@]}"
+}
+
+ask_text() { ui_input "$1" "${2:-}"; }
 
 # In a linked worktree .git is a file pointing at the shared object store, so
 # resolve it to the common dir — hooks and config live there, not per worktree.

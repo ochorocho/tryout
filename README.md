@@ -204,6 +204,28 @@ Branches come from the refs already in `typo3-core/`, never from the network, so
 list stays current. Everything else is a directory listing or a marker file — a
 <kbd>Tab</kbd> answers in a few tens of milliseconds.
 
+### Guided commands
+
+Leave an argument out and the command asks for it instead of failing:
+
+```console
+$ ddev tryout worktree serve          # pick from the worktrees not served yet
+Serve which worktree?
+> fancy-pants
+  main
+  wonka
+
+$ ddev tryout checkout                # pick a branch: main, then releases newest first
+$ ddev tryout worktree add            # asks for the name, then the branch
+$ ddev tryout worktree rename         # pick the worktree, then type the new name
+$ ddev tryout exec                    # pick the site, then type the command
+```
+
+`use`, `remove`, `unserve` and `herdr new` ask the same way, each offering only
+what makes sense — `unserve` lists served worktrees, `use` leaves out the primary.
+<kbd>Esc</kbd> cancels. In a script or a pipe there is no one to ask, so the
+commands print their usage line and exit 1 exactly as before.
+
 This needs DDEV's own shell completion to be installed — the add-on cannot do that
 for you. Homebrew installs the scripts with DDEV, but Bash also needs
 `brew install bash-completion` and Zsh needs `$(brew --prefix)/share/zsh/site-functions`

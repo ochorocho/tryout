@@ -385,6 +385,10 @@ cmd_delete() {
 cmd_checkout() {
     local target_branch="${1:-}" site="${2:-${PRIMARY_SITE}}"
 
+    # No branch: ask, if someone is there to answer.
+    if [ -z "${target_branch}" ] && [ -d "${CORE_DIR}/.git" ]; then
+        target_branch="$(ask_branch "Switch Core to which branch?")" || { explain_missing "ddev tryout checkout <branch>"; have_tty && return 1; }
+    fi
     if [ -z "${target_branch}" ]; then
         error "Usage: ddev tryout checkout <branch>"
         echo ""
@@ -493,6 +497,17 @@ cmd_composer() {
 cmd_exec() {
     local site="${1:-}"
     shift || true
+    # Guided: pick the site, then type the command. site_exec runs it through
+    # that site's php, so "vendor/bin/typo3 cache:flush" is the shape to type.
+    if [ -z "${site}" ]; then
+        site="$(ask_site "Run in which site?")" || { explain_missing "ddev tryout exec <site> <command> ..."; have_tty && return 1; }
+    fi
+    if [ -n "${site}" ] && [ $# -eq 0 ] && have_tty; then
+        local typed=""
+        typed="$(ask_text "Command to run in ${site} (after php)" "vendor/bin/typo3 cache:flush")" || { explain_missing "ddev tryout exec <site> <command> ..."; return 1; }
+        # shellcheck disable=SC2086 # a typed command line is meant to be word-split
+        set -- ${typed}
+    fi
     if [ -z "${site}" ] || [ $# -eq 0 ]; then
         error "Usage: ddev tryout exec <site> <command> ..."
         echo ""
@@ -534,7 +549,13 @@ cmd_worktree() {
                 esac
                 shift
             done
-            [ -z "${name}" ] && { error "Usage: ddev tryout worktree add <name> [<branch>] [--branch] [--serve] [--php 8.2] [--herdr]"; return 1; }
+            # Guided: no name means ask for it, and then for the branch too.
+            if [ -z "${name}" ]; then
+                name="$(ask_text "Name for the new worktree (becomes typo3-core-<name>)" "e.g. bugfix-12345")" \
+                    || { explain_missing "ddev tryout worktree add <name> [<branch>] [--branch] [--serve] [--php 8.2] [--herdr]"; return 1; }
+                validate_worktree_name "${name}" || return 1
+                [ -n "${branch}" ] || branch="$(ask_branch "Based on which branch?")" || { explain_missing "ddev tryout worktree add <name> [<branch>]"; return 1; }
+            fi
             # A named PHP version only takes effect on a served site.
             [ -n "${php}" ] && serve="true"
             migrate_core_to_worktree_layout || return 1
@@ -608,7 +629,8 @@ cmd_worktree() {
             local name="${1:-}" force="false"
             shift || true
             [ "${1:-}" = "--force" ] && force="true"
-            [ -z "${name}" ] && { error "Usage: ddev tryout worktree use <name> [--force]"; return 1; }
+            [ -n "${name}" ] || name="$(ask_worktree "Point the primary site at which worktree?" nonprimary)" \
+                || { explain_missing "ddev tryout worktree use <name> [--force]"; return 1; }
             migrate_core_to_worktree_layout || return 1
             use_core_worktree "${name}" "${force}" || return 1
             echo ""
@@ -620,7 +642,8 @@ cmd_worktree() {
             local name="${1:-}" force="false"
             shift || true
             [ "${1:-}" = "--force" ] && force="true"
-            [ -z "${name}" ] && { error "Usage: ddev tryout worktree remove <name> [--force]"; return 1; }
+            [ -n "${name}" ] || name="$(ask_worktree "Remove which worktree?" nonprimary)" \
+                || { explain_missing "ddev tryout worktree remove <name> [--force]"; return 1; }
             # A served site owns a tree and a DB; drop those before the worktree.
             if site_is_served "${name}" 2>/dev/null; then
                 warn "'${name}' is currently served — removing its site first"
@@ -640,7 +663,8 @@ cmd_worktree() {
                 esac
                 shift
             done
-            [ -z "${name}" ] && { error "Usage: ddev tryout worktree serve <name> [--php 8.2]"; return 1; }
+            [ -n "${name}" ] || name="$(ask_worktree "Serve which worktree?" unserved)" \
+                || { explain_missing "ddev tryout worktree serve <name> [--php 8.2]"; return 1; }
             serve_worktree "${name}" "${php}"
             ;;
 
@@ -649,13 +673,18 @@ cmd_worktree() {
             local name="${1:-}" keep_db="true"
             shift || true
             [ "${1:-}" = "--drop-db" ] && keep_db="false"
-            [ -z "${name}" ] && { error "Usage: ddev tryout worktree unserve <name> [--drop-db]"; return 1; }
+            [ -n "${name}" ] || name="$(ask_worktree "Stop serving which worktree?" served)" \
+                || { explain_missing "ddev tryout worktree unserve <name> [--drop-db]"; return 1; }
             unserve_worktree "${name}" "${keep_db}"
             ;;
 
         rename)
             require_core
             local old="${1:-}" new="${2:-}"
+            [ -n "${old}" ] || old="$(ask_worktree "Rename which worktree?")" \
+                || { explain_missing "ddev tryout worktree rename <old> <new>"; return 1; }
+            [ -n "${new}" ] || new="$(ask_text "New name for ${old}")" \
+                || { explain_missing "ddev tryout worktree rename <old> <new>"; return 1; }
             if [ -z "${old}" ] || [ -z "${new}" ]; then
                 error "Usage: ddev tryout worktree rename <old> <new>"
                 error "  Renames the checkout only — the branch is untouched."
@@ -899,15 +928,10 @@ cmd_herdr_new() {
 
     # No name given: ask, if there is anyone to ask.
     if [ -z "${name}" ]; then
-        if [ ! -t 0 ]; then
-            error "Usage: ddev tryout herdr new <name> [<branch>]"
-            return 1
-        fi
-        printf "  Name: "
-        read -r name || return 1
-        [ -n "${name}" ] || { error "No name given"; return 1; }
-        printf "  Branch [%s]: " "${BRANCH}"
-        read -r branch || return 1
+        name="$(ask_text "Name for the new worktree (becomes typo3-core-<name>)" "e.g. bugfix-12345")" \
+            || { explain_missing "ddev tryout herdr new <name> [<branch>]"; return 1; }
+        [ -n "${branch}" ] || branch="$(ask_branch "Based on which branch?")" \
+            || { explain_missing "ddev tryout herdr new <name> [<branch>]"; return 1; }
     fi
 
     validate_worktree_name "${name}" || return 1

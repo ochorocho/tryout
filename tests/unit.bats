@@ -1549,3 +1549,100 @@ STUB
   [ -n "${export_line}" ] && [ -n "${source_line}" ]
   [ "${export_line}" -lt "${source_line}" ]
 }
+
+# --- guided arguments ---------------------------------------------------------
+# A command missing its argument asks for it; without a terminal it prints the
+# usage line as before. These pin the helpers and the one trap that made every
+# prompt invisible: gum draws on stderr.
+
+@test "gum prompts do not redirect stderr, because that is where gum draws" {
+  set -eu -o pipefail
+  # ui_choose and ui_input once carried 2>/dev/null to hush "could not open
+  # TTY"; the effect was a chooser the user could not see. have_tty guards the
+  # no-terminal case instead.
+  run grep -nE 'gum (choose|filter|input) .*2>/dev/null' "${DIR}/tryout/functions.sh"
+  assert_failure
+}
+
+@test "core_worktree_names filters by primary and served state" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13" "${FAKEROOT}/typo3-core-v12" "${FAKEROOT}/sites/v13"
+  printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+
+  run helper core_worktree_names all
+  assert_line "main"; assert_line "v13"; assert_line "v12"
+
+  run helper core_worktree_names nonprimary
+  refute_line "main"; assert_line "v13"
+
+  run helper core_worktree_names served
+  assert_output "v13"
+
+  run helper core_worktree_names unserved
+  assert_line "main"; assert_line "v12"; refute_line "v13"
+}
+
+@test "ask_worktree takes a piped answer and fails cleanly with none" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
+
+  run helper_eval 'printf "v13\n" | ask_worktree "which?" all'
+  assert_success
+  assert_output "v13"
+
+  run helper_eval 'ask_worktree "which?" all </dev/null'
+  assert_failure
+  refute_output --partial "v13"
+}
+
+@test "ask_worktree explains when there is nothing to choose from" {
+  set -eu -o pipefail
+  run helper_eval 'ask_worktree "which?" all </dev/null'
+  assert_failure
+  assert_output --partial "No worktree to choose from"
+  assert_output --partial "worktree add"
+}
+
+@test "ask_branch puts main first and legacy refs last" {
+  set -eu -o pipefail
+  # A fake list_local_core_branches; ask_branch only orders what it gets.
+  run helper_eval '
+    list_local_core_branches() { printf "%s\n" 9.5 TYPO3_8-7 13.4 main 14.3 12.4; }
+    ui_choose() { shift; printf "%s\n" "$@"; }
+    ask_branch "which?"'
+  assert_success
+  assert_line --index 0 "main"
+  assert_line --index 1 "14.3"
+  assert_line --index 2 "13.4"
+  assert_line --index 3 "12.4"
+  assert_line --index 4 "9.5"
+  assert_line --index 5 "TYPO3_8-7"
+}
+
+@test "explain_missing prints the usage line only where nobody could answer" {
+  set -eu -o pipefail
+  run helper_eval 'explain_missing "ddev tryout worktree use <name>" </dev/null'
+  assert_success
+  assert_output --partial "Usage: ddev tryout worktree use <name>"
+}
+
+@test "every command that used to fail on a missing argument now asks first" {
+  set -eu -o pipefail
+  # The old shape was a one-line usage error; each of those sites must reach an
+  # ask_* helper before it gives up.
+  run grep -cE 'ask_(worktree|site|branch|text) ' "${DIR}/commands/host/tryout"
+  assert_success
+  [ "${output}" -ge 10 ]
+  run grep -E '\[ -z "\$\{name\}" \] && \{ error "Usage' "${DIR}/commands/host/tryout"
+  assert_failure
+}
+
+@test "ui_spin decides on stderr, the stream gum draws on" {
+  set -eu -o pipefail
+  # DDEV pipes a host command's stdout, always; a spinner gated on stdout being
+  # a terminal never showed under `ddev tryout`.
+  run grep -A3 '^ui_spin()' "${DIR}/tryout/functions.sh"
+  run grep -nE 'have_gum && \[ -t 2 \]' "${DIR}/tryout/functions.sh"
+  assert_success
+}
