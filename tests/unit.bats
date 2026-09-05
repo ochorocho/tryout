@@ -1744,3 +1744,47 @@ $(grep -nE 'composer install' "${FAKEROOT}/code" | cut -d: -f1)
 LINES
   done
 }
+
+@test "the single Core checkout of a fresh project opens in herdr under its branch" {
+  # Before any worktree exists there is only typo3-core/ itself. It must resolve
+  # to that directory under the name the worktree layout gives it later, so the
+  # herdr label survives the migration; on the symlink layout the name maps to
+  # typo3-core-<name> as before.
+  set -eu -o pipefail
+  git init -q -b main "${FAKEROOT}/typo3-core"
+
+  run bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    printf '%s|%s|%s\n' \"\$(plain_core_name)\" \"\$(herdr_checkout_dir main)\" \"\$(herdr_checkout_dir v13)\"
+  "
+  assert_success
+  assert_output "main|${FAKEROOT}/typo3-core|${FAKEROOT}/typo3-core-v13"
+
+  # A branch name that is no valid worktree name falls back to the default.
+  git -C "${FAKEROOT}/typo3-core" checkout -q -b 'feature/x' 2>/dev/null
+  run bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    plain_core_name
+  "
+  assert_success
+  assert_output "main"
+
+  # The symlink layout: the plain name is empty and lookups go to typo3-core-<name>.
+  mv "${FAKEROOT}/typo3-core" "${FAKEROOT}/typo3-core-main"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  run bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    printf '[%s]%s' \"\$(plain_core_name)\" \"\$(herdr_checkout_dir main)\"
+  "
+  assert_success
+  assert_output "[]${FAKEROOT}/typo3-core-main"
+}
+
+@test "the herdr command no longer turns a single-checkout project away" {
+  set -eu -o pipefail
+  run grep -q 'This project has a single Core checkout, not worktrees' "${DIR}/commands/host/tryout"
+  assert_failure
+}

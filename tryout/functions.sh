@@ -393,13 +393,24 @@ core_worktree_is_dirty() {
 # One-time move to the symlink layout: the real clone becomes typo3-core-<branch>
 # and typo3-core becomes a symlink to it. Idempotent; never runs unless a
 # worktree command asks for it, so existing installs stay untouched.
+# The name a plain typo3-core/ clone goes by before there are worktrees: its
+# branch, falling back to the default. It is what migrate_core_to_worktree_layout
+# renames it to, so anything keyed on it — a herdr workspace label — survives the
+# move to the worktree layout. Empty on the symlink layout.
+plain_core_name() {
+    core_is_symlinked && return 0
+    local name
+    name=$(git -C "${CORE_DIR}" branch --show-current 2>/dev/null || true)
+    [ -z "${name}" ] && name="${DEFAULT_CORE_WORKTREE}"
+    validate_worktree_name "${name}" >/dev/null 2>&1 || name="${DEFAULT_CORE_WORKTREE}"
+    echo "${name}"
+}
+
 migrate_core_to_worktree_layout() {
     core_is_symlinked && return 0
 
     local name target
-    name=$(git -C "${CORE_DIR}" branch --show-current 2>/dev/null || true)
-    [ -z "${name}" ] && name="${DEFAULT_CORE_WORKTREE}"
-    validate_worktree_name "${name}" || name="${DEFAULT_CORE_WORKTREE}"
+    name=$(plain_core_name)
     target=$(core_worktree_dir "${name}")
 
     if [ -e "${target}" ]; then
@@ -753,6 +764,17 @@ herdr_agent_name() {
         | tr '[:upper:]' '[:lower:]' \
         | sed -e 's/[^a-z0-9_-]/-/g' -e 's/^[^a-z]/x&/' \
         | cut -c1-32
+}
+
+# Where a checkout name lives: typo3-core-<name> on the worktree layout, and the
+# plain typo3-core/ clone itself when that is all a fresh project has yet.
+herdr_checkout_dir() {
+    local name="$1"
+    if ! core_is_symlinked && [ "${name}" = "$(plain_core_name)" ]; then
+        echo "${CORE_DIR}"
+    else
+        core_worktree_dir "${name}"
+    fi
 }
 
 # True when any pane anywhere is already sitting in that worktree, which is what
@@ -1125,7 +1147,7 @@ open_worktree_in_herdr() {
     # Every caller validates first, but the name becomes a path and a herdr label —
     # so check here too rather than trusting each new call site to remember.
     validate_worktree_name "${name}" || return 1
-    dir="$(core_worktree_dir "${name}")"
+    dir="$(herdr_checkout_dir "${name}")"
 
     if [ ! -d "${dir}" ]; then
         error "No worktree '${name}'"

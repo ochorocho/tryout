@@ -646,6 +646,10 @@ workspace "core-main"              workspace "core-v13"
 └── shell    (typo3-core-main)     └── shell    (typo3-core-v13)
 ```
 
+A fresh project with only the plain `typo3-core/` clone and no worktrees yet gets
+one workspace for it, named after its branch (`core-main`). That is the name the
+checkout keeps when a later `worktree add` moves it to the worktree layout.
+
 Worktrees already open are skipped, so it is safe to re-run, and the first Core
 workspace is focused when it is done (`--focus` is the default; `--no-focus` stays put). On the first run in
 a worktree Claude asks you to trust the folder — the command says so rather than

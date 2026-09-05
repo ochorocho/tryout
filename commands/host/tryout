@@ -856,14 +856,19 @@ cmd_herdr() {
     herdr_available || return 1
     require_core
 
-    if ! core_is_symlinked; then
-        error "This project has a single Core checkout, not worktrees"
-        error "  → ddev tryout worktree add <name> <branch>"
-        return 1
-    fi
-
     local names
-    if [ -n "${only}" ]; then
+    if ! core_is_symlinked; then
+        # A fresh project has one plain clone and no worktrees yet. Open it as a
+        # single workspace rather than turning the user away; it goes by its
+        # branch, the name the worktree layout gives it later.
+        names="$(plain_core_name)"
+        if [ -n "${only}" ] && [ "${only}" != "${names}" ]; then
+            error "No worktree '${only}' — this project has a single Core checkout, '${names}'"
+            error "  → ddev tryout herdr ${names}"
+            error "  → or: ddev tryout worktree add ${only} <branch>"
+            return 1
+        fi
+    elif [ -n "${only}" ]; then
         validate_worktree_name "${only}" || return 1
         names="${only}"
     else
