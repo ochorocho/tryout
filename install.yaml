@@ -43,6 +43,7 @@ project_files:
   - commands/host/autocomplete/tryout
   - config.tryout.yaml
   - tryout
+  - web-build/Dockerfile.tryout
 
 post_install_actions:
   # These run with the working directory set to the project's .ddev/, so the

@@ -32,6 +32,7 @@ if [ ! -d "${CORE_DIR}/.git" ] && [ ! -f "${CORE_DIR}/.git" ]; then
         exit 1
     fi
     git -C "${CORE_DIR}" remote add gerrit "${GERRIT_REMOTE}"
+    ensure_relative_worktree_paths
     success "TYPO3 Core cloned"
 else
     info "[1/5] TYPO3 Core already present"

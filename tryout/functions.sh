@@ -368,6 +368,36 @@ sync_to_container() {
     ddev mutagen sync >/dev/null 2>&1 || true
 }
 
+# git >= 2.48 can record worktree metadata with RELATIVE paths. That is what lets
+# the container (which does the git work) and the host (editors, herdr, the
+# dashboard) share one worktree: an absolute path is right on one side only.
+git_supports_relative_worktrees() {
+    local v major minor
+    v=$(git --version 2>/dev/null | sed -n 's/^git version \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
+    [ -n "${v}" ] || return 1
+    major="${v%%.*}"; minor="${v#*.}"
+    [ "${major}" -gt 2 ] || { [ "${major}" -eq 2 ] && [ "${minor}" -ge 48 ]; }
+}
+
+# Configure the Core repo to write relative worktree paths, and rewrite whatever
+# is there already. `git worktree repair <path>` re-derives both pointers from the
+# worktree's directory name, so it also mends a worktree the other side created
+# with absolute paths that do not exist here. Idempotent and cheap; every place
+# that clones, migrates or adds a worktree calls it.
+ensure_relative_worktree_paths() {
+    local main_dir dir
+    git_supports_relative_worktrees || return 0
+    main_dir=$(main_core_worktree_dir)
+    [ -n "${main_dir}" ] || main_dir="${CORE_DIR}"
+    [ -e "${main_dir}/.git" ] || return 0
+    git -C "${main_dir}" config worktree.useRelativePaths true 2>/dev/null || return 0
+    for dir in "${CORE_WORKTREE_PREFIX}"*; do
+        [ -d "${dir}" ] || continue
+        [ "$(cd "${dir}" && pwd -P)" = "$(cd "${main_dir}" && pwd -P)" ] && continue
+        git -C "${main_dir}" worktree repair "${dir}" >/dev/null 2>&1 || true
+    done
+}
+
 # A name becomes a directory, so keep it strictly harmless (no slashes, no ..).
 validate_worktree_name() {
     local name="${1:-}"
@@ -444,6 +474,7 @@ migrate_core_to_worktree_layout() {
     info "Migrating typo3-core/ to the worktree layout..."
     mv "${CORE_DIR}" "${target}"
     ln -sfn "$(basename "${target}")" "${CORE_DIR}"
+    ensure_relative_worktree_paths
     success "typo3-core -> $(basename "${target}")"
 }
 
@@ -462,9 +493,18 @@ add_core_worktree() {
         return 1
     fi
 
+    # An absolute-path worktree would be unreadable on the other side of the
+    # container boundary; refuse rather than create one.
+    if ! git_supports_relative_worktrees; then
+        error "git $(git --version 2>/dev/null | awk '{print $3}') cannot write relative worktree paths (needs 2.48+)"
+        error "  → ddev restart   (rebuilds the web image with the add-on's git)"
+        return 1
+    fi
+
     local main_dir
     main_dir=$(main_core_worktree_dir)
     [ -z "${main_dir}" ] && main_dir="${CORE_DIR}"
+    ensure_relative_worktree_paths
 
     info "Fetching origin..."
     git -C "${main_dir}" fetch origin || { error "Fetch failed"; return 1; }

@@ -185,6 +185,7 @@ cmd_download() {
             exit 1
         fi
         git -C "${CORE_DIR}" remote add gerrit "${GERRIT_REMOTE}"
+        ensure_relative_worktree_paths
         sync_to_container
         success "TYPO3 Core cloned into typo3-core/"
         return

@@ -230,7 +230,7 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
 @test "install.yaml lists every file the add-on ships" {
   set -eu -o pipefail
   for entry in commands/host/tryout commands/host/autocomplete/tryout \
-               config.tryout.yaml tryout; do
+               config.tryout.yaml tryout web-build/Dockerfile.tryout; do
     run grep -qE "^  - ${entry}\$" "${DIR}/install.yaml"
     assert_success
   done
@@ -1888,4 +1888,98 @@ LINES
   done
   run grep -E 'ddev exec rm -rf "/var/www/html/\$\{rel\}vendor"' "${DIR}/tryout/functions.sh"
   assert_success
+}
+
+# --- git in the container, relative worktree paths --------------------------
+# tryout's git work runs inside the web container while editors, herdr and the
+# dashboard read the same checkouts on the host. Worktree metadata records paths,
+# and an absolute path is right on one side only; relative paths (git >= 2.48)
+# are what let both sides share one worktree.
+
+@test "the web image builds a pinned git that supports relative worktree paths" {
+  set -eu -o pipefail
+  local f="${DIR}/web-build/Dockerfile.tryout"
+  assert_file_exist "${f}"
+  run grep -q '^#ddev-generated' "${f}"
+  assert_success
+  # Version and checksum are pinned, so an image never builds from a tarball
+  # nobody has looked at.
+  run grep -E '^ARG TRYOUT_GIT_VERSION=2\.(4[8-9]|[5-9][0-9])\.[0-9]+$' "${f}"
+  assert_success
+  run grep -E '^ARG TRYOUT_GIT_SHA256=[0-9a-f]{64}$' "${f}"
+  assert_success
+  run grep -q 'sha256sum -c' "${f}"
+  assert_success
+  # Build dependencies do not stay in the image.
+  run grep -q -- '--auto-remove' "${f}"
+  assert_success
+  run grep -qE '^  - web-build/Dockerfile\.tryout$' "${DIR}/install.yaml"
+  assert_success
+}
+
+@test "git_supports_relative_worktrees reads the version, not the platform" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/bin"
+  printf '#!/bin/sh\necho "git version 2.47.3"\n' > "${FAKEROOT}/bin/git"
+  chmod +x "${FAKEROOT}/bin/git"
+  run helper_eval "PATH='${FAKEROOT}/bin:${PATH}' git_supports_relative_worktrees"
+  assert_failure
+  printf '#!/bin/sh\necho "git version 2.48.0"\n' > "${FAKEROOT}/bin/git"
+  run helper_eval "PATH='${FAKEROOT}/bin:${PATH}' git_supports_relative_worktrees"
+  assert_success
+  printf '#!/bin/sh\necho "git version 2.50.1 (Apple Git-155)"\n' > "${FAKEROOT}/bin/git"
+  run helper_eval "PATH='${FAKEROOT}/bin:${PATH}' git_supports_relative_worktrees"
+  assert_success
+}
+
+@test "ensure_relative_worktree_paths converts a worktree recorded with absolute paths" {
+  set -eu -o pipefail
+  helper git_supports_relative_worktrees || skip "host git < 2.48"
+  local main="${FAKEROOT}/typo3-core-main" wt="${FAKEROOT}/typo3-core-x"
+  git init -q "${main}"
+  git -C "${main}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  git -C "${main}" worktree add -q --detach "${wt}" HEAD
+  # The shape a worktree has when the OTHER side created it.
+  printf 'gitdir: /var/www/html/typo3-core-main/.git/worktrees/typo3-core-x\n' > "${wt}/.git"
+  printf '/var/www/html/typo3-core-x/.git\n' > "${main}/.git/worktrees/typo3-core-x/gitdir"
+  run git -C "${wt}" status --short
+  assert_failure
+
+  run helper ensure_relative_worktree_paths
+  assert_success
+  run git -C "${main}" config --get worktree.useRelativePaths
+  assert_output "true"
+  run cat "${wt}/.git"
+  assert_output "gitdir: ../typo3-core-main/.git/worktrees/typo3-core-x"
+  run git -C "${wt}" status --short
+  assert_success
+  # A worktree added afterwards is relative from the start.
+  git -C "${main}" worktree add -q --detach "${FAKEROOT}/typo3-core-y" HEAD
+  run cat "${FAKEROOT}/typo3-core-y/.git"
+  assert_output "gitdir: ../typo3-core-main/.git/worktrees/typo3-core-y"
+}
+
+@test "every clone and worktree operation goes through ensure_relative_worktree_paths" {
+  set -eu -o pipefail
+  # A worktree made without it is absolute and breaks on the other side.
+  local fn body
+  for fn in add_core_worktree migrate_core_to_worktree_layout; do
+    body=$(sed -n "/^${fn}() {/,/^}/p" "${DIR}/tryout/functions.sh")
+    printf '%s\n' "${body}" | grep -q 'ensure_relative_worktree_paths' \
+      || fail "${fn} does not call ensure_relative_worktree_paths"
+  done
+  # And a fresh clone is configured before anything else happens to it.
+  local file clone ensure
+  for file in "${DIR}/tryout/post-start.sh" "${DIR}/tryout/commands.sh"; do
+    [ -f "${file}" ] || continue
+    clone=$(grep -nE '^[[:space:]]*(if ! )?git clone ' "${file}" | head -1 | cut -d: -f1)
+    [ -n "${clone}" ] || continue
+    ensure=$(awk -v from="${clone}" 'NR > from && /ensure_relative_worktree_paths/ { print NR; exit }' "${file}")
+    [ -n "${ensure}" ] || fail "${file}: git clone at line ${clone} is not followed by ensure_relative_worktree_paths"
+  done
+  # add_core_worktree refuses on a git that cannot write relative paths.
+  body=$(sed -n "/^add_core_worktree() {/,/^}/p" "${DIR}/tryout/functions.sh")
+  printf '%s\n' "${body}" | grep -q 'git_supports_relative_worktrees' \
+    || fail "add_core_worktree does not check the git version"
 }
