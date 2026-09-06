@@ -2079,3 +2079,54 @@ LINES
   assert_success
   assert_output "psql -h db -U db -d postgres -tAc SELECT 1"
 }
+
+@test "the SSH hint names ddev auth ssh inside the container, ssh-add on the host" {
+  # The container's probe talks to ddev-ssh-agent, the host's to the host agent;
+  # the next step differs, and the wrong one sends people to the wrong keychain.
+  set -eu -o pipefail
+  run helper_eval 'CS_SSH_REASON=no-agent-key; TRYOUT_IN_CONTAINER=1 gerrit_ssh_hint'
+  assert_output --partial "ddev auth ssh"
+  run helper_eval 'CS_SSH_REASON=no-agent-key; TRYOUT_IN_CONTAINER= gerrit_ssh_hint'
+  assert_output --partial "ssh-add"
+  # And the host adds its own line after the container's doctor report.
+  run grep -c 'host_gerrit_ssh_report' "${DIR}/commands/host/tryout"
+  assert_success
+  [ "${output}" -ge 2 ]
+}
+
+@test "install notes a host git older than 2.48, and only notes it" {
+  set -eu -o pipefail
+  # The pre-install action, extracted the way DDEV would run it.
+  sed -n '/^pre_install_actions:/,/^project_files:/p' "${DIR}/install.yaml" \
+    | sed '1d;$d' | sed '1d' | sed 's/^    //' > "${FAKEROOT}/action.sh"
+  mkdir -p "${FAKEROOT}/bin"
+  printf '#!/bin/sh\necho "git version 2.39.5"\n' > "${FAKEROOT}/bin/git"
+  chmod +x "${FAKEROOT}/bin/git"
+  run env PATH="${FAKEROOT}/bin:${PATH}" bash "${FAKEROOT}/action.sh"
+  assert_success
+  assert_output --partial "predates relative worktree paths"
+  printf '#!/bin/sh\necho "git version 2.50.1 (Apple Git-155)"\n' > "${FAKEROOT}/bin/git"
+  run env PATH="${FAKEROOT}/bin:${PATH}" bash "${FAKEROOT}/action.sh"
+  assert_success
+  refute_output --partial "predates"
+}
+
+@test "shell functions are never run through env" {
+  # `env VAR=x run_typo3 …` looks for a binary called run_typo3 and fails with
+  # "No such file or directory" — which is how the first-run TYPO3 setup broke
+  # once it moved into the container. A variable prefix is the right shape.
+  set -eu -o pipefail
+  run bash -c "grep -nE '\benv +([A-Z_]+=[^ ]* +)+(run_|site_exec|db_root_sql|ctr_|cmd_)' \
+    '${DIR}'/tryout/*.sh '${DIR}/commands/host/tryout'"
+  [ -z "${output}" ] || fail "shell function run through env: ${output}"
+}
+
+@test "the host is brought up to date after a verb that changes files" {
+  # `worktree add x && cd typo3-core-x` on the host must not race Mutagen.
+  set -eu -o pipefail
+  local body
+  body=$(sed -n '/^delegate() {/,/^}/p' "${DIR}/commands/host/tryout")
+  printf '%s\n' "${body}" | grep -q 'flush_mutagen' || fail "delegate never flushes"
+  # …and the two read-only verbs are exempt, so status stays instant.
+  printf '%s\n' "${body}" | grep -qE 'status\|exec\) ;;' || fail "status/exec are not exempt"
+}

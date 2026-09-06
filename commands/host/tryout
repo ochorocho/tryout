@@ -32,19 +32,27 @@ shift || true
 
 # Run one verb in the web container. Settings a user exports on the host reach
 # the container only if they are handed over: DDEV forwards nothing.
+#
+# When the verb comes back the host is brought up to date: with Mutagen a
+# worktree the container just checked out is not on the host for a few seconds
+# more, and `ddev tryout worktree add x && cd typo3-core-x` must not race that.
+# The two verbs that change nothing skip the flush.
 delegate() {
-    local envs=()
+    local envs=() rc=0
     [ -n "${TRYOUT_BRANCH:-}" ]      && envs+=("TRYOUT_BRANCH=${TRYOUT_BRANCH}")
     [ -n "${TRYOUT_GERRIT_USER:-}" ] && envs+=("TRYOUT_GERRIT_USER=${TRYOUT_GERRIT_USER}")
     [ -n "${TRYOUT_PATCHES:-}" ]     && envs+=("TRYOUT_PATCHES=${TRYOUT_PATCHES}")
     # ${envs[@]+…}: an empty array is "unbound" to bash 3.2 under set -u.
-    ddev exec env ${envs[@]+"${envs[@]}"} bash /var/www/html/.ddev/tryout/tryout-container.sh "$@"
+    ddev exec env ${envs[@]+"${envs[@]}"} bash /var/www/html/.ddev/tryout/tryout-container.sh "$@" || rc=$?
+    case "${1:-}" in
+        status|exec) ;;
+        *) flush_mutagen ;;
+    esac
+    return "${rc}"
 }
 
-# The container just wrote files the host is about to use — a new worktree that
-# herdr opens by its host path. With Mutagen the host sees them after a sync
-# cycle; flush it so the very next step does not look at a directory that is not
-# there yet. A no-op when Mutagen is off.
+# Wait for Mutagen to bring what the container wrote over to the host. A no-op
+# when Mutagen is off.
 flush_mutagen() {
     [ "${DDEV_MUTAGEN_ENABLED:-false}" = "true" ] || return 0
     info "Syncing from container..."
@@ -258,7 +266,6 @@ cmd_worktree() {
             delegate worktree add "${name}" ${branch:+"${branch}"} ${flags[@]+"${flags[@]}"} || return 1
             if [ "${in_herdr}" = "true" ]; then
                 echo ""
-                flush_mutagen
                 ensure_herdr_session && open_worktree_in_herdr "${name}" "true" "true"
             fi
             ;;
@@ -573,7 +580,6 @@ cmd_herdr_new() {
     branch="${branch:-${BRANCH}}"
 
     delegate worktree add "${name}" "${branch}" || return 1
-    flush_mutagen
 
     echo ""
     ensure_herdr_session || return 1

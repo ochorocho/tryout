@@ -95,7 +95,8 @@ if [ ! -f "${PROJECT_ROOT}/config/system/settings.php" ]; then
     esac
 
     info "[4/5] Running TYPO3 setup (first time, server-type=${SERVER_TYPE})..."
-    if ! env TYPO3_DB_DRIVER="${TYPO3_DB_DRIVER}" run_typo3 setup --no-interaction --force --server-type="${SERVER_TYPE}"; then
+    # A plain assignment prefix, not `env`: run_typo3 is a shell function.
+    if ! TYPO3_DB_DRIVER="${TYPO3_DB_DRIVER}" run_typo3 setup --no-interaction --force --server-type="${SERVER_TYPE}"; then
         error "TYPO3 setup failed"
         error "  → Try: ddev exec env TYPO3_DB_DRIVER=${TYPO3_DB_DRIVER} vendor/bin/typo3 setup --no-interaction --force --server-type=${SERVER_TYPE}"
         exit 1
