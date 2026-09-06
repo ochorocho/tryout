@@ -13,7 +13,8 @@ assert_file_exist "${TESTDIR}/.ddev/tryout/herdr-plugin/herdr-plugin.toml"
 assert_file_executable "${TESTDIR}/.ddev/tryout/herdr-plugin/relocate.sh"
 assert_file_exist "${TESTDIR}/.ddev/config.tryout.yaml"
 assert_file_exist "${TESTDIR}/.ddev/config.tryout-patches.yaml"
-for f in functions.sh post-start.sh sync-composer.php site-composer.php \
+for f in functions.sh commands.sh tryout-container.sh post-start.sh \
+         sync-composer.php site-composer.php \
          tryout-php-fpm.sh resolve-patch-ref.sh resolve-gerrit-account.sh \
          herdr-new-worktree.sh herdr-menu.sh herdr-dashboard.sh \
          gitmessage.txt composer.tryout.json additional.php gitignore \
@@ -34,6 +35,11 @@ assert_file_executable "${TESTDIR}/.ddev/commands/host/tryout"
 # DDEV only wires up completion for an executable script.
 assert_file_executable "${TESTDIR}/.ddev/commands/host/autocomplete/tryout"
 assert_file_executable "${TESTDIR}/.ddev/tryout/post-start.sh"
+assert_file_executable "${TESTDIR}/.ddev/tryout/tryout-container.sh"
+# The web image gets the add-on's git, so DDEV must have been handed the fragment.
+assert_file_exist "${TESTDIR}/.ddev/web-build/Dockerfile.tryout"
+run grep -q '#ddev-generated' "${TESTDIR}/.ddev/web-build/Dockerfile.tryout"
+assert_success
 
 # --- Ownership markers, so DDEV may update and remove these --------------------
 run grep -q '#ddev-generated' "${TESTDIR}/.ddev/commands/host/tryout"

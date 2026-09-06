@@ -44,9 +44,39 @@ success() { echo -e "${GREEN}==>${NC} $*"; }
 warn()    { echo -e "${YELLOW}==>${NC} $*"; }
 error()   { echo -e "${RED}✗${NC} $*" >&2; }
 
+# --- host / container split ---------------------------------------------------
+# The work of every container-safe verb runs INSIDE the web container: the host
+# command resolves prompts, then hands the verb to tryout-container.sh, which
+# exports this flag and sources commands.sh. The helpers below that build, query
+# the database or talk to Gerrit are written for the container and call the
+# tools directly — never `ddev …`, which is a stub in there. Path helpers, git
+# reads and the herdr/ui code run on either side.
+in_container() { [ "${TRYOUT_IN_CONTAINER:-}" = "1" ]; }
+
+# A shipped script by name, wherever the payload was installed.
+tryout_script() { echo "${PROJECT_ROOT}/.ddev/tryout/$1"; }
+
+# Composer reads COMPOSER=composer.tryout.json from the container environment
+# (config.tryout.yaml), exactly as `ddev composer` did.
+run_composer() { (cd "${PROJECT_ROOT}" && composer "$@"); }
+run_typo3()    { (cd "${PROJECT_ROOT}" && vendor/bin/typo3 "$@"); }
+
+db_is_postgres() { [[ "${DDEV_DATABASE:-mariadb}" == postgres* ]]; }
+
+# One SQL statement as the database superuser, against the db service. DDEV's
+# root/root (MariaDB, MySQL) and db/db (Postgres, a superuser there) are reachable
+# from the web container by the service name.
+db_root_sql() {
+    if db_is_postgres; then
+        PGPASSWORD=db psql -h db -U db -d postgres -tAc "$1"
+    else
+        mysql -h db -uroot -proot -e "$1"
+    fi
+}
+
 # --- gum-backed presentation ------------------------------------------------
-# gum (https://github.com/charmbracelet/gum) is a hard requirement, checked in
-# install.yaml alongside git. Everything goes through these wrappers rather than
+# gum (https://github.com/charmbracelet/gum) is OPTIONAL and host-only: the
+# container never has it. Everything goes through these wrappers rather than
 # calling gum directly, because two of its behaviours have to be handled in ONE
 # place:
 #
@@ -287,14 +317,13 @@ require_core() {
 # majors changes typo3/class-alias-loader (v2 on main, v1 on 13.4), and the loaded
 # v2 plugin then runs its pre-autoload-dump hook against the v1 code it just
 # installed: "Class TYPO3\ClassAliasLoader\IncludeFile\SuffixToken not found",
-# exit 1, and the site answers 500 until vendor/ is wiped by hand. Removing it in
-# the container, not on the host: with Mutagen a host-side deletion is not yet
-# visible when Composer runs a moment later. The lock is sync-composer.php's job.
+# exit 1, and the site answers 500 until vendor/ is wiped by hand. The lock is
+# sync-composer.php's job.
 wipe_site_vendor() {
     local name="${1:-${PRIMARY_SITE}}" rel=""
     site_is_primary "${name}" || rel="sites/${name}/"
     info "Removing ${rel}vendor/ — Core changed, a stale install cannot be updated in place"
-    ddev exec rm -rf "/var/www/html/${rel}vendor" \
+    rm -rf "$(site_vendor "${name}")" \
         || { error "Could not remove ${rel}vendor/"; return 1; }
 }
 
@@ -307,12 +336,12 @@ rebuild_typo3() {
     if site_is_primary "${name}"; then
         check_php_for_core || return 1
         info "Running composer install..."
-        ddev composer install || { error "Composer install failed"; return 1; }
+        run_composer install || { error "Composer install failed"; return 1; }
         info "Running extension:setup..."
-        ddev typo3 extension:setup 2>/dev/null || true
+        run_typo3 extension:setup 2>/dev/null || true
         info "Flushing caches..."
         rm -rf "${PROJECT_ROOT}/var/cache"/* 2>/dev/null || true
-        ddev typo3 cache:flush 2>/dev/null || true
+        run_typo3 cache:flush 2>/dev/null || true
         success "Rebuild complete"
         return
     fi
@@ -321,8 +350,8 @@ rebuild_typo3() {
     php=$(site_php_version "${name}")
     check_php_for_core "$(site_core_dir "${name}")" "${php}" "${name}" || return 1
     info "Running composer install for '${name}' on PHP ${php}..."
-    ddev exec "php${php}" /usr/local/bin/composer install \
-        --working-dir="/var/www/html/sites/${name}" --no-interaction \
+    "php${php}" /usr/local/bin/composer install \
+        --working-dir="$(site_dir "${name}")" --no-interaction \
         || { error "Composer install failed for ${name}"; return 1; }
     info "Running extension:setup for '${name}'..."
     site_exec "${name}" vendor/bin/typo3 extension:setup >/dev/null 2>&1 || true
@@ -356,17 +385,6 @@ reset_core_to_main() {
 # ─────────────────────────────────────────────────────────────────────
 
 core_worktree_dir() { echo "${CORE_WORKTREE_PREFIX}$1"; }
-
-# With Mutagen (the default performance mode on macOS) a directory just created on
-# the host is not yet visible in the container, so anything that runs in there —
-# sync-composer.php, composer install — fails with a confusing "not found". Flush
-# the sync before handing a new tree over to container-side work. A no-op when
-# Mutagen is off.
-sync_to_container() {
-    [ "${DDEV_MUTAGEN_ENABLED:-false}" = "true" ] || return 0
-    info "Syncing to container..."
-    ddev mutagen sync >/dev/null 2>&1 || true
-}
 
 # git >= 2.48 can record worktree metadata with RELATIVE paths. That is what lets
 # the container (which does the git work) and the host (editors, herdr, the
@@ -521,7 +539,6 @@ add_core_worktree() {
     else
         git -C "${main_dir}" worktree add --detach "${dir}" "origin/${branch}" || return 1
     fi
-    sync_to_container
     success "Worktree '${name}' created"
 }
 
@@ -560,7 +577,7 @@ use_core_worktree() {
 
     # Sysext sets differ between versions, so regenerate before installing.
     info "Syncing composer.tryout.json..."
-    ddev php /var/www/html/.ddev/tryout/sync-composer.php || warn "composer sync had warnings"
+    php "$(tryout_script sync-composer.php)" || warn "composer sync had warnings"
     wipe_site_vendor || return 1
     rebuild_typo3
 }
@@ -1551,12 +1568,14 @@ ensure_site_database() {
     db=$(site_database "$1")
     [ "${db}" = "db" ] && return 0
     info "Ensuring database ${db}..."
-    if [[ "${DDEV_DATABASE:-mariadb}" == postgres* ]]; then
-        ddev exec -s db sh -c "PGPASSWORD=db psql -U db -tc \"SELECT 1 FROM pg_database WHERE datname='${db}'\" | grep -q 1 || PGPASSWORD=db createdb -U db ${db}" \
-            || { error "Failed to create database ${db}"; return 1; }
+    if db_is_postgres; then
+        # No IF NOT EXISTS for CREATE DATABASE in Postgres: look first.
+        if ! db_root_sql "SELECT 1 FROM pg_database WHERE datname='${db}'" | grep -q 1; then
+            db_root_sql "CREATE DATABASE \"${db}\"" >/dev/null \
+                || { error "Failed to create database ${db}"; return 1; }
+        fi
     else
-        ddev mysql -uroot -proot -e \
-            "CREATE DATABASE IF NOT EXISTS \`${db}\`; GRANT ALL ON \`${db}\`.* TO 'db'@'%';" \
+        db_root_sql "CREATE DATABASE IF NOT EXISTS \`${db}\`; GRANT ALL ON \`${db}\`.* TO 'db'@'%';" \
             || { error "Failed to create database ${db}"; return 1; }
     fi
 }
@@ -1572,19 +1591,10 @@ site_exec() {
     db=$(site_database "${name}")
     [ -n "${php}" ] && [ "${php}" != "${DDEV_PHP_VERSION:-}" ] && bin="php${php}"
 
-    # Paths must be container-side.
-    local cdir="/var/www/html${dir#${PROJECT_ROOT}}"
-    # Quote each argument for the sh -c the container runs, otherwise argument
-    # boundaries are lost twice over: once joining them, once re-parsing. Without
-    # this, `exec v13 vendor/bin/typo3 config:set X "My Site"` passes two arguments.
-    local quoted="" a
-    for a in "$@"; do
-        quoted="${quoted} $(printf '%q' "${a}")"
-    done
-
+    # The binary runs directly with "$@": no shell in between, so an argument
+    # with spaces — `config:set X "My Site"` — arrives as one argument.
     # shellcheck disable=SC2086 # TRYOUT_EXTRA_ENV is deliberately word-split
-    ddev exec env TYPO3_DB_DBNAME="${db}" TRYOUT_SITE="${name}" ${TRYOUT_EXTRA_ENV:-} \
-        sh -c "cd $(printf '%q' "${cdir}") && ${bin}${quoted}"
+    (cd "${dir}" && env TYPO3_DB_DBNAME="${db}" TRYOUT_SITE="${name}" ${TRYOUT_EXTRA_ENV:-} "${bin}" "$@")
 }
 
 # First-run TYPO3 setup for a served site, mirroring what post-start.sh does for
@@ -1601,7 +1611,7 @@ setup_site_typo3() {
     fi
 
     driver="mysqli"
-    [[ "${DDEV_DATABASE:-mariadb}" == postgres* ]] && driver="postgres"
+    db_is_postgres && driver="postgres"
     server_type="other"
     case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in apache*) server_type="apache" ;; esac
 
@@ -1610,6 +1620,24 @@ setup_site_typo3() {
         site_exec "${name}" vendor/bin/typo3 setup --no-interaction --force "--server-type=${server_type}" \
         || { error "TYPO3 setup failed for ${name}"; return 1; }
     success "Site '${name}' set up"
+}
+
+# What `delete` is about to destroy, one line per site. The host prints it before
+# asking for confirmation; the container prints it when it has to ask itself.
+delete_warning() {
+    local target="$1"; shift
+    echo ""
+    echo -e "${YELLOW}${BOLD}Warning:${NC} this destroys data for:"
+    local s label
+    for s in "$@"; do
+        label="${s}"
+        site_is_primary "${s}" && label="primary"
+        echo -e "  ${BOLD}${label}${NC} — database $(site_database "${s}"), $(site_docroot "${s}")/fileadmin, settings.php"
+    done
+    if [ -z "${target}" ] && [ -n "$(served_site_names)" ]; then
+        echo -e "  ${DIM}served sites are untouched — use 'delete <site>' or 'delete --all'${NC}"
+    fi
+    echo ""
 }
 
 # Wipe one site back to a fresh TYPO3 install: its own database, its own
@@ -1621,14 +1649,13 @@ delete_site() {
     dir=$(site_dir "${name}")
 
     info "[1/4] Recreating database ${db}..."
-    if [[ "${DDEV_DATABASE:-mariadb}" == postgres* ]]; then
-        ddev exec -s db sh -c "PGPASSWORD=db dropdb -U db --if-exists ${db}" 2>/dev/null || true
-        ddev exec -s db sh -c "PGPASSWORD=db createdb -U db ${db}" \
+    if db_is_postgres; then
+        db_root_sql "DROP DATABASE IF EXISTS \"${db}\"" >/dev/null 2>&1 || true
+        db_root_sql "CREATE DATABASE \"${db}\"" >/dev/null \
             || { error "Failed to reset database ${db}"; return 1; }
     else
         # Re-grant: DROP removes the privileges along with the schema.
-        ddev mysql -uroot -proot -e \
-            "DROP DATABASE IF EXISTS \`${db}\`; CREATE DATABASE \`${db}\`; GRANT ALL ON \`${db}\`.* TO 'db'@'%';" \
+        db_root_sql "DROP DATABASE IF EXISTS \`${db}\`; CREATE DATABASE \`${db}\`; GRANT ALL ON \`${db}\`.* TO 'db'@'%';" \
             || { error "Failed to reset database ${db}"; return 1; }
     fi
     success "Database ${db} recreated"
@@ -1642,7 +1669,7 @@ delete_site() {
     success "Configuration removed"
 
     driver="mysqli"
-    [[ "${DDEV_DATABASE:-mariadb}" == postgres* ]] && driver="postgres"
+    db_is_postgres && driver="postgres"
     server_type="other"
     case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in apache*) server_type="apache" ;; esac
 
@@ -1659,7 +1686,7 @@ delete_site() {
 # image rather than hardcoded: DDEV adds versions over time and does not validate
 # --php-version, so a stale list here would silently pick a PHP that is not there.
 available_php_versions() {
-    ddev exec "ls /usr/bin/php8.* 2>/dev/null" 2>/dev/null \
+    ls /usr/bin/php8.* 2>/dev/null \
         | sed 's|.*/php||' \
         | grep -E '^8\.[0-9]+$' \
         | sort -V
@@ -1761,11 +1788,11 @@ check_php_for_core() {
 # --- Serve / unserve ---
 
 # Build a site's own composer.json from the root one, repointing the Core path repo
-# at that worktree. jq is not on the host, so this runs in the container.
+# at that worktree.
 generate_site_composer() {
     local name="$1" php="${2:-}"
     info "Generating sites/${name}/composer.tryout.json..."
-    ddev exec php /var/www/html/.ddev/tryout/site-composer.php "${name}" "${php}" >/dev/null \
+    php "$(tryout_script site-composer.php)" "${name}" "${php}" >/dev/null \
         || { error "Failed to generate the Composer overlay for ${name}"; return 1; }
 }
 
@@ -1809,15 +1836,10 @@ serve_worktree() {
 
     generate_site_composer "${name}" "${php}" || return 1
 
-    # sites/<name>/ was just created on the host; the container must see it before
-    # composer runs in there.
-    sync_to_container
-
     # Sysext set is version-specific, so sync against this worktree.
     info "Syncing sites/${name}/composer.tryout.json with its Core sysexts..."
-    ddev exec env PROJECT_ROOT="/var/www/html/sites/${name}" \
-        TRYOUT_CORE_DIR="/var/www/html/typo3-core-${name}" \
-        php /var/www/html/.ddev/tryout/sync-composer.php \
+    env PROJECT_ROOT="${dir}" TRYOUT_CORE_DIR="$(core_worktree_dir "${name}")" \
+        php "$(tryout_script sync-composer.php)" \
         || { error "composer sync failed for ${name}"; return 1; }
 
     ensure_site_database "${name}" || return 1
@@ -1825,8 +1847,8 @@ serve_worktree() {
     # Run composer under the site's own PHP so the lock file and the generated
     # platform_check match what its vhost will actually serve.
     info "Installing dependencies for ${name} on PHP ${php} (this takes a moment)..."
-    ddev exec "php${php}" /usr/local/bin/composer install \
-        --working-dir="/var/www/html/sites/${name}" --no-interaction \
+    "php${php}" /usr/local/bin/composer install \
+        --working-dir="${dir}" --no-interaction \
         || { error "composer install failed for ${name}"; return 1; }
 
     generate_site_vhost "${name}" "${php}"
@@ -1853,10 +1875,10 @@ unserve_worktree() {
     if [ "${keep_db}" != "true" ]; then
         db=$(site_database "${name}")
         info "Dropping database ${db}..."
-        if [[ "${DDEV_DATABASE:-mariadb}" == postgres* ]]; then
-            ddev exec -s db sh -c "PGPASSWORD=db dropdb -U db --if-exists ${db}" || true
+        if db_is_postgres; then
+            db_root_sql "DROP DATABASE IF EXISTS \"${db}\"" >/dev/null || true
         else
-            ddev mysql -uroot -proot -e "DROP DATABASE IF EXISTS \`${db}\`;" || true
+            db_root_sql "DROP DATABASE IF EXISTS \`${db}\`;" || true
         fi
     fi
 
@@ -1874,7 +1896,7 @@ resolve_patch_ref() {
 
     local result
     local exit_code=0
-    result=$(ddev exec bash /var/www/html/.ddev/tryout/resolve-patch-ref.sh "${api_url}" 2>/dev/null) || exit_code=$?
+    result=$(bash "$(tryout_script resolve-patch-ref.sh)" "${api_url}" 2>/dev/null) || exit_code=$?
 
     if [ "${exit_code}" -eq 2 ]; then
         error "Failed to fetch change ${change_id} from Gerrit (HTTP error)"
@@ -2094,7 +2116,7 @@ query_gerrit_account() {
 
     local result
     local exit_code=0
-    result=$(ddev exec bash /var/www/html/.ddev/tryout/resolve-gerrit-account.sh \
+    result=$(bash "$(tryout_script resolve-gerrit-account.sh)" \
         "${GERRIT_API}" "${query}" 2>/dev/null) || exit_code=$?
 
     [ "${exit_code}" -eq 3 ] && return 2
@@ -2315,12 +2337,30 @@ gerrit_ssh_hint() {
         unreachable)
             echo "→ check firewall/VPN for ${GERRIT_SSH_HOST}:${GERRIT_SSH_PORT}" ;;
         no-agent-key)
-            echo "→ load your key into your host SSH agent, e.g.: ssh-add ~/.ssh/id_ed25519" ;;
+            if in_container; then
+                echo "→ ddev auth ssh   (hands your host keys to ddev-ssh-agent)"
+            else
+                echo "→ load your key into your host SSH agent, e.g.: ssh-add ~/.ssh/id_ed25519"
+            fi ;;
         denied)
             echo "→ upload your public key at https://review.typo3.org/settings/#SSHKeys" ;;
         *)
             echo "" ;;
     esac
+}
+
+# One line about the HOST's SSH agent, printed after cs setup/doctor ran in the
+# container. The probe in there covers ddev-ssh-agent; a push from a host shell
+# uses the host's keys instead, and both answers are worth having.
+host_gerrit_ssh_report() {
+    local user="${1:-}"
+    [ -n "${user}" ] || return 0
+    if diagnose_gerrit_ssh "${user}"; then
+        echo -e "  Host SSH:        ${GREEN}✓${NC} reachable (authenticated) — pushing from a host shell works"
+    else
+        echo -e "  Host SSH:        ${YELLOW}!${NC} ${CS_SSH_REASON} ${DIM}$(gerrit_ssh_hint)${NC}"
+    fi
+    echo ""
 }
 
 # Report the current state of contribution setup.

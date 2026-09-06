@@ -1146,16 +1146,37 @@ STUB
 }
 
 @test "exec preserves argument boundaries through the container" {
-  # The command is re-parsed by sh -c inside the container, so each argument has to
-  # be quoted or `exec v13 typo3 config:set X "My Site"` arrives as two arguments.
+  # `exec v13 typo3 config:set X "My Site"` must arrive as two arguments: the host
+  # hands "$@" to the container dispatcher, which hands "$@" to site_exec, which
+  # runs the binary directly — no sh -c re-parse anywhere.
   set -eu -o pipefail
-  run grep -q "printf '%q'" "${DIR}/tryout/functions.sh"
+  run grep -q 'bash /var/www/html/.ddev/tryout/tryout-container.sh "\$@"' "${DIR}/commands/host/tryout"
   assert_success
-  # cmd_exec must pass "$@", not "$*", or the boundaries are gone before we start
-  run grep -q 'site_exec "\${site}" "\$@"' "${DIR}/commands/host/tryout"
+  run grep -q 'delegate exec "\${site}" "\$@"' "${DIR}/commands/host/tryout"
   assert_success
-  run grep -q 'site_exec "\${site}" "\$\*"' "${DIR}/commands/host/tryout"
+  run grep -q 'site_exec "\${site}" "\$@"' "${DIR}/tryout/commands.sh"
+  assert_success
+  run grep -q 'sh -c' "${DIR}/tryout/functions.sh"
   assert_failure
+
+  # And site_exec itself: a fake php records what it received.
+  mkdir -p "${FAKEROOT}/bin" "${FAKEROOT}/sites/v13"
+  printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  cat > "${FAKEROOT}/bin/php8.2" <<'FAKE'
+#!/bin/sh
+printf 'cwd=%s\n' "$(pwd)"
+printf 'db=%s site=%s\n' "${TYPO3_DB_DBNAME}" "${TRYOUT_SITE}"
+for a in "$@"; do printf 'arg=[%s]\n' "$a"; done
+FAKE
+  chmod +x "${FAKEROOT}/bin/php8.2"
+  run helper_eval "PATH='${FAKEROOT}/bin:${PATH}' site_exec v13 vendor/bin/typo3 config:set X 'My Site'"
+  assert_success
+  assert_line "cwd=${FAKEROOT}/sites/v13"
+  assert_line "db=db_v13 site=v13"
+  assert_line "arg=[vendor/bin/typo3]"
+  assert_line "arg=[config:set]"
+  assert_line "arg=[X]"
+  assert_line "arg=[My Site]"
 }
 
 @test "a worktree can be renamed without touching its branch" {
@@ -1513,8 +1534,11 @@ STUB
   run grep -n "worktree', 'list', '--plain'" "${DIR}/tests/e2e/login.spec.ts"
   assert_success
 
-  # The flag has to reach the list branch, not be swallowed as a worktree name.
-  run grep -c -- '--plain' "${DIR}/commands/host/tryout"
+  # The flag has to reach the list branch, not be swallowed as a worktree name:
+  # the host hands `list` its arguments verbatim, and the container branches on it.
+  run grep -q 'delegate worktree list "\$@"' "${DIR}/commands/host/tryout"
+  assert_success
+  run grep -c -- '--plain' "${DIR}/tryout/commands.sh"
   assert_success
 }
 
@@ -1705,24 +1729,16 @@ STUB
   assert_success
 }
 
-@test "a fresh Core clone is flushed to the container before anything runs in there" {
-  # With Mutagen a directory created on the host is not yet visible in the
-  # container. post-start.sh once ran sync-composer.php straight after `git clone`
-  # and died with "typo3-core/typo3/sysext not found" on a fresh install. Every
-  # clone must therefore be followed by sync_to_container before the next
-  # container-side call — in any script that clones.
+@test "the post-start hook runs inside the web container" {
+  # The clone, the patches and composer all happen in there now, so there is
+  # nothing to flush to the container and no host git involved.
   set -eu -o pipefail
-  local file clone sync container
-  for file in "${DIR}/tryout/post-start.sh" "${DIR}/commands/host/tryout"; do
-    clone=$(grep -nE '^[[:space:]]*(if ! )?git clone ' "${file}" | head -1 | cut -d: -f1)
-    [ -n "${clone}" ] || fail "no git clone in ${file}"
-    sync=$(awk -v from="${clone}" 'NR > from && /^[[:space:]]*sync_to_container/ { print NR; exit }' "${file}")
-    container=$(awk -v from="${clone}" 'NR > from && /^[[:space:]]*(if ! )?ddev (php|exec|composer|typo3) / { print NR; exit }' "${file}")
-    [ -n "${sync}" ] || fail "${file}: git clone at line ${clone} is never followed by sync_to_container"
-    [ -n "${container}" ] || fail "${file}: expected a container-side call after the clone at line ${clone}"
-    [ "${sync}" -lt "${container}" ] \
-      || fail "${file}: sync_to_container (line ${sync}) must come before the first container call (line ${container}) after the clone at line ${clone}"
-  done
+  run grep -E '^    - exec: bash \.ddev/tryout/post-start\.sh$' "${DIR}/config.tryout.yaml"
+  assert_success
+  run grep -q 'exec-host' "${DIR}/config.tryout.yaml"
+  assert_failure
+  run grep -q 'sync_to_container' "${DIR}/tryout/post-start.sh"
+  assert_failure
 }
 
 @test "a PHP that cannot run the Core on disk is rejected before composer runs" {
@@ -1876,8 +1892,8 @@ LINES
   # and in the container — a host-side rm races Mutagen.
   set -eu -o pipefail
   local fn body
-  for fn in use_core_worktree cmd_checkout; do
-    body=$(sed -n "/^${fn}() {/,/^}/p" "${DIR}/tryout/functions.sh" "${DIR}/commands/host/tryout")
+  for fn in use_core_worktree ctr_checkout; do
+    body=$(sed -n "/^${fn}() {/,/^}/p" "${DIR}/tryout/functions.sh" "${DIR}/tryout/commands.sh")
     [ -n "${body}" ] || fail "no function ${fn}"
     printf '%s\n' "${body}" | grep -q 'wipe_site_vendor' \
       || fail "${fn} does not call wipe_site_vendor"
@@ -1886,7 +1902,7 @@ LINES
       -lt "$(printf '%s\n' "${body}" | grep -n 'rebuild_typo3' | tail -1 | cut -d: -f1)" ] \
       || fail "${fn} rebuilds before wiping"
   done
-  run grep -E 'ddev exec rm -rf "/var/www/html/\$\{rel\}vendor"' "${DIR}/tryout/functions.sh"
+  run grep -E 'rm -rf "\$\(site_vendor "\$\{name\}"\)"' "${DIR}/tryout/functions.sh"
   assert_success
 }
 
@@ -1982,4 +1998,84 @@ LINES
   body=$(sed -n "/^add_core_worktree() {/,/^}/p" "${DIR}/tryout/functions.sh")
   printf '%s\n' "${body}" | grep -q 'git_supports_relative_worktrees' \
     || fail "add_core_worktree does not check the git version"
+}
+
+# --- host / container split ---------------------------------------------------
+# commands/host/tryout is the entry point: it owns the terminal (prompts, gum,
+# herdr) and hands every container-safe verb to tryout-container.sh through ONE
+# `ddev exec`. Inside, git, composer, php and the database clients are the
+# container's own, so nothing in there may call `ddev` back.
+
+@test "container-side code never shells out to ddev" {
+  set -eu -o pipefail
+  local f
+  for f in tryout/functions.sh tryout/commands.sh tryout/tryout-container.sh tryout/post-start.sh; do
+    run bash -c "
+      grep -vE '^[[:space:]]*#' '${DIR}/${f}' \
+        | grep -E '(^[[:space:]]*|\\\$\\(|&& |\\|\\| |; )(if ! |! )?ddev (exec|composer|typo3|php|mysql|mutagen)( |\$)'
+    "
+    [ -z "${output}" ] || fail "${f} calls ddev: ${output}"
+  done
+}
+
+@test "the container dispatcher covers every verb the host delegates" {
+  set -eu -o pipefail
+  local host_verbs ctr_verbs verb
+  host_verbs=$(sed -n '/^case "${ACTION}" in/,/^esac/p' "${DIR}/commands/host/tryout" \
+    | sed -n 's/^    \([a-z|]*\)).*/\1/p' | tr '|' '\n' | grep -v '^\*$')
+  ctr_verbs=$(sed -n '/^case "${ACTION}" in/,/^esac/p' "${DIR}/tryout/tryout-container.sh" \
+    | sed -n 's/^    \([a-z|]*\)).*/\1/p' | tr '|' '\n' | grep -v '^\*$')
+  [ -n "${ctr_verbs}" ]
+  for verb in ${host_verbs}; do
+    case "${verb}" in
+      herdr|help) continue ;;    # host by nature: the terminal, and static text
+    esac
+    printf '%s\n' "${ctr_verbs}" | grep -qx "${verb}" || fail "container dispatcher lacks '${verb}'"
+  done
+  run grep -q '^export TRYOUT_IN_CONTAINER=1' "${DIR}/tryout/tryout-container.sh"
+  assert_success
+  run grep -q 'tryout/commands.sh' "${DIR}/tryout/tryout-container.sh"
+  assert_success
+}
+
+@test "verbs that need Core are refused on the host before the container is asked" {
+  # `ddev tryout patch 1` before ddev start must still say "TYPO3 Core not found"
+  # with a next step — not a ddev error about a stopped project.
+  set -eu -o pipefail
+  local fn body rc dl
+  for fn in cmd_patch cmd_reset cmd_checkout cmd_composer cmd_worktree cmd_cs; do
+    body=$(sed -n "/^${fn}() {/,/^}/p" "${DIR}/commands/host/tryout")
+    [ -n "${body}" ] || fail "no function ${fn}"
+    rc=$(printf '%s\n' "${body}" | grep -n 'require_core' | head -1 | cut -d: -f1)
+    dl=$(printf '%s\n' "${body}" | grep -n 'delegate ' | head -1 | cut -d: -f1)
+    [ -n "${rc}" ] || fail "${fn} never calls require_core"
+    [ -n "${dl}" ] || fail "${fn} never delegates"
+    [ "${rc}" -lt "${dl}" ] || fail "${fn} delegates before require_core"
+  done
+  # status stays useful with the containers down: the not-cloned answer is local.
+  run helper_eval 'source "${DIR}/commands/host/tryout" 2>/dev/null; true'
+}
+
+@test "the host forwards the caller's environment to the container" {
+  set -eu -o pipefail
+  local body
+  body=$(sed -n '/^delegate() {/,/^}/p' "${DIR}/commands/host/tryout")
+  [ -n "${body}" ] || fail "no delegate()"
+  printf '%s\n' "${body}" | grep -q 'ddev exec' || fail "delegate does not use ddev exec"
+  printf '%s\n' "${body}" | grep -q 'TRYOUT_BRANCH' || fail "TRYOUT_BRANCH is not forwarded"
+  printf '%s\n' "${body}" | grep -q 'TRYOUT_GERRIT_USER' || fail "TRYOUT_GERRIT_USER is not forwarded"
+}
+
+@test "database helpers reach the db service from inside the web container" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/bin"
+  printf '#!/bin/sh\nprintf "mysql %%s\\n" "$*"\n' > "${FAKEROOT}/bin/mysql"
+  printf '#!/bin/sh\nprintf "psql %%s\\n" "$*"\n' > "${FAKEROOT}/bin/psql"
+  chmod +x "${FAKEROOT}/bin/mysql" "${FAKEROOT}/bin/psql"
+  run helper_eval "PATH='${FAKEROOT}/bin:${PATH}' db_root_sql 'SELECT 1'"
+  assert_success
+  assert_output "mysql -h db -uroot -proot -e SELECT 1"
+  run helper_eval "PATH='${FAKEROOT}/bin:${PATH}' DDEV_DATABASE=postgres:16 db_root_sql 'SELECT 1'"
+  assert_success
+  assert_output "psql -h db -U db -d postgres -tAc SELECT 1"
 }

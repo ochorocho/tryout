@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 #ddev-generated
 
-# Post-start hook for TYPO3 tryout.
+# Post-start hook for TYPO3 tryout — runs INSIDE the web container (an `exec`
+# hook in config.tryout.yaml), so git, composer and php are the container's own.
 # First run: clones core, applies patches, installs composer, sets up TYPO3.
 # Subsequent runs: reapplies configured patches, rebuilds.
 
 set -euo pipefail
 
-source "${DDEV_APPROOT}/.ddev/tryout/functions.sh"
+export TRYOUT_IN_CONTAINER=1
+source "${DDEV_APPROOT:-/var/www/html}/.ddev/tryout/functions.sh"
 
 echo ""
 echo -e "${BOLD}TYPO3 tryout — Post-Start Setup${NC}"
@@ -36,6 +38,9 @@ if [ ! -d "${CORE_DIR}/.git" ] && [ ! -f "${CORE_DIR}/.git" ]; then
     success "TYPO3 Core cloned"
 else
     info "[1/5] TYPO3 Core already present"
+    # A checkout that predates the container-side git still records absolute
+    # host paths in its worktrees; make them readable on both sides.
+    ensure_relative_worktree_paths
 fi
 
 # --- Step 2: Apply patches from config ---
@@ -54,16 +59,11 @@ else
 fi
 
 # --- Step 3: Composer install ---
-# Everything above touched typo3-core/ on the host. With Mutagen the container has
-# not necessarily caught up yet — a fresh clone is tens of thousands of files — so
-# flush the sync now, or sync-composer.php fails with "sysext not found".
-sync_to_container
-
 # The overlay ships with an empty require block, so it must be synced against the
 # sysexts actually present in this Core checkout before install can resolve the
 # path repository. Doing it every start also keeps it correct after a branch switch.
 info "[3/5] Syncing composer.tryout.json with Core sysexts..."
-if ! ddev php /var/www/html/.ddev/tryout/sync-composer.php; then
+if ! php "$(tryout_script sync-composer.php)"; then
     error "Failed to sync composer.tryout.json"
     error "  → Try: ddev tryout download --reset && ddev restart"
     exit 1
@@ -75,7 +75,7 @@ fi
 check_php_for_core || exit 1
 
 info "[3/5] Running composer install..."
-if ! ddev composer install; then
+if ! run_composer install; then
     error "Composer install failed"
     error "  → Try: ddev tryout download --reset && ddev restart"
     exit 1
@@ -85,11 +85,8 @@ success "Composer dependencies installed"
 # --- Step 4: TYPO3 setup (first time only) ---
 if [ ! -f "${PROJECT_ROOT}/config/system/settings.php" ]; then
     # Derive SQL type from DDEV
-    ddev_db="${DDEV_DATABASE:-mariadb}"
-    export TYPO3_DB_DRIVER="mysqli"
-    if [[ "${ddev_db}" == postgres* ]]; then
-      export TYPO3_DB_DRIVER="postgres"
-    fi
+    TYPO3_DB_DRIVER="mysqli"
+    db_is_postgres && TYPO3_DB_DRIVER="postgres"
 
     # Derive server type from DDEV webserver config
     case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
@@ -98,7 +95,7 @@ if [ ! -f "${PROJECT_ROOT}/config/system/settings.php" ]; then
     esac
 
     info "[4/5] Running TYPO3 setup (first time, server-type=${SERVER_TYPE})..."
-    if ! ddev exec env TYPO3_DB_DRIVER="${TYPO3_DB_DRIVER}" vendor/bin/typo3 setup --no-interaction --force --server-type="${SERVER_TYPE}"; then
+    if ! env TYPO3_DB_DRIVER="${TYPO3_DB_DRIVER}" run_typo3 setup --no-interaction --force --server-type="${SERVER_TYPE}"; then
         error "TYPO3 setup failed"
         error "  → Try: ddev exec env TYPO3_DB_DRIVER=${TYPO3_DB_DRIVER} vendor/bin/typo3 setup --no-interaction --force --server-type=${SERVER_TYPE}"
         exit 1
@@ -110,8 +107,8 @@ fi
 
 # --- Step 5: Extension setup + cache flush ---
 info "[5/5] Setting up extensions and flushing caches..."
-ddev typo3 extension:setup 2>/dev/null || warn "extension:setup had warnings"
-ddev typo3 cache:flush 2>/dev/null || warn "cache:flush had warnings"
+run_typo3 extension:setup 2>/dev/null || warn "extension:setup had warnings"
+run_typo3 cache:flush 2>/dev/null || warn "cache:flush had warnings"
 success "Extensions ready, caches flushed"
 
 # --- Done ---
@@ -119,7 +116,7 @@ echo ""
 echo "═══════════════════════════════════════"
 success "TYPO3 is ready!"
 echo ""
-echo -e "  ${BOLD}Backend:${NC}  ${DDEV_PRIMARY_URL}/typo3/"
+echo -e "  ${BOLD}Backend:${NC}  ${DDEV_PRIMARY_URL:-}/typo3/"
 echo -e "  ${BOLD}Login:${NC}    admin / Password.1"
 echo ""
 echo -e "  ${BOLD}Commands:${NC}"

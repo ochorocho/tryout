@@ -22,4 +22,6 @@ web_environment:
 
 hooks:
   post-start:
-    - exec-host: bash .ddev/tryout/post-start.sh
+    # Runs inside the web container: the clone, the patches, composer and the
+    # TYPO3 setup all use the container's own tools.
+    - exec: bash .ddev/tryout/post-start.sh
