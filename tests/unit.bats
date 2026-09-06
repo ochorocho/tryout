@@ -2127,6 +2127,7 @@ LINES
   local body
   body=$(sed -n '/^delegate() {/,/^}/p' "${DIR}/commands/host/tryout")
   printf '%s\n' "${body}" | grep -q 'flush_mutagen' || fail "delegate never flushes"
-  # …and the two read-only verbs are exempt, so status stays instant.
-  printf '%s\n' "${body}" | grep -qE 'status\|exec\) ;;' || fail "status/exec are not exempt"
+  # …and the read-only verbs are exempt, so status stays instant.
+  printf '%s\n' "${body}" | grep -q '"status "\*|"exec "\*' || fail "status/exec are not exempt"
+  printf '%s\n' "${body}" | grep -q '"worktree list"\*' || fail "worktree list is not exempt"
 }

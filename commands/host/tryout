@@ -44,18 +44,18 @@ delegate() {
     [ -n "${TRYOUT_PATCHES:-}" ]     && envs+=("TRYOUT_PATCHES=${TRYOUT_PATCHES}")
     # ${envs[@]+…}: an empty array is "unbound" to bash 3.2 under set -u.
     ddev exec env ${envs[@]+"${envs[@]}"} bash /var/www/html/.ddev/tryout/tryout-container.sh "$@" || rc=$?
-    case "${1:-}" in
-        status|exec) ;;
+    case "${1:-} ${2:-}" in
+        "status "*|"exec "*|"composer "*|"worktree list"*|"cs doctor"*) ;;
         *) flush_mutagen ;;
     esac
     return "${rc}"
 }
 
-# Wait for Mutagen to bring what the container wrote over to the host. A no-op
+# Wait for Mutagen to bring what the container wrote over to the host. Quiet: it
+# takes a moment at most, and a line after every command would be noise. A no-op
 # when Mutagen is off.
 flush_mutagen() {
     [ "${DDEV_MUTAGEN_ENABLED:-false}" = "true" ] || return 0
-    info "Syncing from container..."
     ddev mutagen sync >/dev/null 2>&1 || true
 }
 
