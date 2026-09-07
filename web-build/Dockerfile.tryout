@@ -2,7 +2,7 @@
 # Provided by the tryout add-on. Builds a git >= 2.48 into the web image.
 #
 # tryout runs its git work inside this container while editors, herdr and the
-# dashboard read the same checkouts on the host. Both sides can only share
+# completion read the same checkouts on the host. Both sides can only share
 # worktrees when their metadata holds RELATIVE paths (worktree.useRelativePaths),
 # which git learned in 2.48 — Debian trixie ships 2.47, and forky's 2.53 drags a
 # newer libc along. So it is built from source: ~1 minute once per image, then

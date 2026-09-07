@@ -6,7 +6,7 @@ pre_install_actions:
   - |
     #ddev-description:Check host requirements
     # The tryout command runs on the HOST — prompts, herdr, tab completion — and
-    # reads the Core checkout there (status, completion, the dashboard), so a host
+    # reads the Core checkout there (status, completion), so a host
     # git is still a hard requirement (on Windows this is Git Bash, which DDEV
     # finds itself). The work itself runs in the web container.
     if ! command -v git >/dev/null 2>&1; then
@@ -64,7 +64,7 @@ post_install_actions:
   # project root is "..".
   - |
     #ddev-description:Make the tryout scripts executable
-    chmod +x tryout/*.sh tryout/herdr-plugin/*.sh \
+    chmod +x tryout/*.sh \
       commands/host/tryout commands/host/autocomplete/tryout
 
   - |

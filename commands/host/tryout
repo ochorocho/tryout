@@ -588,26 +588,6 @@ cmd_herdr() {
     # Subcommands come before the flag loop: they are separate entry points.
     case "${1:-}" in
         new)           shift; cmd_herdr_new "$@"; return $? ;;
-        setup-keys)    shift
-                       local yes="false"
-                       case "${1:-}" in --yes|-y) yes="true" ;; esac
-                       herdr_setup_keys "${yes}"; return $? ;;
-        unsetup-keys)  shift; herdr_unsetup_keys; return $? ;;
-        dashboard)     exec "${PROJECT_ROOT}/.ddev/tryout/herdr-dashboard.sh" ;;
-        jobs)          shift
-                       reap_tryout_jobs
-                       local st cmd detail found="false"
-                       while IFS=$'\t' read -r st cmd detail; do
-                           [ -n "${st}" ] || continue
-                           found="true"
-                           case "${st}" in
-                               ok)     echo -e "  ${GREEN}✓${NC} ${cmd}" ;;
-                               failed) echo -e "  ${RED}✗${NC} ${cmd} ${RED}${detail}${NC}" ;;
-                               *)      echo -e "  ${CYAN}⟳${NC} ${cmd} ${DIM}running${NC}" ;;
-                           esac
-                       done < <(tryout_jobs_status)
-                       [ "${found}" = "true" ] || info "No jobs yet"
-                       return 0 ;;
     esac
 
     local only="" use_agent="true" focus="true" attach="true"
@@ -689,14 +669,6 @@ cmd_herdr() {
         # Attaching stays the user's keystroke, so hand them the exact command.
         success "Session ready — focused ${first_label}"
 
-        # Print this BEFORE attaching: attach_herdr_session takes over the terminal
-        # and never returns, so anything after it is never seen.
-        if herdr_keys_installed; then
-            info "  ${DIM}ctrl+b shift+T for the tryout menu${NC}"
-        else
-            info "  ${DIM}→ ddev tryout herdr setup-keys   for a menu on ctrl+b shift+T${NC}"
-        fi
-
         if [ "${attach}" = "true" ]; then
             attach_herdr_session
         else
@@ -750,16 +722,9 @@ cmd_herdr_help() {
     echo -e "  ${BOLD}herdr <name>${NC}          Open just that one"
     echo -e "  ${BOLD}herdr new [<name>]${NC}    Create a worktree and open it (prompts if bare)"
     echo ""
-    echo -e "  ${BOLD}herdr dashboard${NC}       Live project view (worktrees, sites, jobs)"
-    echo -e "  ${BOLD}herdr jobs${NC}            What is running, and what failed"
-    echo -e "  ${BOLD}herdr setup-keys${NC}      Bind prefix+shift+G (new worktree) and"
-    echo -e "                        prefix+shift+T (the tryout menu)"
-    echo -e "  ${BOLD}herdr unsetup-keys${NC}    Undo that binding"
-    echo ""
     echo "  Flags: --no-agent    Two shells instead of claude + shell"
     echo "         --no-focus    Stay where you are (default: focus the first one)"
     echo "         --no-attach   Print the attach command instead of attaching"
-    echo "         --yes         setup-keys: write without asking"
     echo ""
     echo "  Worktrees already open in any workspace are skipped, so the"
     echo "  command is safe to re-run. A bare run also CLOSES workspaces whose"
@@ -771,11 +736,6 @@ cmd_herdr_help() {
     echo "  demand, and attaches to it — your default session is never touched."
     echo "  Stop the session with:"
     echo "    herdr --session tryout-<project> server stop"
-    echo ""
-    echo "  setup-keys edits your herdr config (~/.config/herdr/config.toml) so"
-    echo "  prefix+shift+G creates a TYPO3 Core worktree instead of herdr's own,"
-    echo "  and prefix+shift+T opens a menu of the tryout commands."
-    echo "  It backs the file up first and unsetup-keys restores it exactly."
     echo ""
     echo "  Needs the herdr terminal multiplexer on the host — https://herdr.dev"
     echo ""

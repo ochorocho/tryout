@@ -507,246 +507,6 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
   assert_output "core-v13"
 }
 
-@test "the herdr keybinding round-trips the config byte for byte" {
-  # This edits a file outside .ddev/ that holds the user's own settings and that the
-  # add-on's removal actions cannot reach, so setup/unsetup MUST be exact. Every
-  # shape below broke a naive implementation during development.
-  set -eu -o pipefail
-  local case_name content
-  for case_name in normal no-newline trailing-blanks many-blanks empty; do
-    case "${case_name}" in
-      normal)          content=$'a = 1\n[ui]\nx = 2\n' ;;
-      no-newline)      content=$'a = 1' ;;
-      trailing-blanks) content=$'a = 1\n\n' ;;
-      many-blanks)     content=$'a = 1\n\n\n\n' ;;
-      empty)           content='' ;;
-    esac
-    printf '%s' "${content}" > "${FAKEROOT}/cfg.toml"
-    cp "${FAKEROOT}/cfg.toml" "${FAKEROOT}/cfg.before"
-
-    run env DDEV_SITENAME=myproj HERDR_CONFIG="${FAKEROOT}/cfg.toml" bash -c "
-      export DDEV_APPROOT='${FAKEROOT}'
-      source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-      command -v herdr >/dev/null 2>&1 || exit 0
-      herdr_setup_keys true >/dev/null 2>&1
-      grep -q 'new_worktree' '${FAKEROOT}/cfg.toml' || exit 1
-      herdr_unsetup_keys >/dev/null 2>&1
-    "
-    assert_success
-
-    run diff "${FAKEROOT}/cfg.before" "${FAKEROOT}/cfg.toml"
-    assert_success
-  done
-}
-
-@test "setup-keys keeps a single global block and backs the config up" {
-  # The popups resolve the project from the cwd, so one block serves every
-  # project. A second run from the same project changes nothing.
-  set -eu -o pipefail
-  printf 'a = 1\n' > "${FAKEROOT}/cfg.toml"
-  mkdir -p "${FAKEROOT}/.ddev/tryout" && : > "${FAKEROOT}/.ddev/tryout/herdr-menu.sh"
-
-  run env DDEV_SITENAME=myproj HERDR_CONFIG="${FAKEROOT}/cfg.toml" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    command -v herdr >/dev/null 2>&1 || skip 'herdr not installed'
-    herdr_setup_keys true >/dev/null 2>&1
-    herdr_setup_keys true 2>&1 | grep -c 'already in'
-    grep -c '>>> tryout' '${FAKEROOT}/cfg.toml'
-    grep -c 'tryout myproj' '${FAKEROOT}/cfg.toml' || true
-  "
-  assert_success
-  # second run said "already in"; one block; and it carries no project name.
-  assert_output $'1\n1\n0'
-
-  # The backup must hold the pre-write content.
-  run bash -c "cat '${FAKEROOT}'/cfg.toml.tryout-backup-*"
-  assert_success
-  assert_output "a = 1"
-}
-
-@test "setup-keys folds per-project blocks into the one global block" {
-  # Older versions wrote "# >>> tryout <project> >>>" once per project, so two
-  # projects bound the same three keys twice. Both legacy blocks must go, exactly
-  # one global block must remain, and unsetup must still give the file back byte
-  # for byte.
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/.ddev/tryout" && : > "${FAKEROOT}/.ddev/tryout/herdr-menu.sh"
-  local legacy proj
-  {
-    printf 'a = 1\n'
-    for proj in oldproj otherproj; do
-      printf '\n# >>> tryout %s >>> newline_added=false blank_added=true\n' "${proj}"
-      printf '[[keys.command]]\nkey = "prefix+shift+t"\ncommand = "/gone/%s/.ddev/tryout/herdr-menu.sh"\n' "${proj}"
-      printf '# <<< tryout %s <<<\n' "${proj}"
-    done
-  } > "${FAKEROOT}/cfg.toml"
-
-  run env DDEV_SITENAME=myproj HERDR_CONFIG="${FAKEROOT}/cfg.toml" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    command -v herdr >/dev/null 2>&1 || skip 'herdr not installed'
-    herdr_setup_keys true 2>&1 | grep -o 'Merged 2 tryout block'
-    grep -c '>>> tryout' '${FAKEROOT}/cfg.toml'
-    grep -c 'oldproj\|otherproj' '${FAKEROOT}/cfg.toml' || true
-    grep -c '${FAKEROOT}/.ddev/tryout/herdr-menu.sh' '${FAKEROOT}/cfg.toml'
-    herdr_unsetup_keys >/dev/null 2>&1
-    cat '${FAKEROOT}/cfg.toml'
-  "
-  assert_success
-  assert_output $'Merged 2 tryout block\n1\n0\n1\na = 1'
-}
-
-@test "setup-keys replaces a block whose project is gone" {
-  # A block pointing at a deleted project is a dead key in every session.
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/.ddev/tryout" && : > "${FAKEROOT}/.ddev/tryout/herdr-menu.sh"
-  {
-    printf 'a = 1\n\n# >>> tryout >>> newline_added=false blank_added=true\n'
-    printf '[[keys.command]]\ncommand = "/gone/.ddev/tryout/herdr-menu.sh"\n# <<< tryout <<<\n'
-  } > "${FAKEROOT}/cfg.toml"
-
-  run env DDEV_SITENAME=myproj HERDR_CONFIG="${FAKEROOT}/cfg.toml" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    command -v herdr >/dev/null 2>&1 || skip 'herdr not installed'
-    herdr_setup_keys true >/dev/null 2>&1
-    grep -c '/gone/' '${FAKEROOT}/cfg.toml' || true
-    grep -c '${FAKEROOT}/.ddev/tryout/herdr-menu.sh' '${FAKEROOT}/cfg.toml'
-  "
-  assert_success
-  assert_output $'0\n1'
-}
-
-@test "the popup script trusts the cwd, not its own location" {
-  # The key is bound globally, so \$0 always points at whichever project ran
-  # setup-keys. Trusting it would create a worktree in a project the user is
-  # nowhere near.
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/.ddev/tryout"
-  cp "${DIR}/tryout/herdr-new-worktree.sh" "${FAKEROOT}/.ddev/tryout/"
-  chmod +x "${FAKEROOT}/.ddev/tryout/herdr-new-worktree.sh"
-
-  # Run it from outside any project: it must refuse rather than resolve via \$0.
-  run bash -c "cd / && printf '' | '${FAKEROOT}/.ddev/tryout/herdr-new-worktree.sh' 2>&1"
-  assert_output --partial "No DDEV project here"
-}
-
-@test "the menu covers every command the dispatch case accepts" {
-  # The menu IS the GUI — herdr allows no plugin menu entries — so a new subcommand
-  # that never reaches it is invisible to anyone driving tryout from herdr.
-  set -eu -o pipefail
-  local actions verb
-  actions=$(sed -n '/^case "${ACTION}" in/,/^esac/p' "${DIR}/commands/host/tryout" \
-    | sed -n 's/^    \([a-z|]*\)).*/\1/p' | tr '|' '\n' | grep -v '^\*$')
-  [ -n "${actions}" ]
-
-  for verb in ${actions}; do
-    grep -q -- "${verb}" "${DIR}/tryout/herdr-menu.sh" \
-      || { echo "menu is missing '${verb}'"; false; }
-  done
-}
-
-@test "the menu covers the worktree and cs subcommands too" {
-  # Checking only the top-level verbs is what let `worktree adopt` ship without a
-  # menu entry: `worktree` matched, the subcommand went unnoticed.
-  set -eu -o pipefail
-  local subs sub
-
-  # worktree's own case labels, minus the aliases and help.
-  subs=$(sed -n '/^cmd_worktree()/,/^}$/p' "${DIR}/commands/host/tryout" \
-    | sed -n 's/^        \([a-z|]*\))$/\1/p' | tr '|' '\n' \
-    | grep -vE '^(rm|help)$')
-  [ -n "${subs}" ]
-  for sub in ${subs}; do
-    grep -qE "worktree ${sub}\b" "${DIR}/tryout/herdr-menu.sh" \
-      || { echo "menu is missing 'worktree ${sub}'"; false; }
-  done
-
-  # cs: setup, doctor and uninstall must all be reachable.
-  for sub in setup doctor uninstall; do
-    grep -qE "cs ${sub}\b" "${DIR}/tryout/herdr-menu.sh" \
-      || { echo "menu is missing 'cs ${sub}'"; false; }
-  done
-}
-
-@test "the menu keeps destructive commands behind a confirmation" {
-  set -eu -o pipefail
-  # Each destructive path must call confirm_destructive before running anything.
-  run grep -c 'confirm_destructive' "${DIR}/tryout/herdr-menu.sh"
-  assert_success
-  [ "${output}" -ge 3 ]
-
-  # And the confirmation must compare against the typed name, not just prompt.
-  run grep -q 'answer.*}" = "\${expect}' "${DIR}/tryout/herdr-menu.sh"
-  assert_success
-}
-
-@test "the menu script trusts the cwd, not its own location" {
-  # Same global-keybinding hazard as the new-worktree popup.
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/.ddev/tryout"
-  cp "${DIR}/tryout/herdr-menu.sh" "${FAKEROOT}/.ddev/tryout/"
-  chmod +x "${FAKEROOT}/.ddev/tryout/herdr-menu.sh"
-
-  run bash -c "cd / && printf '' | '${FAKEROOT}/.ddev/tryout/herdr-menu.sh' 2>&1"
-  assert_output --partial "No DDEV project here"
-}
-
-@test "setup-keys binds the worktree, menu and dashboard keys" {
-  set -eu -o pipefail
-  printf 'a = 1\n' > "${FAKEROOT}/cfg.toml"
-
-  run env DDEV_SITENAME=myproj HERDR_CONFIG="${FAKEROOT}/cfg.toml" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    command -v herdr >/dev/null 2>&1 || skip 'herdr not installed'
-    herdr_setup_keys true >/dev/null 2>&1
-    grep -c 'keys.command' '${FAKEROOT}/cfg.toml'
-  "
-  assert_success
-  assert_output "3"
-
-  run grep -q 'prefix+shift+t' "${FAKEROOT}/cfg.toml"
-  assert_success
-  run grep -q 'prefix+shift+d' "${FAKEROOT}/cfg.toml"
-  assert_success
-}
-
-@test "the relocation hook never touches a worktree outside a tryout project" {
-  # THE safety property: this hook fires for EVERY worktree herdr creates, on any
-  # repository on the machine. Moving someone else's checkout would be data loss.
-  set -eu -o pipefail
-  command -v git >/dev/null 2>&1 || skip 'git not available'
-  command -v jq  >/dev/null 2>&1 || skip 'jq not available'
-
-  mkdir -p "${FAKEROOT}/other"
-  git -C "${FAKEROOT}/other" init -q .
-  git -C "${FAKEROOT}/other" commit -q --allow-empty -m init
-  git -C "${FAKEROOT}/other" worktree add -q "${FAKEROOT}/other-wt" -b probe
-
-  run env HERDR_PLUGIN_EVENT_JSON="$(jq -nc --arg p "${FAKEROOT}/other-wt" \
-      '{worktree:{path:$p,branch:"probe"},workspace:{workspace_id:"w9"}}')" \
-    bash "${DIR}/tryout/herdr-plugin/relocate.sh"
-  assert_success
-
-  # Still exactly where git put it.
-  assert_dir_exist "${FAKEROOT}/other-wt"
-}
-
-@test "the relocation hook leaves a correctly-placed worktree alone" {
-  set -eu -o pipefail
-  command -v jq >/dev/null 2>&1 || skip 'jq not available'
-  mkdir -p "${FAKEROOT}/.ddev/tryout" "${FAKEROOT}/typo3-core-v13"
-  cp "${DIR}/tryout/functions.sh" "${FAKEROOT}/.ddev/tryout/"
-
-  run env HERDR_PLUGIN_EVENT_JSON="$(jq -nc --arg p "${FAKEROOT}/typo3-core-v13" \
-      '{worktree:{path:$p,branch:"13.4"},workspace:{workspace_id:"w9"}}')" \
-    bash "${DIR}/tryout/herdr-plugin/relocate.sh"
-  assert_success
-  assert_dir_exist "${FAKEROOT}/typo3-core-v13"
-}
-
 @test "worktree names are derived from a branch and sanitised" {
   # herdr names its own checkouts worktree/<generated-slug>; tryout needs a name
   # validate_worktree_name accepts.
@@ -779,183 +539,6 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
   assert_output --partial "tryout-outside-$$"
 
   git -C "${FAKEROOT}/typo3-core" worktree remove --force "${BATS_TMPDIR}/tryout-outside-$$" || true
-}
-
-@test "the guard plugin manifest declares the worktree hook" {
-  set -eu -o pipefail
-  local m="${DIR}/tryout/herdr-plugin/herdr-plugin.toml"
-  assert_file_exist "${m}"
-
-  run grep -q 'id = "tryout.worktree-guard"' "${m}"
-  assert_success
-  run grep -q 'on = "worktree.created"' "${m}"
-  assert_success
-  run grep -q 'min_herdr_version' "${m}"
-  assert_success
-  run grep -q 'ddev-generated' "${m}"
-  assert_success
-}
-
-@test "a job records its command, pane and exit code" {
-  set -eu -o pipefail
-  command -v jq >/dev/null 2>&1 || skip 'jq not available'
-  mkdir -p "${FAKEROOT}/bin" "${FAKEROOT}/.ddev"
-  cat > "${FAKEROOT}/bin/herdr" <<'STUB'
-#!/usr/bin/env bash
-case "$*" in
-  *"pane split"*) echo '{"result":{"pane":{"pane_id":"w1:p9"}}}' ;;
-  *"pane run"*)   printf '%s' "$*" > "${CAPTURE:-/dev/null}" ;;
-esac
-exit 0
-STUB
-  chmod +x "${FAKEROOT}/bin/herdr"
-
-  run env PATH="${FAKEROOT}/bin:${PATH}" CAPTURE="${FAKEROOT}/wrapper.txt" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    start_tryout_job 'worktree serve v13' worktree serve v13
-  "
-  assert_success
-  local job_id="${output}"
-  [ -n "${job_id}" ]
-
-  assert_file_exist "${FAKEROOT}/.ddev/.tryout-jobs/${job_id}.cmd"
-  assert_file_exist "${FAKEROOT}/.ddev/.tryout-jobs/${job_id}.pane"
-
-  # The wrapper is what makes the outcome observable: it must record the exit code.
-  run cat "${FAKEROOT}/wrapper.txt"
-  assert_output --partial "${job_id}.rc"
-  assert_output --partial "ddev tryout worktree serve v13"
-  assert_output --partial "notification show"
-}
-
-@test "job status reports running, ok and failed" {
-  set -eu -o pipefail
-  local j="${FAKEROOT}/.ddev/.tryout-jobs"
-  mkdir -p "${j}"
-  printf 'worktree serve v13\n' > "${j}/1-a.cmd"
-
-  run helper_eval 'tryout_jobs_status'
-  assert_output --partial "running"
-
-  printf '0' > "${j}/1-a.rc"
-  run helper_eval 'tryout_jobs_status'
-  assert_output --partial "ok"
-
-  printf '1' > "${j}/1-a.rc"
-  run helper_eval 'tryout_jobs_status'
-  assert_output --partial "failed"
-  assert_output --partial "exit 1"
-}
-
-@test "the dashboard only makes instant calls" {
-  # It redraws on a timer in a pane the user is watching. One network or container
-  # call would freeze it, so none may appear at all.
-  set -eu -o pipefail
-  local bad
-  grep -vE '^[[:space:]]*#' "${DIR}/tryout/herdr-dashboard.sh" > "${FAKEROOT}/dash.code"
-  for bad in 'ls-remote' 'ddev exec' 'ddev composer' 'ddev typo3' \
-             'diagnose_gerrit_ssh' 'inspect_author_identity' \
-             'detect_detached_base_branch' 'curl' 'ssh '; do
-    run grep -q -- "${bad}" "${FAKEROOT}/dash.code"
-    assert_failure
-  done
-
-  # `git ... fetch|pull|push` in any argument order — the inserted -C makes a plain
-  # 'git fetch' substring match useless.
-  run grep -qE 'git .*(fetch|pull|push|ls-remote)' "${FAKEROOT}/dash.code"
-  assert_failure
-}
-
-@test "the dashboard never mutates the project" {
-  set -eu -o pipefail
-  local bad
-  grep -vE '^[[:space:]]*#' "${DIR}/tryout/herdr-dashboard.sh" > "${FAKEROOT}/dash.code"
-  for bad in 'rm -rf' 'git reset' 'git checkout' 'worktree add' 'worktree remove' \
-             'worktree move' 'start_tryout_job'; do
-    run grep -q -- "${bad}" "${FAKEROOT}/dash.code"
-    assert_failure
-  done
-}
-
-@test "the menu refuses to run without jq" {
-  # Without jq the pane id cannot be parsed and a multi-minute command would run
-  # inside the modal popup instead.
-  set -eu -o pipefail
-  run grep -q 'command -v jq' "${DIR}/tryout/herdr-menu.sh"
-  assert_success
-}
-
-@test "every destructive menu entry asks first" {
-  # reset and checkout both run `git reset --hard` + `clean -fd`.
-  set -eu -o pipefail
-  local m="${DIR}/tryout/herdr-menu.sh"
-  run grep -c 'confirm_destructive' "${m}"
-  assert_success
-  [ "${output}" -ge 5 ]
-
-  # delete must not prompt twice: the menu confirms, so the command is told not to.
-  run grep -q 'run_in_pane delete .* --yes' "${m}"
-  assert_success
-}
-
-@test "the menu treats ESC as back, not as quit" {
-  # ESC used to fall into the catch-all and close the whole popup from a submenu.
-  set -eu -o pipefail
-  run grep -qE "\\\$'\\\\e'\\)" "${DIR}/tryout/herdr-menu.sh"
-  assert_success
-
-  # and every menu reads through the one helper, so the mapping applies everywhere
-  run grep -c 'read_key' "${DIR}/tryout/herdr-menu.sh"
-  assert_success
-  [ "${output}" -ge 4 ]
-}
-
-@test "the menu loops instead of exiting after each action" {
-  set -eu -o pipefail
-  # The loop itself.
-  run grep -qE 'while :; do' "${DIR}/tryout/herdr-menu.sh"
-  assert_success
-  run grep -q 'main_menu || break' "${DIR}/tryout/herdr-menu.sh"
-  assert_success
-
-  # The action helpers must return, not exit — that was the old one-shot shape.
-  run bash -c "
-    sed -n '/^run_and_show()/,/^}\$/p;/^run_in_pane()/,/^}\$/p' \
-      '${DIR}/tryout/herdr-menu.sh' | grep -c 'exit 0' || true
-  "
-  assert_output "0"
-}
-
-@test "the output view reports a closed pane instead of raw JSON" {
-  # `herdr pane read` answers with a JSON error AND exit code 0 when the pane is
-  # gone, so the exit status cannot be trusted — the text is the only signal.
-  set -eu -o pipefail
-  run bash -c '
-    text="{\"error\":{\"code\":\"pane_not_found\",\"message\":\"gone\"}}"
-    case "${text}" in
-        *pane_not_found*) echo detected ;;
-        *) echo missed ;;
-    esac
-  '
-  assert_output "detected"
-
-  # and the menu actually implements that check
-  run grep -q 'pane_not_found' "${DIR}/tryout/herdr-menu.sh"
-  assert_success
-  run grep -q 'has been closed' "${DIR}/tryout/herdr-menu.sh"
-  assert_success
-}
-
-@test "the output view clamps scrolling at both ends" {
-  set -eu -o pipefail
-  # g goes to the top, G to the last screenful, and neither runs past the array.
-  run grep -qE 'g\)\s+top=0' "${DIR}/tryout/herdr-menu.sh"
-  assert_success
-  run grep -q 'top}" -lt 0 ] && top=0' "${DIR}/tryout/herdr-menu.sh"
-  assert_success
-  run grep -qE 'top \+ rows \)\) -lt "\$\{#lines\[@\]\}"' "${DIR}/tryout/herdr-menu.sh"
-  assert_success
 }
 
 @test "a missing herdr says how to install it, per platform" {
@@ -1022,7 +605,7 @@ STUB
   # enough to catch this: it is a runtime argument error.
   set -eu -o pipefail
   run bash -c "
-    cat '${DIR}'/tryout/*.sh '${DIR}'/tryout/herdr-plugin/*.sh \
+    cat '${DIR}'/tryout/*.sh \
         '${DIR}/commands/host/tryout' \
       | grep -vE '^[[:space:]]*#' | grep -qE 'read .*-t +[0-9]*\\.[0-9]'
   "
@@ -1039,7 +622,7 @@ STUB
   set -eu -o pipefail
   [ -x /bin/bash ] || skip 'no /bin/bash'
   local f
-  for f in "${DIR}"/tryout/*.sh "${DIR}"/tryout/herdr-plugin/*.sh \
+  for f in "${DIR}"/tryout/*.sh \
            "${DIR}/commands/host/tryout" "${DIR}/commands/host/autocomplete/tryout"; do
     run /bin/bash -n "${f}"
     assert_success
@@ -1053,7 +636,7 @@ STUB
   local bad
   for bad in 'readlink -f' 'grep -P' 'sed -r ' 'stat -c' 'date -d'; do
     run bash -c "
-      cat '${DIR}'/tryout/*.sh '${DIR}'/tryout/herdr-plugin/*.sh \
+      cat '${DIR}'/tryout/*.sh \
           '${DIR}/commands/host/tryout' '${DIR}/commands/host/autocomplete/tryout' \
         | grep -vE '^[[:space:]]*#' | grep -q -- '${bad}'
     "
@@ -1122,21 +705,9 @@ STUB
   assert_success
 }
 
-@test "job ids do not collide within the same second" {
-  # $$ is constant for the menu process and date is second-granular, so two jobs
-  # launched together shared an id: the second overwrote the first's .rc, and a
-  # FAILED job could be reported ok — the exact thing job tracking exists to stop.
-  set -eu -o pipefail
-  run grep -q 'date +%s)-\$\$-\${RANDOM}' "${DIR}/tryout/functions.sh"
-  assert_success
-  # and it retries rather than trusting RANDOM to be unique
-  run grep -q 'while \[ -e "\${TRYOUT_JOBS_DIR}/\${id}.cmd" \]' "${DIR}/tryout/functions.sh"
-  assert_success
-}
-
 @test "a failed serve does not leave the site marked as served" {
   # .tryout-site IS the definition of served, so writing it before the work made a
-  # half-built site look real to worktree list, the dashboard and delete --all.
+  # half-built site look real to worktree list and delete --all.
   set -eu -o pipefail
   run grep -q "trap \"rm -f '\${dir}/.tryout-site'\" RETURN" "${DIR}/tryout/functions.sh"
   assert_success
@@ -1615,23 +1186,6 @@ FAKE
   assert_failure
 }
 
-@test "the herdr menu loads functions.sh outside a ddev command" {
-  set -eu -o pipefail
-
-  # functions.sh derives PROJECT_ROOT from DDEV_APPROOT, which DDEV exports only
-  # to its own commands. The menu is launched by herdr, so without setting it the
-  # library aborts under `set -u` and the popup dies with no output at all.
-  run grep -q 'export DDEV_APPROOT=' "${DIR}/tryout/herdr-menu.sh"
-  assert_success
-
-  # And it must be set before the library is sourced, not after.
-  local export_line source_line
-  export_line=$(grep -n 'export DDEV_APPROOT=' "${DIR}/tryout/herdr-menu.sh" | head -1 | cut -d: -f1)
-  source_line=$(grep -n '^\. "\${APPROOT}/.ddev/tryout/functions.sh"' "${DIR}/tryout/herdr-menu.sh" | head -1 | cut -d: -f1)
-  [ -n "${export_line}" ] && [ -n "${source_line}" ]
-  [ "${export_line}" -lt "${source_line}" ]
-}
-
 # --- guided arguments ---------------------------------------------------------
 # A command missing its argument asks for it; without a terminal it prints the
 # usage line as before. These pin the helpers and the one trap that made every
@@ -1913,7 +1467,7 @@ LINES
 
 # --- git in the container, relative worktree paths --------------------------
 # tryout's git work runs inside the web container while editors, herdr and the
-# dashboard read the same checkouts on the host. Worktree metadata records paths,
+# completion read the same checkouts on the host. Worktree metadata records paths,
 # and an absolute path is right on one side only; relative paths (git >= 2.48)
 # are what let both sides share one worktree.
 
@@ -2878,53 +2432,9 @@ FAKE
     || fail "adoption must happen before the open loop, or a duplicate is opened"
 }
 
-# --- creating a worktree from herdr -----------------------------------------
-# Two routes reach a new Core worktree from inside herdr: our prefix+shift+G
-# popup, and herdr's own New-worktree action (still reachable from its menu, and
-# the only route before `setup-keys` has run). Both must end at
-# <project>/typo3-core-<name>, with the user choosing that name.
-
-@test "the new-worktree popup shows the folder it will create and validates the name" {
-  set -eu -o pipefail
-  local f="${DIR}/tryout/herdr-new-worktree.sh"
-  # The prefix is the whole point: the user names the worktree, not the directory.
-  run grep -q 'typo3-core-' "${f}"
-  assert_success
-  # A bad name must be caught here, in the popup, not after ddev has been called:
-  # the popup closes on failure and the message would be gone with it.
-  run grep -q 'validate_worktree_name' "${f}"
-  assert_success
-  # And the branch is picked from the known ones, not typed blind.
-  run grep -q 'ask_branch' "${f}"
-  assert_success
-}
-
-@test "the popup sources functions.sh so it can validate and offer branches" {
-  set -eu -o pipefail
-  local f="${DIR}/tryout/herdr-new-worktree.sh"
-  run grep -q 'tryout/functions.sh' "${f}"
-  assert_success
-  # It still resolves the project from the CWD, never from $0: the key is global.
-  run grep -q 'resolve_approot' "${f}"
-  assert_success
-}
-
-@test "a worktree herdr created itself keeps the name the user gave it" {
-  # herdr's own action prompts for a BRANCH and checks out under
-  # worktrees.directory as <repo>/<branch-slug>. The relocate hook is the only
-  # place that can name the directory, and it must produce typo3-core-<name>.
-  set -eu -o pipefail
-  local f="${DIR}/tryout/herdr-plugin/relocate.sh"
-  run grep -q 'worktree_name_from_ref' "${f}"
-  assert_success
-  run grep -q 'core_worktree_dir' "${f}"
-  assert_success
-  # git worktree move, never mv — it rewrites the metadata on both sides.
-  run grep -q 'worktree move' "${f}"
-  assert_success
-  run bash -c "grep -vE '^[[:space:]]*#' '${f}' | grep -qE '(^|[^a-z])mv '"
-  assert_failure
-}
+# --- creating a worktree ----------------------------------------------------
+# Every route must end at <project>/typo3-core-<name>, and must ask which branch
+# the checkout is based on rather than silently taking whatever Core is on.
 
 @test "the branch is asked for even when the name came in as an argument" {
   set -eu -o pipefail
@@ -2997,37 +2507,6 @@ FAKE
   if printf '%s\n' "${guard}" | grep -q 'ask_branch'; then
     fail "cmd_herdr_new asks for the branch only when the name is missing"
   fi
-}
-
-@test "the menu picks the branch from a list instead of reading a line" {
-  set -eu -o pipefail
-  local f="${DIR}/tryout/herdr-menu.sh"
-  # worktree add was the one creation route that never offered a list. Match the
-  # shared helper by name: a bare 'ask_branch' would also match it as a substring.
-  run grep -q 'ask_new_worktree_branch' "${f}"
-  assert_success
-  run grep -q 'branch \[current\]' "${f}"
-  assert_failure
-  # It already sources functions.sh, which is where ask_branch lives.
-  run grep -q 'tryout/functions.sh' "${f}"
-  assert_success
-}
-
-@test "a name collision keeps the checkout inside the project" {
-  set -eu -o pipefail
-  # Leaving it outside hides it from every ddev tryout command. Two branches
-  # slugging alike (bugfix/12345 and bugfix-12345) is not a rare case.
-  local f="${DIR}/tryout/herdr-plugin/relocate.sh"
-  # The old bail-out: "'<name>' already exists — left <path> where it is".
-  if grep -q "already exists . left" "${f}"; then
-    fail "relocate.sh still abandons the checkout outside the project"
-  fi
-  # A suffixed name is tried before giving up.
-  run grep -q 'BASE' "${f}"
-  assert_success
-  # The notification names the branch, so a suffixed folder is still identifiable.
-  run grep -q 'WT_BRANCH' "${f}"
-  assert_success
 }
 
 @test "worktree_name_from_ref strips a branch down to a directory name" {

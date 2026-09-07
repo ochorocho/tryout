@@ -143,8 +143,6 @@ ddev tryout exec <site> <cmd>   Run a command in a site's PHP, root and database
 
 ddev tryout herdr               Open every Core worktree as a herdr workspace
 ddev tryout herdr new           Create a worktree and open it
-ddev tryout herdr setup-keys    Bind the three herdr keys (see below)
-ddev tryout herdr unsetup-keys  Undo the binding
 
 ddev tryout cs                  Prepare instance for Core contribution
 ddev tryout cs doctor           Check hooks, template, and push URL
@@ -497,7 +495,6 @@ my-typo3-site/
 │   │   ├── tryout-php-fpm.sh     # Extra php-fpm master for a site on another PHP
 │   │   ├── resolve-patch-ref.sh  # Fetches + parses a Gerrit change (runs in-container)
 │   │   ├── resolve-gerrit-account.sh  # Looks up a Gerrit account (runs in-container)
-│   │   ├── herdr-new-worktree.sh # Popup bound by `ddev tryout herdr setup-keys`
 │   │   ├── gitmessage.txt        # Commit template installed by `ddev tryout cs`
 │   │   └── …                     # Templates copied out on install (see below)
 │   ├── config.yaml               # Yours, from `ddev config` (name, docroot, PHP, DB)
@@ -784,122 +781,9 @@ Pass `--no-attach` to always print rather than attach.
 ### Creating a worktree from herdr
 
 `ddev tryout herdr new <name> [<branch>]` creates a Core worktree and opens it in one
-step. Run it bare in a terminal and it asks for both. The same thing from the other
-direction is `ddev tryout worktree add <name> <branch> --herdr`.
-
-herdr's own **New worktree** (`prefix+shift+G`) is no use here: it prompts only for a
-branch and always checks out under `~/.herdr/worktrees`, where no tryout command can
-see it. That action cannot be redirected — herdr has no pre-create hook — so the key
-has to be rebound:
-
-```bash
-ddev tryout herdr setup-keys        # shows the block, asks, then writes it
-ddev tryout herdr setup-keys --yes  # skip the question
-ddev tryout herdr unsetup-keys      # removes it again
-```
-
-That binds **three** keys:
-
-| Key | What it opens |
-|---|---|
-| `prefix+shift+G` | New Core worktree — asks for a name, then a branch to pick |
-| `prefix+shift+T` | The tryout menu — every `ddev tryout` command |
-| `prefix+shift+D` | The dashboard — worktrees, served URLs, running jobs |
-
-The new-worktree popup names the folder for you: whatever you type becomes
-`typo3-core-<name>` **in the project root**, where every `ddev tryout` command can
-see it, and the branch comes from a list of the ones this Core knows.
-
-```text
-New TYPO3 Core worktree  my-typo3-site
-
-  Name (the folder becomes typo3-core-<name>): bugfix-9421
-
-Based on which branch?
-> main
-  14.3
-  13.4
-```
-
-The name is checked before anything is created — an invalid or already-taken one is
-rejected in the popup, where you can still read why.
-
-`prefix` is herdr's own, `ctrl+b` by default — so the menu is <kbd>ctrl+b</kbd> then
-<kbd>shift</kbd>+<kbd>T</kbd>, pressed in sequence. `ddev tryout herdr` reminds you of
-the key when it finishes, and `ctrl+b ?` lists every active binding.
-
-The menu covers every command the CLI dispatches, with `worktree` and `cs` as
-submenus. It runs instant commands (`status`, `worktree list`, `herdr jobs`) in the
-popup itself (also `worktree adopt` and `help`), and pushes anything slow
-(`serve`, `use`, `reset`, `checkout`,
-`cs doctor`, `cs setup`) into a new pane you can watch. Destructive ones —
-`delete`, `worktree remove`, `reset`, `checkout`, `cs uninstall` — make you type a
-confirmation first.
-
-```text
-ctrl+b shift+T
-
-  1 status        7 composer          2 worktree…        8 cs…
-  2 worktree…     8 cs…                 1 list             1 doctor
-  3 herdr new     9 reset               2 add              2 setup
-  4 patch         0 delete              3 use              3 uninstall
-  5 checkout      e exec                4 serve            q back
-  6 download      j jobs                5 unserve
-                  d dashboard           6 remove
-                  h help  q quit        7 adopt
-                                        q back
-```
-
-The menu **stays open**: run something, come back, run something else. <kbd>ESC</kbd>
-goes back one level — out of a submenu, out of an output view — and closes the popup
-from the top. `q` does the same.
-
-Output from an instant command, and from any job you choose to watch, fills the popup
-in a scrollable view:
-
-```text
-worktree list
-
-  NAME    HEAD         BRANCH      STATE  PHP  DB         URL
-  benni   101b9ca0454  (detached)  clean  8.5  db_benni   https://benni.…
-  …
-
-  ↑↓/jk scroll  g/G top/bottom  r refresh  ESC back  (1/10)
-```
-
-A job's output is read back out of the pane it runs in, so the pane is still there to
-watch full-size or scroll in herdr itself. Close that pane and the view says so rather
-than showing you an error blob.
-
-Flags are the exception: the menu prompts for names, not options, so
-`download --reset`, `worktree add --php 8.2` and `delete --all` stay CLI-only.
-
-#### Watching what runs
-
-A command launched from the menu gets a pane of its own, named after it, and its
-exit code is recorded. You are notified when it finishes — and told when it fails,
-which used to look identical to success.
-
-```bash
-ddev tryout herdr jobs        # ✓ / ✗ / ⟳ per job
-ddev tryout herdr dashboard   # the live view, same as prefix+shift+D
-```
-
-The dashboard shows worktrees with their branch, dirty state and served URL, the
-patch count, and the running jobs, refreshing every five seconds. It only ever reads
-local state — no fetch, no container, no SSH — so a refresh cannot hang, and it never
-writes anything: every change goes through the menu.
-
-It backs your config up first (`config.toml.tryout-backup-<timestamp>`) and delimits
-its block with markers, so `unsetup-keys` restores the file byte for byte.
-
-There is **one block for the whole machine**, not one per project: the popups find
-the project from the pane's working directory, so the same block serves every tryout
-project. Running `setup-keys` from another project, or after the project the block
-points at was deleted, replaces the block with one pointing at the current project.
-Blocks written by older versions carried the project name and stacked up, binding
-the same keys several times; `setup-keys` folds them into the single block, and
-`unsetup-keys` removes them too.
+step. Run it bare in a terminal and it asks for both — a name, and a branch picked from
+the ones this Core knows. The same thing from the other direction is
+`ddev tryout worktree add <name> <branch> --herdr`.
 
 #### Worktrees always land in the project
 
@@ -907,16 +791,10 @@ A TYPO3 Core worktree has to be at `<project>/typo3-core-<name>` — that is wha
 `typo3-core` symlink points at, what `worktree list` finds, and what `serve` builds a
 site from.
 
-herdr's own **New worktree** cannot be pointed there. Its only setting,
-`worktrees.directory`, puts checkouts at `<directory>/<repo>/<branch-slug>`, and it names
-them from a generated word list. `setup-keys` rebinds the key, but the same action is
-still reachable from the sidebar right-click menu, which a keybinding cannot intercept.
-
-So `setup-keys` also links a small herdr plugin that watches for a Core worktree created
-outside its project and moves it back with `git worktree move`. It does nothing at all to
-worktrees of any other repository.
-
-For a checkout that predates this — or if you would rather not run the plugin:
+herdr's own **New worktree** puts its checkouts elsewhere. Its only setting,
+`worktrees.directory`, places them at `<directory>/<repo>/<branch-slug>`, and it names
+them from a generated word list — so a worktree created that way is invisible to every
+`ddev tryout` command until it is adopted:
 
 ```bash
 ddev tryout worktree adopt --dry-run   # list strays
@@ -993,7 +871,7 @@ left exactly as it is: it is not a Core worktree, and you opened it on purpose.
 ### Mutagen and the Core checkout (macOS)
 
 With Mutagen the Core clone lives on both sides: git runs on it inside the
-container, and your editor, herdr and the dashboard read it on the host. Its
+container, and your editor and herdr read it on the host. Its
 `.git` — around 650 MB — is part of the sync, and **must stay so**: excluding
 `typo3-core*/.git` in `.ddev/mutagen/mutagen.yml` would leave the container's git
 with nothing to work on. What can safely be excluded is a served site's
@@ -1020,7 +898,7 @@ where both the host and the container can see it.
 - [DDEV](https://ddev.readthedocs.io/en/stable/) v1.24.10+ (enforced by the add-on)
 - Docker Desktop or Colima
 - Git on the host, 2.48 or newer recommended: the host only *reads* the Core
-  checkout (status before the first start, the dashboard, tab completion), but
+  checkout (status before the first start, tab completion), but
   worktrees are recorded with relative paths, which older gits handle for reading
   and not for `git worktree` commands. The git that does the work is built into
   the web image by the add-on.

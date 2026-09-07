@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=2
+TRYOUT_VERSION=3
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -251,7 +251,7 @@ explain_missing() {
 
 # core_worktree_names [all|nonprimary|served|unserved]
 # From the directory glob, not list_core_worktrees: no git status per tree. This is
-# the helper for anything that must be instant — completion, the dashboard. The
+# the helper for anything that must be instant — completion. The
 # picker wants detail instead and uses worktree_labels below.
 core_worktree_names() {
     local mode="${1:-all}" d name primary
@@ -273,7 +273,7 @@ core_worktree_names() {
 #
 # This runs a `git status` per worktree, which core_worktree_names deliberately
 # avoids — but a picker is opened by hand, once, and a list of bare names does not
-# say which branch is which. Never call it from the dashboard or completion.
+# say which branch is which. Never call it from completion.
 worktree_labels() {
     local mode="${1:-all}" name head branch dirty active site
     while IFS=$'\t' read -r name head branch dirty active; do
@@ -634,7 +634,7 @@ core_worktree_dir() { echo "${CORE_WORKTREE_PREFIX}$1"; }
 
 # git >= 2.48 can record worktree metadata with RELATIVE paths. That is what lets
 # the container (which does the git work) and the host (editors, herdr, the
-# dashboard) share one worktree: an absolute path is right on one side only.
+# completion) share one worktree: an absolute path is right on one side only.
 git_supports_relative_worktrees() {
     local v major minor
     v=$(git --version 2>/dev/null | sed -n 's/^git version \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
@@ -1277,353 +1277,6 @@ list_foreign_core_worktrees() {
           done
 }
 
-# --- job tracking ----------------------------------------------------------
-# A tryout command launched into a pane used to be fire-and-forget: the caller
-# printed a tick and exited, so a failed serve looked exactly like a successful
-# one. Each job now leaves three small files behind — <id>.cmd, <id>.pane and,
-# once it finishes, <id>.rc — which is what makes the outcome observable at all.
-# Deliberately not herdr's pane.exited event: a wrapper writing its own exit code
-# needs no daemon and survives the popup that launched it closing.
-
-TRYOUT_JOBS_DIR="${PROJECT_ROOT}/.ddev/.tryout-jobs"
-
-# Launch `ddev tryout <cmd...>` in a pane of its own and record it. Echoes the
-# job id; non-zero means nothing was started.
-start_tryout_job() {
-    local label="$1"; shift
-    [ $# -gt 0 ] || return 1
-
-    local id pane wrapped
-    mkdir -p "${TRYOUT_JOBS_DIR}" 2>/dev/null || return 1
-    # $$ is constant for the menu process and date is second-granular, so two jobs
-    # started together shared an id — the second overwrote the first's .rc, and a
-    # FAILED job could be reported as ok. That defeats the point of tracking.
-    id="$(date +%s)-$$-${RANDOM}"
-    while [ -e "${TRYOUT_JOBS_DIR}/${id}.cmd" ]; do
-        id="$(date +%s)-$$-${RANDOM}"
-    done
-    printf '%s\n' "$*" > "${TRYOUT_JOBS_DIR}/${id}.cmd"
-
-    pane=$(herdr_cli pane split --direction down --cwd "${PROJECT_ROOT}" --no-focus 2>/dev/null \
-           | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
-    if [ -z "${pane}" ]; then
-        rm -f "${TRYOUT_JOBS_DIR}/${id}.cmd"
-        return 1
-    fi
-    printf '%s\n' "${pane}" > "${TRYOUT_JOBS_DIR}/${id}.pane"
-
-    herdr_cli pane rename "${pane}" "tryout: ${label}" >/dev/null 2>&1 || true
-
-    # The wrapper is the whole point: it records the exit code and says so.
-    wrapped="ddev tryout $*; __rc=\$?;"
-    wrapped="${wrapped} printf '%s' \"\${__rc}\" > '${TRYOUT_JOBS_DIR}/${id}.rc';"
-    wrapped="${wrapped} if [ \"\${__rc}\" -eq 0 ]; then"
-    wrapped="${wrapped} herdr notification show 'tryout: ${label}' --body 'finished';"
-    wrapped="${wrapped} else"
-    wrapped="${wrapped} herdr notification show 'tryout: ${label} FAILED' --body \"exit \${__rc}\";"
-    wrapped="${wrapped} fi"
-
-    if ! herdr_cli pane run "${pane}" "${wrapped}" >/dev/null 2>&1; then
-        rm -f "${TRYOUT_JOBS_DIR}/${id}.cmd" "${TRYOUT_JOBS_DIR}/${id}.pane"
-        return 1
-    fi
-
-    printf '%s' "${id}"
-}
-
-# One line per job, newest first: "<state>\t<cmd>\t<detail>".
-# state is running | ok | failed.
-tryout_jobs_status() {
-    [ -d "${TRYOUT_JOBS_DIR}" ] || return 0
-    local f id cmd rc
-    # Newest first, without parsing ls: job ids are <epoch>-<pid>, so a reverse
-    # sort on the name is the same ordering and cannot trip over odd filenames.
-    for f in $(printf '%s\n' "${TRYOUT_JOBS_DIR}"/*.cmd | sort -r); do
-        [ -e "${f}" ] || continue
-        id="$(basename "${f}" .cmd)"
-        cmd="$(cat "${f}" 2>/dev/null)"
-        if [ -f "${TRYOUT_JOBS_DIR}/${id}.rc" ]; then
-            rc="$(cat "${TRYOUT_JOBS_DIR}/${id}.rc" 2>/dev/null)"
-            if [ "${rc}" = "0" ]; then
-                printf 'ok\t%s\t\n' "${cmd}"
-            else
-                printf 'failed\t%s\texit %s\n' "${cmd}" "${rc}"
-            fi
-        else
-            printf 'running\t%s\t\n' "${cmd}"
-        fi
-    done
-}
-
-# Drop finished jobs older than an hour. Running ones are never touched.
-reap_tryout_jobs() {
-    [ -d "${TRYOUT_JOBS_DIR}" ] || return 0
-    local f id
-    find "${TRYOUT_JOBS_DIR}" -name '*.rc' -mmin +60 2>/dev/null \
-        | while IFS= read -r f; do
-            id="$(basename "${f}" .rc)"
-            rm -f "${TRYOUT_JOBS_DIR}/${id}.cmd" \
-                  "${TRYOUT_JOBS_DIR}/${id}.pane" \
-                  "${TRYOUT_JOBS_DIR}/${id}.rc" 2>/dev/null
-          done
-}
-
-# --- herdr keybinding ------------------------------------------------------
-# herdr's built-in "New worktree" (prefix+shift+G) cannot be redirected: it prompts
-# for a branch and always checks out under worktrees.directory. A TYPO3 Core worktree
-# must land at typo3-core-<name>, so the only way to make that key do the right thing
-# is to unbind the built-in and bind our own popup. There is no pre-create hook to use
-# instead — every worktree.* event is past tense.
-
-herdr_config_path() { echo "${HERDR_CONFIG:-${HOME}/.config/herdr/config.toml}"; }
-
-# Delimiters so unsetup-keys can remove exactly our block and nothing else.
-#
-# ONE block for the whole machine, not one per project. The popups resolve the
-# project from the pane's cwd, never from their own path, so a second block would
-# only bind the same three keys again — and a block whose project was deleted is a
-# dead key. Older versions put the project name in the marker ("# >>> tryout
-# <project> >>>"); those blocks are still recognised so setup-keys can fold them
-# into the one global block and unsetup-keys can remove them.
-herdr_key_marker_start() { echo "# >>> tryout >>>"; }
-herdr_key_marker_end()   { echo "# <<< tryout <<<"; }
-# What every start/end marker begins with, current or legacy shape.
-herdr_key_marker_start_prefix() { echo "# >>> tryout "; }
-herdr_key_marker_end_prefix()   { echo "# <<< tryout "; }
-
-herdr_key_block() {
-    printf '%s\n%s\n' "$(herdr_key_marker_start)" "$(herdr_key_block_body)"
-}
-
-herdr_key_block_body() {
-    cat <<BLOCK
-# Added by 'ddev tryout herdr setup-keys'. Remove with 'unsetup-keys' — editing by
-# hand is fine too, just take the whole block including both markers.
-[keys]
-new_worktree = ""
-
-[[keys.command]]
-key = "prefix+shift+g"
-type = "popup"
-command = "${PROJECT_ROOT}/.ddev/tryout/herdr-new-worktree.sh"
-description = "new tryout worktree"
-width = "60%"
-height = "30%"
-
-[[keys.command]]
-key = "prefix+shift+t"
-type = "popup"
-command = "${PROJECT_ROOT}/.ddev/tryout/herdr-menu.sh"
-description = "ddev tryout menu"
-width = "70%"
-height = "60%"
-
-[[keys.command]]
-key = "prefix+shift+d"
-type = "popup"
-command = "${PROJECT_ROOT}/.ddev/tryout/herdr-dashboard.sh"
-description = "tryout dashboard"
-width = "80%"
-height = "70%"
-$(herdr_key_marker_end)
-BLOCK
-}
-
-# The marker lines opening tryout blocks in the config, of either shape.
-herdr_key_block_starts() {
-    local cfg
-    cfg="$(herdr_config_path)"
-    [ -f "${cfg}" ] || return 0
-    grep -E '^# >>> tryout( [^ ]+)? >>>' "${cfg}" || true
-}
-
-herdr_keys_installed() { [ -n "$(herdr_key_block_starts)" ]; }
-
-# True when the config holds exactly one block, in the global shape, whose scripts
-# still exist. Anything else — per-project blocks, several blocks, a block left
-# behind by a deleted project — is what setup-keys replaces.
-herdr_keys_current() {
-    local cfg starts dir
-    cfg="$(herdr_config_path)"
-    starts="$(herdr_key_block_starts)"
-    [ "$(printf '%s\n' "${starts}" | grep -c .)" = "1" ] || return 1
-    printf '%s' "${starts}" | grep -qF "$(herdr_key_marker_start)" || return 1
-    dir=$(sed -n 's|^command = "\(.*\)/herdr-menu.sh"$|\1|p' "${cfg}" | head -1)
-    [ -n "${dir}" ] && [ -f "${dir}/herdr-menu.sh" ]
-}
-
-# Delete every tryout block from the config, in place, plus the single blank line
-# setup-keys put before each — so a setup/unsetup round trip leaves the file byte
-# for byte as it was. Blank lines are held back and only emitted once a real line
-# follows, which is how the blank line before a block is dropped with it.
-herdr_strip_key_blocks() {
-    local cfg tmp strip_newline="false"
-    cfg="$(herdr_config_path)"
-    tmp="${cfg}.tryout-tmp.$$"
-    grep -q "newline_added=true" "${cfg}" && strip_newline="true"
-
-    awk -v start="$(herdr_key_marker_start_prefix)" -v end="$(herdr_key_marker_end_prefix)" '
-        index($0, start) == 1 {
-            inblock = 1
-            # We added one blank line before this block; give back any others.
-            if ($0 ~ /blank_added=true/) sub(/\n$/, "", pending)
-            printf "%s", pending
-            pending = ""
-            next
-        }
-        index($0, end) == 1 { inblock = 0; next }
-        inblock             { next }
-        /^[[:space:]]*$/ { pending = pending $0 "\n"; next }
-        { printf "%s%s\n", pending, $0; pending = "" }
-        END { printf "%s", pending }
-    ' "${cfg}" > "${tmp}" || { error "Could not rewrite ${cfg}"; rm -f "${tmp}"; return 1; }
-
-    # Give back the terminating newline we added, if we added it.
-    if [ "${strip_newline}" = "true" ] && [ -s "${tmp}" ]; then
-        printf '%s' "$(cat "${tmp}")" > "${tmp}.n" && mv "${tmp}.n" "${tmp}"
-    fi
-
-    mv "${tmp}" "${cfg}" || { error "Could not replace ${cfg}"; rm -f "${tmp}"; return 1; }
-}
-
-TRYOUT_HERDR_PLUGIN_ID="tryout.worktree-guard"
-
-# Link the guard plugin, which relocates a worktree herdr's own action puts outside
-# the project. Idempotent; a failure is reported but never fatal — the keybindings
-# still work without it.
-herdr_link_plugin() {
-    local dir="${PROJECT_ROOT}/.ddev/tryout/herdr-plugin"
-    [ -f "${dir}/herdr-plugin.toml" ] || return 0
-
-    if herdr plugin list 2>/dev/null | grep -q "${TRYOUT_HERDR_PLUGIN_ID}"; then
-        return 0
-    fi
-    if herdr plugin link "${dir}" >/dev/null 2>&1; then
-        success "Linked the worktree guard plugin"
-    else
-        warn "Could not link the worktree guard plugin"
-        warn "  herdr's own 'New worktree' will check out outside the project"
-    fi
-}
-
-herdr_unlink_plugin() {
-    herdr plugin list 2>/dev/null | grep -q "${TRYOUT_HERDR_PLUGIN_ID}" || return 0
-    herdr plugin unlink "${TRYOUT_HERDR_PLUGIN_ID}" >/dev/null 2>&1 \
-        && success "Unlinked the worktree guard plugin" || true
-}
-
-herdr_setup_keys() {
-    local assume_yes="${1:-false}" cfg backup
-    cfg="$(herdr_config_path)"
-
-    herdr_available || return 1
-
-    if herdr_keys_current; then
-        info "The tryout keybinding is already in ${cfg}"
-        info "  ${DIM}→ ddev tryout herdr unsetup-keys   to remove it${NC}"
-        return 0
-    fi
-
-    # Older versions wrote one block per project, binding the same keys several
-    # times; a block can also outlive its project. Fold whatever is there into
-    # one global block pointing at this project.
-    local replacing=0
-    replacing=$(herdr_key_block_starts | grep -c . || true)
-
-    echo ""
-    if [ "${replacing}" -gt 0 ]; then
-        echo -e "${BOLD}This replaces ${replacing} tryout block(s) in ${cfg} with:${NC}"
-    else
-        echo -e "${BOLD}This adds the following to ${cfg}:${NC}"
-    fi
-    echo ""
-    herdr_key_block | sed 's/^/  /'
-    echo ""
-    echo -e "  ${DIM}prefix+shift+G then creates a tryout Core worktree instead of herdr's${NC}"
-    echo -e "  ${DIM}own, and prefix+shift+T opens the tryout command menu. That config is${NC}"
-    echo -e "  ${DIM}global, so both keys are live in every herdr session — the popups say${NC}"
-    echo -e "  ${DIM}so when you are not in a tryout project.${NC}"
-    echo ""
-
-    if [ "${assume_yes}" != "true" ]; then
-        local reply=""
-        if [ -e /dev/tty ] && { : < /dev/tty; } 2>/dev/null; then
-            printf "  Write it? [y/N] " > /dev/tty
-            read -r reply < /dev/tty
-        fi
-        case "${reply}" in
-            [yY]|[yY][eE][sS]) ;;
-            *) info "Nothing written."; return 0 ;;
-        esac
-    fi
-
-    mkdir -p "$(dirname "${cfg}")"
-    if [ -f "${cfg}" ]; then
-        backup="${cfg}.tryout-backup-$(date +%Y%m%d%H%M%S)"
-        cp "${cfg}" "${backup}" || { error "Could not back up ${cfg}"; return 1; }
-        success "Backed up to $(basename "${backup}")"
-    else
-        : > "${cfg}"
-    fi
-
-    if [ "${replacing}" -gt 0 ]; then
-        herdr_strip_key_blocks || return 1
-    fi
-
-    # Never fuse onto the user's last line: if the file does not end in a newline,
-    # terminate it first. That byte is theirs, so unsetup-keys must not give it back —
-    # hence the marker records whether we added one.
-    local added_newline="false"
-    if [ -s "${cfg}" ] && [ -n "$(tail -c1 "${cfg}")" ]; then
-        printf '\n' >> "${cfg}"
-        added_newline="true"
-    fi
-
-    # Separate the block from the user's content with exactly one blank line — but
-    # only if there is not already one, and record that so unsetup can undo it.
-    local blank_added="false"
-    if [ -s "${cfg}" ] && [ -n "$(tail -c2 "${cfg}" | head -c1)" ]; then
-        printf '\n' >> "${cfg}"
-        blank_added="true"
-    fi
-
-    printf '%s\n%s\n' \
-        "$(herdr_key_marker_start) newline_added=${added_newline} blank_added=${blank_added}" \
-        "$(herdr_key_block_body)" >> "${cfg}" || {
-        error "Could not write ${cfg}"
-        return 1
-    }
-    if [ "${replacing}" -gt 0 ]; then
-        success "Merged ${replacing} tryout block(s) into one, bound to this project"
-    else
-        success "Bound prefix+shift+G (worktree), +T (menu), +D (dashboard)"
-    fi
-
-    # The plugin covers the route a keybinding cannot: herdr's own New-worktree entry
-    # in the sidebar right-click menu.
-    herdr_link_plugin
-
-    herdr_cli server reload-config >/dev/null 2>&1 \
-        && info "  ${DIM}herdr reloaded its config${NC}" \
-        || info "  ${DIM}→ restart herdr, or: herdr server reload-config${NC}"
-}
-
-herdr_unsetup_keys() {
-    local cfg
-    cfg="$(herdr_config_path)"
-
-    if ! herdr_keys_installed; then
-        info "No tryout keybinding in ${cfg}"
-        return 0
-    fi
-
-    herdr_strip_key_blocks || return 1
-    success "Removed the tryout keybinding from ${cfg}"
-    herdr_unlink_plugin
-
-    herdr_cli server reload-config >/dev/null 2>&1 || true
-}
-
 # One workspace per worktree: the root pane runs the agent, a right split gives a
 # shell. Both are rooted at the worktree. `workspace create` makes its first tab and
 # root pane too, so one call covers the whole topology. Focus stays where the caller
@@ -2200,7 +1853,7 @@ serve_worktree() {
     mkdir -p "${dir}/config/system" "${dir}/var"
 
     # The marker IS the definition of "served" (site_is_served), so writing it up
-    # front makes a half-built site look real to worktree list, the dashboard,
+    # front makes a half-built site look real to worktree list,
     # delete --all and write_worktree_config. Remove it if we do not get to the end.
     printf 'php=%s\n' "${php}" > "${dir}/.tryout-site"
     # shellcheck disable=SC2064 # expand dir/name now, not when the trap fires

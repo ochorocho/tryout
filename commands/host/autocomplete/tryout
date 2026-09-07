@@ -344,14 +344,10 @@ case "${VERB}" in
         ;;
 
     herdr)
-        # herdr [<worktree>|new|dashboard|jobs|setup-keys|unsetup-keys] [flags]
+        # herdr [<worktree>|new] [flags]
         if [ "${POS}" -le 1 ]; then
             if ! wants_flag; then
                 c new          "create a worktree and open it"
-                c dashboard    "live project view"
-                c jobs         "what is running, and what failed"
-                c setup-keys   "bind prefix+shift+G / T / D in herdr"
-                c unsetup-keys "undo that binding"
                 worktrees all
             fi
             flag --no-agent  "two shells instead of claude + shell"
@@ -366,12 +362,6 @@ case "${VERB}" in
                     elif [ "${POS}" -eq 3 ]; then
                         branches
                     fi
-                    ;;
-                setup-keys)
-                    flag --yes "write the herdr config without asking"
-                    ;;
-                dashboard | jobs | unsetup-keys)
-                    hint "herdr ${SUB} takes no arguments"
                     ;;
                 *)
                     flag --no-agent  "two shells instead of claude + shell"
