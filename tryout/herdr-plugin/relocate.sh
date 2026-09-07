@@ -70,11 +70,23 @@ validate_worktree_name "${NAME}" >/dev/null 2>&1 || {
     exit 0
 }
 
+# On a collision, suffix rather than give up. Leaving the checkout outside the
+# project hides it from every ddev tryout command — `worktree list` does not show
+# it, `herdr` does not open it — and two branches slugging to the same name is not
+# rare (bugfix/12345 and bugfix-12345). Inside the project under a second name is
+# always the better answer; `worktree rename` fixes it up afterwards.
+BASE="${NAME}"
 TARGET="$(core_worktree_dir "${NAME}")"
-if [ -e "${TARGET}" ]; then
-    note "'${NAME}' already exists — left ${WT_PATH} where it is"
-    exit 0
-fi
+n=2
+while [ -e "${TARGET}" ]; do
+    if [ "${n}" -gt 99 ]; then
+        note "'${BASE}' and 98 variants of it already exist — left ${WT_PATH} where it is"
+        exit 0
+    fi
+    NAME="${BASE}-${n}"
+    TARGET="$(core_worktree_dir "${NAME}")"
+    n=$((n + 1))
+done
 
 # git worktree move, never mv: it rewrites the worktree metadata on both sides.
 if ! git -C "${WT_PATH}" worktree move "${WT_PATH}" "${TARGET}" >/dev/null 2>&1; then
@@ -86,5 +98,11 @@ fi
 [ -n "${WS_ID}" ] && "${BIN}" workspace close "${WS_ID}" >/dev/null 2>&1
 open_worktree_in_herdr "${NAME}" "true" "true" >/dev/null 2>&1
 
-note "moved worktree to typo3-core-${NAME}"
+# Name the branch too: with a suffixed name, or two branches that slug alike, the
+# folder alone does not say which checkout this is.
+if [ "${NAME}" != "${BASE}" ]; then
+    note "moved worktree to typo3-core-${NAME}${WT_BRANCH:+ (${WT_BRANCH})} — typo3-core-${BASE} was taken"
+else
+    note "moved worktree to typo3-core-${NAME}${WT_BRANCH:+ (${WT_BRANCH})}"
+fi
 exit 0

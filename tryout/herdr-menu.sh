@@ -258,6 +258,20 @@ ask_name() {
     [ -n "${ASKED}" ] || { printf "\n  cancelled\n"; pause; return 1; }
 }
 
+# The branch for a new worktree. ask_new_worktree_branch (functions.sh) owns the
+# question and leaves the answer in ASKED_BRANCH; this only turns its "cancelled"
+# into the menu's own wording, since explain_missing's warning would scroll past
+# under the popup's next redraw. Not called in a $(...) subshell, for the same
+# reason as ask_name: a cancel there could only exit the subshell.
+ask_branch_or_back() {
+    ASKED_BRANCH=""
+    # NO 2>/dev/null here: gum draws its whole chooser on stderr, so hushing it
+    # gives an invisible list that answers nothing.
+    ask_new_worktree_branch "ddev tryout worktree add <name> [<branch>]" \
+        || { printf "\n  cancelled\n"; pause; return 1; }
+    [ -n "${ASKED_BRANCH}" ] || { printf "\n  cancelled\n"; pause; return 1; }
+}
+
 # --- menus -----------------------------------------------------------------
 
 worktree_menu() {
@@ -280,7 +294,10 @@ worktree_menu() {
         1) run_and_show worktree list ;;
         2) printf '\n'
            ask_name "name" "" || return 0; name="${ASKED}"
-           printf "  branch [current]: "; read -r branch || true
+           # The branch comes from a list, never a typed line: a typo would only
+           # surface later, in a background job's output, when add_core_worktree
+           # rejects it against origin. NO 2>/dev/null — gum draws on stderr.
+           ask_branch_or_back || return 0; branch="${ASKED_BRANCH}"
            run_in_pane worktree add "${name}" ${branch:+"${branch}"} ;;
         3) printf '\n'
            ask_name "worktree" "$(worktree_names)" || return 0; name="${ASKED}"

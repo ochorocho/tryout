@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=1
+TRYOUT_VERSION=2
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -465,6 +465,37 @@ ask_branch() {
 }
 
 ask_text() { ui_input "$1" "${2:-}"; }
+
+# The branch a NEW worktree is based on, resolved into ASKED_BRANCH.
+#
+# Every creation route asks this, whether or not the name arrived as an argument:
+# naming a worktree says nothing about which branch it should sit on, and quietly
+# taking ${BRANCH} bases it on whatever Core happens to be checked out.
+#
+# Three outcomes, and the difference matters:
+#   already set  → keep it (an explicit `worktree add x 13.4` is not a question)
+#   no terminal  → ${BRANCH}, silently. `ddev start` and scripts must not block.
+#   cancelled    → non-zero, so the caller stops. explain_missing says "Cancelled".
+#
+# The answer lands in a variable rather than on stdout so a caller can tell a cancel
+# apart from an empty pick without inspecting $? through a command substitution.
+ASKED_BRANCH=""
+ask_new_worktree_branch() {
+    local usage="${1:-ddev tryout worktree add <name> [<branch>]}"
+
+    [ -n "${ASKED_BRANCH}" ] && return 0
+    if ! have_tty; then
+        ASKED_BRANCH="${BRANCH}"
+        return 0
+    fi
+
+    ASKED_BRANCH="$(ask_branch "Based on which branch?")" || {
+        ASKED_BRANCH=""
+        explain_missing "${usage}"
+        return 1
+    }
+    [ -n "${ASKED_BRANCH}" ] || { explain_missing "${usage}"; return 1; }
+}
 
 # In a linked worktree .git is a file pointing at the shared object store, so
 # resolve it to the common dir — hooks and config live there, not per worktree.

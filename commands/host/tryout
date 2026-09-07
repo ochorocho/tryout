@@ -367,13 +367,19 @@ cmd_worktree() {
                 esac
                 shift
             done
-            # Guided: no name means ask for it, and then for the branch too.
+            # Guided: no name means ask for it.
             if [ -z "${name}" ]; then
                 name="$(ask_text "Name for the new worktree (becomes typo3-core-<name>)" "e.g. bugfix-12345")" \
                     || { explain_missing "ddev tryout worktree add <name> [<branch>] [--branch] [--serve] [--php 8.2] [--herdr]"; return 1; }
-                validate_worktree_name "${name}" || return 1
-                [ -n "${branch}" ] || branch="$(ask_branch "Based on which branch?")" || { explain_missing "ddev tryout worktree add <name> [<branch>]"; return 1; }
             fi
+            validate_worktree_name "${name}" || return 1
+            # The branch is asked for whether or not the name came from the command
+            # line: naming a worktree is not a decision about which branch it sits
+            # on, and silently taking the current one is how you end up with a
+            # worktree based on whatever Core happened to be checked out.
+            ASKED_BRANCH="${branch}"
+            ask_new_worktree_branch "ddev tryout worktree add <name> [<branch>]" || return 1
+            branch="${ASKED_BRANCH}"
             delegate worktree add "${name}" ${branch:+"${branch}"} ${flags[@]+"${flags[@]}"} || return 1
             if [ "${in_herdr}" = "true" ]; then
                 echo ""
@@ -713,12 +719,14 @@ cmd_herdr_new() {
     if [ -z "${name}" ]; then
         name="$(ask_text "Name for the new worktree (becomes typo3-core-<name>)" "e.g. bugfix-12345")" \
             || { explain_missing "ddev tryout herdr new <name> [<branch>]"; return 1; }
-        [ -n "${branch}" ] || branch="$(ask_branch "Based on which branch?")" \
-            || { explain_missing "ddev tryout herdr new <name> [<branch>]"; return 1; }
     fi
 
     validate_worktree_name "${name}" || return 1
-    branch="${branch:-${BRANCH}}"
+    # Asked for even when the name came in as an argument — the popup passes a name
+    # and no branch, and that must still be a question, not a silent ${BRANCH}.
+    ASKED_BRANCH="${branch}"
+    ask_new_worktree_branch "ddev tryout herdr new <name> [<branch>]" || return 1
+    branch="${ASKED_BRANCH}"
 
     delegate worktree add "${name}" "${branch}" || return 1
 

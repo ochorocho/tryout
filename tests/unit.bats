@@ -2926,6 +2926,110 @@ FAKE
   assert_failure
 }
 
+@test "the branch is asked for even when the name came in as an argument" {
+  set -eu -o pipefail
+  # Naming a worktree says nothing about which branch it sits on. The popup passes
+  # a name and no branch, so a prompt nested inside `if [ -z "$name" ]` would leave
+  # it silently based on whatever Core happens to be checked out.
+  run helper_eval '
+    have_tty() { return 0; }
+    ask_branch() { printf "13.4"; }
+    BRANCH=main
+    ASKED_BRANCH=""
+    ask_new_worktree_branch "usage" && printf "%s" "${ASKED_BRANCH}"'
+  assert_success
+  assert_output "13.4"
+}
+
+@test "an explicitly given branch is not asked about again" {
+  set -eu -o pipefail
+  run helper_eval '
+    have_tty() { return 0; }
+    ask_branch() { printf "13.4"; }
+    BRANCH=main
+    ASKED_BRANCH="12.4"
+    ask_new_worktree_branch "usage" && printf "%s" "${ASKED_BRANCH}"'
+  assert_success
+  assert_output "12.4"
+}
+
+@test "with no terminal the branch falls back to BRANCH instead of blocking" {
+  set -eu -o pipefail
+  # ddev start and any script must never stop here. ui_choose returns non-zero
+  # without a TTY, so asking unconditionally would abort a non-interactive add.
+  run helper_eval '
+    have_tty() { return 1; }
+    ask_branch() { printf "should-not-be-called"; return 1; }
+    BRANCH=14.3
+    ASKED_BRANCH=""
+    ask_new_worktree_branch "usage" && printf "%s" "${ASKED_BRANCH}"'
+  assert_success
+  assert_output "14.3"
+}
+
+@test "cancelling the branch picker stops the command" {
+  set -eu -o pipefail
+  run helper_eval '
+    have_tty() { return 0; }
+    ask_branch() { return 1; }
+    BRANCH=main
+    ASKED_BRANCH=""
+    ask_new_worktree_branch "ddev tryout worktree add <name> [<branch>]"'
+  assert_failure
+  # A cancel is not a usage error: explain_missing says so only without a terminal.
+  refute_output --partial "Usage:"
+}
+
+@test "both creation routes ask for the branch outside the name check" {
+  set -eu -o pipefail
+  # The regression this guards: `ask_branch` sitting inside `if [ -z "${name}" ]`,
+  # so `herdr new <name>` and `worktree add <name>` never ask.
+  local f="${DIR}/commands/host/tryout"
+  run grep -c 'ask_new_worktree_branch' "${f}"
+  assert_success
+  assert_output "2"
+  # And no creation route may still call ask_branch from inside the name guard —
+  # that is the exact shape of the bug: the branch question skipped whenever a
+  # name was already there. Take the whole guard block, not a fixed -A window.
+  local guard
+  guard=$(awk '/^cmd_herdr_new\(\)/,/^}/' "${f}" | awk '/if \[ -z /,/^    fi$/')
+  [ -n "${guard}" ] || fail "could not find the name guard in cmd_herdr_new"
+  if printf '%s\n' "${guard}" | grep -q 'ask_branch'; then
+    fail "cmd_herdr_new asks for the branch only when the name is missing"
+  fi
+}
+
+@test "the menu picks the branch from a list instead of reading a line" {
+  set -eu -o pipefail
+  local f="${DIR}/tryout/herdr-menu.sh"
+  # worktree add was the one creation route that never offered a list. Match the
+  # shared helper by name: a bare 'ask_branch' would also match it as a substring.
+  run grep -q 'ask_new_worktree_branch' "${f}"
+  assert_success
+  run grep -q 'branch \[current\]' "${f}"
+  assert_failure
+  # It already sources functions.sh, which is where ask_branch lives.
+  run grep -q 'tryout/functions.sh' "${f}"
+  assert_success
+}
+
+@test "a name collision keeps the checkout inside the project" {
+  set -eu -o pipefail
+  # Leaving it outside hides it from every ddev tryout command. Two branches
+  # slugging alike (bugfix/12345 and bugfix-12345) is not a rare case.
+  local f="${DIR}/tryout/herdr-plugin/relocate.sh"
+  # The old bail-out: "'<name>' already exists — left <path> where it is".
+  if grep -q "already exists . left" "${f}"; then
+    fail "relocate.sh still abandons the checkout outside the project"
+  fi
+  # A suffixed name is tried before giving up.
+  run grep -q 'BASE' "${f}"
+  assert_success
+  # The notification names the branch, so a suffixed folder is still identifiable.
+  run grep -q 'WT_BRANCH' "${f}"
+  assert_success
+}
+
 @test "worktree_name_from_ref strips a branch down to a directory name" {
   set -eu -o pipefail
   # herdr names its own checkouts on a worktree/<slug> branch.
