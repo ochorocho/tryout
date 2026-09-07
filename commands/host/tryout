@@ -143,7 +143,7 @@ cmd_patch() {
         return 1
     fi
     while IFS= read -r p; do [ -n "${p}" ] && picks+=("${p}"); done \
-        < <(pick_patches "Apply which changes? (space to select, enter to confirm)" "${rows[@]}")
+        < <(pick_patches "Apply which changes?" "${rows[@]}")
     if [ ${#picks[@]} -eq 0 ]; then
         explain_missing "ddev tryout patch <change-id> [<site>]"
         return 1

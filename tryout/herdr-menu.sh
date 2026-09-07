@@ -335,7 +335,7 @@ main_menu() {
     printf "  ${BOLD}1${NC} status        ${DIM}Core, patches, packages, contrib${NC}\n"
     printf "  ${BOLD}2${NC} worktree…     ${DIM}checkouts, serving, URLs${NC}\n"
     printf "  ${BOLD}3${NC} herdr new     ${DIM}new worktree, opened here${NC}\n"
-    printf "  ${BOLD}4${NC} patch         ${DIM}cherry-pick a Gerrit change${NC}\n"
+    printf "  ${BOLD}4${NC} patch         ${DIM}cherry-pick a Gerrit change, or browse them${NC}\n"
     printf "  ${BOLD}5${NC} checkout      ${DIM}switch TYPO3 version${NC}\n"
     printf "  ${BOLD}6${NC} download      ${DIM}clone or update Core${NC}\n"
     printf "  ${BOLD}7${NC} composer      ${DIM}regenerate the overlay${NC}\n"
@@ -354,8 +354,10 @@ main_menu() {
         1) run_and_show status ;;
         2) worktree_menu ;;
         3) run_in_pane herdr new ;;
-        4) printf '\n  change-id [empty = all from config]: '
+        4) printf '\n  change-id [empty = browse the open changes]: '
            read -r id || true
+           # Bare, this opens the picker — which needs a terminal, so it goes to
+           # a pane of its own rather than this modal popup.
            run_in_pane patch ${id:+"${id}"} ;;
         5) printf '\n'
            ask_name "branch" "" || return 0; name="${ASKED}"

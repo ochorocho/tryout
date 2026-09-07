@@ -47,8 +47,11 @@ echo "${json}" | jq -r '
     .[]
     | (._number | tostring) as $n
     # One line, no tabs: both would break the field separator below.
+    # Truncate with "...", not "…": bash pads with printf %-Ns, which counts
+    # BYTES, and a three-byte ellipsis in a 68-character subject leaves the
+    # column two short — every truncated row then runs into the owner beside it.
     | ((.subject // "no subject") | gsub("[\n\t]"; " ")
-        | if (. | length) > 68 then (.[0:67] + "…") else . end) as $s
+        | if (. | length) > 68 then (.[0:65] + "...") else . end) as $s
     | (if .work_in_progress then "WIP " else "" end) as $wip
     | ((.owner.name // "?") | gsub("[\n\t]"; " ")) as $o
     | ([ (score("Code-Review") | if . == "" then empty else "CR" + . end),

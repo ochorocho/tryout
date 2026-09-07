@@ -295,18 +295,19 @@ fetched, and cherry-picked onto your local Core branch.
 ### Browsing what is open
 
 Run it bare to see what is currently up for review on the branch you are on, and
-pick one or several with <kbd>space</kbd>:
+pick one or several — gum's own footer names the toggle key:
 
 ```bash
 ddev tryout patch
 ```
 
 ```text
-Apply which changes? (space to select, enter to confirm)
+Apply which changes?
   95347   [TASK] Skip database setup for database-free…   Wouter Wolters    CR+1 V+1
 > 95074   [BUGFIX] Avoid stale deleted state on reproc…   Benni Mack        CR+2 V+2
   95671   [BUGFIX] Ensure numeric site identifiers sta…   Oli Bartsch       CR+1 V+1
   94993   [FEATURE] Add table-specific hidden record v…   Matthias Vogel    V-2
+x toggle • ←↓↑→ navigate • enter submit • ctrl+a select all
 ```
 
 The columns are the change number, its subject, its owner and its review state

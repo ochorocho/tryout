@@ -165,6 +165,9 @@ ui_choose_multi() {
 
     if have_gum && have_tty; then
         local picked
+        # Do NOT spell the toggle key out in a prompt: gum draws its own footer
+        # ("x toggle • enter submit" in gum 2.0), and a hint of ours would be one
+        # more thing to get wrong when gum rebinds it.
         picked="$(printf '%s\n' "$@" \
             | gum choose --no-limit --header "${prompt}" --height 15)"
         [ -n "${picked}" ] && { printf '%s\n' "${picked}"; return 0; }
@@ -271,6 +274,18 @@ ask_site() {
 
 # Local refs, ordered by usefulness: main, releases newest first, the pre-9
 # TYPO3_x-y refs last. checkout fetches afterwards anyway.
+# Pad a string to <width> COLUMNS. printf's %-Ns counts bytes, so a name like
+# "Frédéric" or a "…" would leave the column short and shift everything after it.
+pad_display() {
+    local str="$1" width="$2" len
+    len=${#str}                       # bash counts characters here, not bytes
+    if [ "${len}" -ge "${width}" ]; then
+        printf '%s' "${str}"
+        return
+    fi
+    printf '%s%*s' "${str}" "$((width - len))" ""
+}
+
 # The open Gerrit changes for a branch, one TSV row each, under a spinner.
 # Fails when Gerrit cannot be reached or answers nothing.
 #
@@ -302,7 +317,10 @@ pick_patches() {
     for row in "$@"; do
         [ -n "${row}" ] || continue
         IFS=$'\t' read -r n s o sc <<<"${row}"
-        labels+=("$(printf '%-7s %-68s %-18s %s' "${n}" "${s}" "${o}" "${sc}")")
+        # pad_display, not printf %-Ns: printf counts BYTES, so one accented
+        # letter in an owner's name would shift that row's last column.
+        labels+=("$(printf '%-7s %s %s %s' "${n}" \
+            "$(pad_display "${s}" 68)" "$(pad_display "${o}" 18)" "${sc}")")
     done
     [ ${#labels[@]} -gt 0 ] || return 1
 

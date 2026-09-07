@@ -2328,3 +2328,41 @@ YAML
     fail "pick_patches consumes stdin"
   fi
 }
+
+@test "the picker leaves the key hints to gum" {
+  # gum 2.0 toggles with x, not space, and draws its own footer saying so; a
+  # hint of ours in the header would just be a second place to get it wrong.
+  set -eu -o pipefail
+  if grep -rn 'space to select' "${DIR}/commands/host/tryout" "${DIR}/tryout/functions.sh"; then
+    fail "a hard-coded toggle key is spelled out in a prompt"
+  fi
+}
+
+@test "patch labels line up even with non-ASCII subjects and owners" {
+  # printf's %-Ns pads by BYTES: a "…" or an accented name silently shortens its
+  # column and pushes everything after it out of line.
+  set -eu -o pipefail
+  run helper_eval 'printf "[%s]" "$(pad_display "abc" 6)"'
+  assert_output "[abc   ]"
+  # Three bytes, one column: the padding must still reach six.
+  run helper_eval 'printf "[%s]" "$(pad_display "a…c" 6)"'
+  assert_output "[a…c   ]"
+  run helper_eval 'printf "[%s]" "$(pad_display "Frédéric" 10)"'
+  assert_output "[Frédéric  ]"
+  # Longer than the field: left alone, never truncated mid-character.
+  run helper_eval 'printf "[%s]" "$(pad_display "abcdefgh" 4)"'
+  assert_output "[abcdefgh]"
+
+  # And the renderer uses it rather than printf padding.
+  local body
+  body=$(sed -n '/^pick_patches() {/,/^}/p' "${DIR}/tryout/functions.sh")
+  printf '%s\n' "${body}" | grep -q 'pad_display' || fail "pick_patches pads by bytes"
+}
+
+@test "list-patches truncates with ASCII so the columns stay byte-aligned" {
+  set -eu -o pipefail
+  # The code, not the comment that explains why.
+  if grep -vE '^[[:space:]]*(#|//)' "${DIR}/tryout/list-patches.sh" | grep -q '…'; then
+    fail "a multi-byte ellipsis in the truncation shortens the padded column"
+  fi
+}
