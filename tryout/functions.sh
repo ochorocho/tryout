@@ -1115,6 +1115,81 @@ herdr_orphan_workspaces() {
         | jq -r '.result.workspaces[]? | [.workspace_id, .label] | @tsv' 2>/dev/null)
 }
 
+# The directory a workspace is sitting in, from its first pane's cwd.
+#
+# NOT worktree.checkout_path: that field only exists for workspaces opened with
+# `worktree open`, and the `workspace create` fallback records none — so it is
+# absent exactly when we still need an answer. Every workspace has a pane.
+herdr_workspace_dir() {
+    local id="$1"
+    herdr_cli pane list 2>/dev/null \
+        | jq -r --arg w "${id}" \
+            'first(.result.panes[]? | select(.workspace_id == $w) | .cwd) // empty' 2>/dev/null
+}
+
+# Reconcile the session with the project, in one pass over the workspace list:
+#
+#   * a workspace sitting in one of our worktrees but labelled something else is
+#     ADOPTED — renamed to core-<name>. Closing it would kill a live agent and
+#     leave a duplicate workspace beside it; renaming keeps the pane, its history
+#     and its agent, and makes every other helper here recognise it.
+#   * a workspace labelled core-<name> whose worktree is gone is CLOSED.
+#   * a workspace pointing outside the project has no business in this session
+#     (it is named after the project) and is CLOSED.
+#   * anything else inside the project — the root, packages/ — is LEFT ALONE:
+#     someone opened it deliberately and it is not a Core worktree.
+#
+# Runs before the open loop, so an adopted workspace is not opened a second time.
+sync_herdr_workspaces() {
+    local root id label dir real name
+    root="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P)" || return 0
+
+    while IFS=$'\t' read -r id label; do
+        [ -n "${id}" ] || continue
+        dir="$(herdr_workspace_dir "${id}")"
+        # No pane, no cwd, nothing to reason about — leave it be.
+        [ -n "${dir}" ] || continue
+        # Resolve both sides: on macOS the project is reached through /var while
+        # herdr reports /private/var, and a plain prefix test calls everything
+        # foreign. Same reasoning as list_foreign_core_worktrees.
+        real="$(cd "${dir}" 2>/dev/null && pwd -P)" || real=""
+
+        # Outside the project (or gone entirely, which a core-* label explains).
+        if [ -z "${real}" ] || case "${real}/" in "${root}/"*) false ;; *) true ;; esac; then
+            case "${label}" in
+                core-*) ;;   # an orphan; the message below names the worktree
+                *)
+                    if herdr_cli workspace close "${id}" >/dev/null 2>&1; then
+                        echo -e "  ${RED}✗${NC} closed ${label} ${DIM}— outside this project${NC}"
+                    fi
+                    continue ;;
+            esac
+        fi
+
+        # Inside the project: is it one of our Core worktrees?
+        name=""
+        case "${real}" in
+            "${root}/typo3-core-"*) name="${real#"${root}/typo3-core-"}" ;;
+            "${root}/typo3-core")   name="$(plain_core_name)" ;;
+        esac
+        # Only the top level of a worktree counts, not a directory inside one.
+        case "${name}" in */*) name="" ;; esac
+
+        if [ -n "${name}" ]; then
+            # Ours. Fix the label if it is not the one everything else keys on.
+            if [ "${label}" != "$(herdr_workspace_label "${name}")" ]; then
+                if herdr_cli workspace rename "${id}" "$(herdr_workspace_label "${name}")" >/dev/null 2>&1; then
+                    echo -e "  ${GREEN}✓${NC} adopted $(herdr_workspace_label "${name}") ${DIM}(was '${label}')${NC}"
+                fi
+            fi
+        fi
+    done < <(herdr_cli workspace list 2>/dev/null \
+        | jq -r '.result.workspaces[]? | [.workspace_id, .label] | @tsv' 2>/dev/null)
+
+    # Whatever is left labelled core-<name> with no worktree behind it.
+    close_orphan_workspaces
+}
+
 # Close every workspace whose worktree is gone, so a session matches the project.
 # Deliberately unconditional: no prompt, and no exception for a workspace whose
 # agent is still working. A `worktree rename` is a remove plus an add to herdr,

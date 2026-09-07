@@ -2747,3 +2747,128 @@ FAKE
   close_at=$(printf '%s\n' "${body}" | grep -n 'close_orphan_workspaces' | head -1 | cut -d: -f1)
   [ "${open_at}" -lt "${close_at}" ] || fail "orphans are closed before the open loop"
 }
+
+# --- the session drifting from the project ----------------------------------
+# Closing orphans is only half of "keep herdr in step". A workspace can also
+# carry the wrong label for a worktree that is genuinely ours (anything opened
+# before the core-<name> scheme), or point somewhere outside the project
+# entirely. The first is adopted — renamed, so its agent and scrollback live —
+# and only the second is closed.
+
+# As fake_herdr, but also answers `pane list`, since a workspace's directory is
+# read from its pane cwd: `workspace create` records no worktree field at all.
+fake_herdr_panes() {
+  mkdir -p "${FAKEROOT}/bin"
+  printf '%s' "$1" > "${FAKEROOT}/ws.json"
+  printf '%s' "$2" > "${FAKEROOT}/panes.json"
+  cat > "${FAKEROOT}/bin/herdr" <<FAKE
+#!/usr/bin/env bash
+[ "\$1" = "--session" ] && shift 2
+if [ "\$1" = "workspace" ] && [ "\$2" = "list" ]; then cat "${FAKEROOT}/ws.json"; exit 0; fi
+if [ "\$1" = "pane" ] && [ "\$2" = "list" ]; then cat "${FAKEROOT}/panes.json"; exit 0; fi
+echo "CALL: \$*" >> "${FAKEROOT}/calls.log"
+FAKE
+  chmod +x "${FAKEROOT}/bin/herdr"
+  : > "${FAKEROOT}/calls.log"
+}
+
+@test "a workspace on our worktree but mislabelled is adopted, not closed" {
+  # This is the wC/'typo3-core-main' shape: same directory, older label. Closing
+  # it would kill a live agent and open a duplicate beside it.
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  fake_herdr_panes \
+    '{"result":{"workspaces":[{"workspace_id":"wC","label":"typo3-core-main"}]}}' \
+    "{\"result\":{\"panes\":[{\"pane_id\":\"wC:p1\",\"workspace_id\":\"wC\",\"cwd\":\"${FAKEROOT}/typo3-core-main\"}]}}"
+
+  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    sync_herdr_workspaces
+  "
+  assert_success
+  assert_output --partial "core-main"
+
+  run cat "${FAKEROOT}/calls.log"
+  assert_line "CALL: workspace rename wC core-main"
+  refute_output --partial "workspace close"
+}
+
+@test "a workspace pointing outside the project is closed" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/elsewhere"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  fake_herdr_panes \
+    '{"result":{"workspaces":[
+       {"workspace_id":"wA","label":"core-main"},
+       {"workspace_id":"wB","label":"scratch"}
+     ]}}' \
+    "{\"result\":{\"panes\":[
+       {\"pane_id\":\"wA:p1\",\"workspace_id\":\"wA\",\"cwd\":\"${FAKEROOT}/typo3-core-main\"},
+       {\"pane_id\":\"wB:p1\",\"workspace_id\":\"wB\",\"cwd\":\"/tmp\"}
+     ]}}"
+
+  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    sync_herdr_workspaces
+  "
+  assert_success
+  run cat "${FAKEROOT}/calls.log"
+  assert_line "CALL: workspace close wB"
+  # The one that is genuinely ours and correctly labelled is left alone.
+  refute_output --partial "close wA"
+  refute_output --partial "rename wA"
+}
+
+@test "a workspace inside the project but not on a worktree is left alone" {
+  # The project root itself, or packages/ — someone opened it deliberately. It is
+  # not a Core worktree, so this command has no business closing it.
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/packages"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  fake_herdr_panes \
+    '{"result":{"workspaces":[{"workspace_id":"wP","label":"packages"}]}}' \
+    "{\"result\":{\"panes\":[{\"pane_id\":\"wP:p1\",\"workspace_id\":\"wP\",\"cwd\":\"${FAKEROOT}/packages\"}]}}"
+
+  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    sync_herdr_workspaces
+  "
+  assert_success
+  run cat "${FAKEROOT}/calls.log"
+  assert_output ""
+}
+
+@test "an adopted workspace is not opened a second time" {
+  # The whole point of adopting: herdr_worktree_is_open keys on pane cwd, so once
+  # the label is fixed the open loop must still see it as already open.
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  fake_herdr_panes \
+    '{"result":{"workspaces":[{"workspace_id":"wC","label":"typo3-core-main"}]}}' \
+    "{\"result\":{\"panes\":[{\"pane_id\":\"wC:p1\",\"workspace_id\":\"wC\",\"cwd\":\"${FAKEROOT}/typo3-core-main\"}]}}"
+
+  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    herdr_worktree_is_open '${FAKEROOT}/typo3-core-main' && echo OPEN
+  "
+  assert_success
+  assert_output --partial "OPEN"
+}
+
+@test "the sync runs before the open loop, so adoption prevents a duplicate" {
+  set -eu -o pipefail
+  local body sync_at open_at
+  body=$(sed -n '/^cmd_herdr() {/,/^}$/p' "${DIR}/commands/host/tryout")
+  printf '%s\n' "${body}" | grep -q 'sync_herdr_workspaces' \
+    || fail "cmd_herdr never reconciles the session"
+  sync_at=$(printf '%s\n' "${body}" | grep -n 'sync_herdr_workspaces' | head -1 | cut -d: -f1)
+  open_at=$(printf '%s\n' "${body}" | grep -n 'open_worktree_in_herdr' | head -1 | cut -d: -f1)
+  [ "${sync_at}" -lt "${open_at}" ] \
+    || fail "adoption must happen before the open loop, or a duplicate is opened"
+}

@@ -630,6 +630,13 @@ cmd_herdr() {
 
     echo ""
     ensure_herdr_session || return 1
+
+    # Reconcile before opening anything: a workspace already sitting in one of our
+    # worktrees under an older label is adopted here, so the loop below sees it as
+    # open and does not create a duplicate beside it. Bare runs only — naming a
+    # worktree must not touch workspaces it has nothing to do with.
+    [ -z "${only}" ] && sync_herdr_workspaces
+
     local name first_ws="" first_label=""
     # A failure on one worktree must not abandon the rest.
     for name in ${names}; do
@@ -641,11 +648,8 @@ cmd_herdr() {
         fi
     done
 
-    # Now the other direction: a worktree that has been removed leaves a workspace
-    # whose pane sits in a directory that no longer exists. Only on a bare run —
-    # naming one worktree must not close workspaces it has nothing to do with.
-    # After the open loop, so a rename (a remove plus an add, to herdr) settles in
-    # a single command.
+    # A rename is a remove plus an add to herdr, so the worktree that vanished is
+    # only orphaned once its replacement has been opened above.
     [ -z "${only}" ] && close_orphan_workspaces
 
     # Land the user on the first Core workspace rather than wherever they were.

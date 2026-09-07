@@ -953,8 +953,19 @@ and the new one opens in the same run. Name a worktree
 (`ddev tryout herdr v14`) to open just that one and leave every other workspace
 untouched.
 
-Only workspaces labelled `core-<name>`, the ones this command created, are ever
-closed; anything else you have opened in the session is left alone.
+It also reconciles workspaces that have drifted out of step. One already sitting
+in a Core worktree under a different label — anything opened before this naming
+existed, or renamed by hand — is **adopted** rather than closed, so its panes,
+history and running agent survive and no duplicate appears beside it:
+
+```text
+  ✓ adopted core-main (was 'typo3-core-main')
+  ✗ closed scratch — outside this project
+```
+
+Since the session belongs to one project, a workspace pointing outside it is
+closed. Anything else *inside* the project — the project root, `packages/` — is
+left exactly as it is: it is not a Core worktree, and you opened it on purpose.
 
 > herdr is optional and the add-on never installs it. The command needs `herdr` and
 > `jq` on the host, and works from any terminal — it does not have to be run from
