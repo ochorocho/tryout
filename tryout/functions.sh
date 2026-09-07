@@ -239,7 +239,9 @@ explain_missing() {
 }
 
 # core_worktree_names [all|nonprimary|served|unserved]
-# From the directory glob, not list_core_worktrees: no git status per tree.
+# From the directory glob, not list_core_worktrees: no git status per tree. This is
+# the helper for anything that must be instant — completion, the dashboard. The
+# picker wants detail instead and uses worktree_labels below.
 core_worktree_names() {
     local mode="${1:-all}" d name primary
     primary="$(active_worktree_name 2>/dev/null)"
