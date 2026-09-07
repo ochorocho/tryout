@@ -74,6 +74,15 @@ reject_args() {
 # ─────────────────────────────────────────────────────────────────────
 cmd_status() {
     reject_args status "$@" || return 1
+    # Before anything else, and on the host: an install older than the source is
+    # why a command or its tab-completion can look broken, and the containers
+    # need not be running to say so.
+    if addon_is_stale; then
+        echo ""
+        echo -e "  ${YELLOW}!${NC} This project runs an older copy of the tryout add-on"
+        echo -e "    ${DIM}the command and its tab-completion offer the previous feature set${NC}"
+        echo -e "    ${DIM}→ ddev add-on get <path-to-tryout> && ddev restart${NC}"
+    fi
     # Before Core exists there is nothing to ask the container about — and this
     # answer has to work with the containers down, right after the install.
     if [ ! -e "${CORE_GIT_DIR}" ]; then

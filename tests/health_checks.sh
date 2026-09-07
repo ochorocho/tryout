@@ -36,6 +36,11 @@ assert_file_executable "${TESTDIR}/.ddev/commands/host/tryout"
 assert_file_executable "${TESTDIR}/.ddev/commands/host/autocomplete/tryout"
 assert_file_executable "${TESTDIR}/.ddev/tryout/post-start.sh"
 assert_file_executable "${TESTDIR}/.ddev/tryout/tryout-container.sh"
+
+# The payload version stamp, so `ddev tryout status` can spot a stale install.
+assert_file_exist "${TESTDIR}/.ddev/tryout/.version"
+run grep -qE '^[0-9]+$' "${TESTDIR}/.ddev/tryout/.version"
+assert_success
 # The web image gets the add-on's git, so DDEV must have been handed the fragment.
 assert_file_exist "${TESTDIR}/.ddev/web-build/Dockerfile.tryout"
 run grep -q '#ddev-generated' "${TESTDIR}/.ddev/web-build/Dockerfile.tryout"

@@ -2533,3 +2533,70 @@ YAML
       || fail "'${sub}' never offers a worktree list"
   done
 }
+
+# --- the installed copy going stale -----------------------------------------
+# `ddev add-on get` copies the payload once and never refreshes it, so a project
+# installed before a change keeps the old command AND the old completion script.
+# Completion then still works but offers the older feature set, which is
+# indistinguishable from "autocomplete is broken".
+
+@test "the payload carries a version, and install records it" {
+  set -eu -o pipefail
+  run helper_eval 'printf "%s" "${TRYOUT_VERSION}"'
+  assert_success
+  [ -n "${output}" ] || fail "TRYOUT_VERSION is empty"
+  # A plain integer, bumped by hand: nothing here can read git at install time.
+  printf '%s' "${output}" | grep -qE '^[0-9]+$' \
+    || fail "TRYOUT_VERSION should be an integer, got '${output}'"
+
+  # install.yaml stamps the same value into the installed tree.
+  run grep -q 'tryout/.version' "${DIR}/install.yaml"
+  assert_success
+  # …and removal takes it out again.
+  local removal
+  removal=$(sed -n '/^removal_actions:/,$p' "${DIR}/install.yaml")
+  printf '%s\n' "${removal}" | grep -q '.version' || fail "removal leaves .version behind"
+}
+
+@test "addon_is_stale compares the installed stamp against the payload" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/.ddev/tryout"
+
+  # No stamp at all: an install predating the marker. Not stale — we cannot
+  # know, and crying wolf on every old project would train people to ignore it.
+  run helper addon_is_stale
+  assert_failure
+
+  # Same version: current.
+  helper_eval 'printf "%s\n" "${TRYOUT_VERSION}"' > "${FAKEROOT}/.ddev/tryout/.version"
+  run helper addon_is_stale
+  assert_failure
+
+  # Older stamp: stale.
+  printf '0\n' > "${FAKEROOT}/.ddev/tryout/.version"
+  run helper addon_is_stale
+  assert_success
+
+  # Newer stamp than the running code — the command itself is the old copy.
+  # Still worth reporting: something is out of step either way.
+  printf '99999\n' > "${FAKEROOT}/.ddev/tryout/.version"
+  run helper addon_is_stale
+  assert_success
+}
+
+@test "status warns about a stale install, on the host, before delegating" {
+  set -eu -o pipefail
+  local body
+  body=$(sed -n '/^cmd_status() {/,/^}/p' "${DIR}/commands/host/tryout")
+  [ -n "${body}" ] || fail "no cmd_status()"
+  printf '%s\n' "${body}" | grep -q 'addon_is_stale' \
+    || fail "status never checks whether the install is stale"
+  # It must come before the delegate, or a stopped project never shows it.
+  local check delegate
+  check=$(printf '%s\n' "${body}" | grep -n 'addon_is_stale' | head -1 | cut -d: -f1)
+  delegate=$(printf '%s\n' "${body}" | grep -n 'delegate status' | head -1 | cut -d: -f1)
+  [ -n "${check}" ] && [ -n "${delegate}" ] || fail "cannot locate both"
+  [ "${check}" -lt "${delegate}" ] || fail "the staleness check runs after delegating"
+  # And it names the command that fixes it.
+  printf '%s\n' "${body}" | grep -q 'add-on get' || fail "no next step given"
+}

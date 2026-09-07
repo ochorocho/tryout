@@ -338,6 +338,7 @@ JSON
   assert_file_not_exist "${TESTDIR}/.ddev/config.tryout.yaml"
   assert_file_not_exist "${TESTDIR}/.ddev/config.tryout-patches.yaml"
   assert_file_not_exist "${TESTDIR}/.ddev/web-build/Dockerfile.tryout"
+  assert_file_not_exist "${TESTDIR}/.ddev/tryout/.version"
   assert_file_not_exist "${TESTDIR}/composer.tryout.json"
   assert_file_not_exist "${TESTDIR}/composer.tryout.lock"
   assert_file_not_exist "${TESTDIR}/config/system/additional.php"

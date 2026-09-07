@@ -182,6 +182,23 @@ unserved checkouts, `unserve` only served ones, `use` and `remove` leave out the
 primary. A bare `adopt` lists the stray checkouts it found and lets you pick which
 to move in.
 
+### Keeping an installed project up to date
+
+`ddev add-on get` copies the add-on into a project once; it is not refreshed
+afterwards. A project installed before an update therefore keeps the older command
+*and* the older tab-completion — both still work, they just offer the previous set
+of verbs and flags, which looks a lot like completion being broken. `ddev tryout
+status` says so when it notices:
+
+```text
+  ! This project runs an older copy of the tryout add-on
+    the command and its tab-completion offer the previous feature set
+    → ddev add-on get <path-to-tryout> && ddev restart
+```
+
+Re-running `ddev add-on get` is always safe: your `composer.tryout.json`, patch
+list and `additional.php` are preserved.
+
 ### Tab completion
 
 Every command, subcommand and flag completes with <kbd>Tab</kbd>, each with a short

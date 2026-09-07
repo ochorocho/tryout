@@ -17,6 +17,17 @@ GERRIT_SSH_PORT="29418"
 GERRIT_PROJECT="Packages/TYPO3.CMS"
 COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 
+# Payload version. `ddev add-on get` copies these files once and never refreshes
+# them, so a project installed before a change keeps the old command and the old
+# completion script — which still work, but offer the previous feature set. That
+# is indistinguishable from a broken install, so the number is stamped into
+# .ddev/tryout/.version at install time and cmd_status compares the two.
+#
+# BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
+# new completion candidate. It is a plain integer because nothing at install time
+# can read git — a local `ddev add-on get <dir>` records no version of its own.
+TRYOUT_VERSION=1
+
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
 CORE_WORKTREE_PREFIX="${PROJECT_ROOT}/typo3-core-"
@@ -1555,6 +1566,20 @@ open_worktree_in_herdr() {
     else
         success "'${name}' — two shells"
     fi
+}
+
+# True when the installed payload is not the one this code came from. Runs on the
+# host, cheaply: two file reads and a string compare.
+#
+# A missing stamp means an install that predates the marker. That is NOT reported
+# as stale — we cannot tell how old it is, and warning on every such project would
+# train people to ignore the line.
+addon_is_stale() {
+    local f="${PROJECT_ROOT}/.ddev/tryout/.version" installed
+    [ -f "${f}" ] || return 1
+    installed="$(tr -d '[:space:]' < "${f}" 2>/dev/null)"
+    [ -n "${installed}" ] || return 1
+    [ "${installed}" != "${TRYOUT_VERSION}" ]
 }
 
 # True when vendor/ was built from a different Core than the active one. This is

@@ -117,6 +117,13 @@ post_install_actions:
     fi
 
   - |
+    #ddev-description:Record the payload version
+    # Lets `ddev tryout status` notice that a project is running an older copy
+    # than the source it was installed from — the command and its tab-completion
+    # keep working, they just offer the previous feature set.
+    sed -n 's/^TRYOUT_VERSION=//p' tryout/functions.sh | head -1 > tryout/.version
+
+  - |
     #ddev-description:Report next steps
     printf '\n  \033[32m✓\033[0m tryout installed.\n\n'
     printf '  Next: \033[36mddev start\033[0m — clones TYPO3 Core, installs dependencies\n'
@@ -142,6 +149,10 @@ removal_actions:
     if [ -f ../.gitignore ] && grep -q '#ddev-generated' ../.gitignore; then
       rm -f ../.gitignore
     fi
+
+  - |
+    #ddev-description:Remove the payload version stamp
+    rm -f tryout/.version
 
   - |
     #ddev-description:Remove generated worktree config and vhosts
