@@ -10,7 +10,7 @@
 
 set -uo pipefail
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
 # Leave the popup up long enough to read, whatever happened.
 pause() {
@@ -60,16 +60,42 @@ command -v ddev >/dev/null 2>&1 || fail "ddev not found on the host."
 
 cd "${APPROOT}" || fail "Cannot enter ${APPROOT}"
 
+# For validate_worktree_name and ask_branch. Guarded: a partial install must give
+# the message above, not a syntax error from a half-read library.
+DDEV_APPROOT="${APPROOT}"; export DDEV_APPROOT
+# shellcheck disable=SC1090
+. "${APPROOT}/.ddev/tryout/functions.sh" >/dev/null 2>&1 \
+    || fail "Could not read the add-on helpers."
+
 printf "${BOLD}New TYPO3 Core worktree${NC}  ${CYAN}%s${NC}\n\n" "$(basename "${APPROOT}")"
 
-printf "  Name: "
+# The name becomes a DIRECTORY, always under the project root and always prefixed:
+# typo3-core-<name>. Say so, so nobody types the prefix themselves and ends up with
+# typo3-core-typo3-core-x.
+printf "  Name ${DIM}(the folder becomes typo3-core-<name>)${NC}: "
 read -r name || exit 1
 [ -n "${name}" ] || fail "No name given."
+# Validate HERE, not after ddev has been called: this popup closes when the script
+# ends, taking any message from ddev with it.
+validate_worktree_name "${name}" 2>/dev/null \
+    || fail "Invalid name '${name}' — letters, digits, . _ - only."
+[ -e "${APPROOT}/typo3-core-${name}" ] \
+    && fail "typo3-core-${name} already exists."
 
-printf "  Branch [leave empty for the current one]: "
-read -r branch || exit 1
-
+# The branch to base it on, from the ones this Core knows. ask_branch falls back to
+# a typed answer where gum is absent, so a branch not in the list is still reachable.
+#
+# NO 2>/dev/null on this call: gum draws its whole interface on STDERR, so hushing
+# it gives an invisible chooser that answers nothing. have_tty inside ui_choose is
+# what handles the no-terminal case.
 printf '\n'
+branch="$(ask_branch "Based on which branch?")" || branch=""
+[ -n "${branch}" ] || {
+    printf "  Branch [empty = the current one]: "
+    read -r branch || exit 1
+}
+
+printf "\n  ${DIM}creating ${APPROOT}/typo3-core-${name}${NC}\n\n"
 # ddev tryout does the real work: validation, git worktree add, and opening it in
 # herdr. Everything this script knows about tryout lives behind that one call.
 if ddev tryout herdr new "${name}" ${branch:+"${branch}"}; then

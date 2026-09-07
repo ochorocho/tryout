@@ -801,9 +801,27 @@ That binds **three** keys:
 
 | Key | What it opens |
 |---|---|
-| `prefix+shift+G` | New Core worktree — asks for a name and branch |
+| `prefix+shift+G` | New Core worktree — asks for a name, then a branch to pick |
 | `prefix+shift+T` | The tryout menu — every `ddev tryout` command |
 | `prefix+shift+D` | The dashboard — worktrees, served URLs, running jobs |
+
+The new-worktree popup names the folder for you: whatever you type becomes
+`typo3-core-<name>` **in the project root**, where every `ddev tryout` command can
+see it, and the branch comes from a list of the ones this Core knows.
+
+```text
+New TYPO3 Core worktree  my-typo3-site
+
+  Name (the folder becomes typo3-core-<name>): bugfix-9421
+
+Based on which branch?
+> main
+  14.3
+  13.4
+```
+
+The name is checked before anything is created — an invalid or already-taken one is
+rejected in the popup, where you can still read why.
 
 `prefix` is herdr's own, `ctrl+b` by default — so the menu is <kbd>ctrl+b</kbd> then
 <kbd>shift</kbd>+<kbd>T</kbd>, pressed in sequence. `ddev tryout herdr` reminds you of

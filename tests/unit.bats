@@ -1644,6 +1644,11 @@ FAKE
   # no-terminal case instead.
   run grep -nE 'gum (choose|filter|input) .*2>/dev/null' "${DIR}/tryout/functions.sh"
   assert_failure
+  # The same trap one level up: hushing an ask_* helper hides the gum UI it draws.
+  # The popup did exactly that and its branch chooser answered nothing.
+  run bash -c "grep -nE 'ask_(branch|worktree|site|text|patches)[^|]*2>/dev/null' \
+    '${DIR}'/tryout/*.sh '${DIR}/commands/host/tryout'"
+  assert_failure
 }
 
 @test "core_worktree_names filters by primary and served state" {
@@ -2871,4 +2876,68 @@ FAKE
   open_at=$(printf '%s\n' "${body}" | grep -n 'open_worktree_in_herdr' | head -1 | cut -d: -f1)
   [ "${sync_at}" -lt "${open_at}" ] \
     || fail "adoption must happen before the open loop, or a duplicate is opened"
+}
+
+# --- creating a worktree from herdr -----------------------------------------
+# Two routes reach a new Core worktree from inside herdr: our prefix+shift+G
+# popup, and herdr's own New-worktree action (still reachable from its menu, and
+# the only route before `setup-keys` has run). Both must end at
+# <project>/typo3-core-<name>, with the user choosing that name.
+
+@test "the new-worktree popup shows the folder it will create and validates the name" {
+  set -eu -o pipefail
+  local f="${DIR}/tryout/herdr-new-worktree.sh"
+  # The prefix is the whole point: the user names the worktree, not the directory.
+  run grep -q 'typo3-core-' "${f}"
+  assert_success
+  # A bad name must be caught here, in the popup, not after ddev has been called:
+  # the popup closes on failure and the message would be gone with it.
+  run grep -q 'validate_worktree_name' "${f}"
+  assert_success
+  # And the branch is picked from the known ones, not typed blind.
+  run grep -q 'ask_branch' "${f}"
+  assert_success
+}
+
+@test "the popup sources functions.sh so it can validate and offer branches" {
+  set -eu -o pipefail
+  local f="${DIR}/tryout/herdr-new-worktree.sh"
+  run grep -q 'tryout/functions.sh' "${f}"
+  assert_success
+  # It still resolves the project from the CWD, never from $0: the key is global.
+  run grep -q 'resolve_approot' "${f}"
+  assert_success
+}
+
+@test "a worktree herdr created itself keeps the name the user gave it" {
+  # herdr's own action prompts for a BRANCH and checks out under
+  # worktrees.directory as <repo>/<branch-slug>. The relocate hook is the only
+  # place that can name the directory, and it must produce typo3-core-<name>.
+  set -eu -o pipefail
+  local f="${DIR}/tryout/herdr-plugin/relocate.sh"
+  run grep -q 'worktree_name_from_ref' "${f}"
+  assert_success
+  run grep -q 'core_worktree_dir' "${f}"
+  assert_success
+  # git worktree move, never mv — it rewrites the metadata on both sides.
+  run grep -q 'worktree move' "${f}"
+  assert_success
+  run bash -c "grep -vE '^[[:space:]]*#' '${f}' | grep -qE '(^|[^a-z])mv '"
+  assert_failure
+}
+
+@test "worktree_name_from_ref strips a branch down to a directory name" {
+  set -eu -o pipefail
+  # herdr names its own checkouts on a worktree/<slug> branch.
+  run helper worktree_name_from_ref "worktree/curious-fox"
+  assert_output "curious-fox"
+  run helper worktree_name_from_ref "refs/heads/bugfix-9421"
+  assert_output "bugfix-9421"
+  # An already-prefixed name must not become typo3-core-typo3-core-x.
+  run helper worktree_name_from_ref "typo3-core-v13"
+  assert_output "v13"
+  # Anything a directory cannot hold becomes a dash — including the slash of a
+  # branch prefix that is not one of herdr's own, which stays part of the name.
+  run helper worktree_name_from_ref "feature/TYPO3 v14!"
+  assert_output "feature-TYPO3-v14-"
 }
