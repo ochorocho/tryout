@@ -294,12 +294,14 @@ case "${VERB}" in
         ;;
 
     patch)
-        # patch [<change-id>] [<site>]
+        # patch [<change-id>] [<site>] [--all-branches]
         if [ "${POS}" -le 1 ]; then
-            hint "Gerrit change number, e.g. 56947 — or nothing to apply all from config"
+            hint "Gerrit change number, e.g. 56947 — or nothing to browse the open changes"
             patch_numbers
+            flag --all-branches "Browse changes on every branch, not just this one"
         else
             sites
+            flag --all-branches "Browse changes on every branch, not just this one"
         fi
         ;;
 

@@ -2131,3 +2131,200 @@ LINES
   printf '%s\n' "${body}" | grep -q '"status "\*|"exec "\*' || fail "status/exec are not exempt"
   printf '%s\n' "${body}" | grep -q '"worktree list"\*' || fail "worktree list is not exempt"
 }
+
+# --- browsing Gerrit patches ------------------------------------------------
+# `ddev tryout patch` with no argument lists the open changes for the branch in
+# use and lets the user pick one or several. The list itself is fetched in the
+# container (curl + jq); the picker runs on the host, where gum and the terminal
+# are.
+
+@test "list-patches parses a Gerrit change listing into pickable rows" {
+  set -eu -o pipefail
+  local script="${DIR}/tryout/list-patches.sh"
+  assert_file_exist "${script}"
+  # A fake curl serving the captured payload, XSSI prefix and all.
+  mkdir -p "${FAKEROOT}/bin"
+  cat > "${FAKEROOT}/bin/curl" <<FAKE
+#!/bin/sh
+cat "${DIR}/tests/fixtures-gerrit-changes.json"
+FAKE
+  chmod +x "${FAKEROOT}/bin/curl"
+
+  run env PATH="${FAKEROOT}/bin:${PATH}" bash "${script}" https://review.typo3.org main
+  assert_success
+  # number<TAB>subject<TAB>owner<TAB>scores — one row per change.
+  local first
+  first="$(printf '%s\n' "${output}" | head -1)"
+  printf '%s' "${first}" | grep -qE '^[0-9]+	' || fail "no change number in: ${first}"
+  [ "$(printf '%s' "${first}" | awk -F'\t' '{print NF}')" -eq 4 ] \
+    || fail "expected 4 tab-separated fields, got: ${first}"
+  assert_output --partial "whitespace module"
+  # The owner is a name, not a JSON blob.
+  printf '%s' "${first}" | cut -f3 | grep -qE '^[A-Za-zÀ-ÿ. -]+$' \
+    || fail "owner column is not a name: $(printf '%s' "${first}" | cut -f3)"
+}
+
+@test "list-patches signals fetch and parse failures the way the other resolvers do" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/bin"
+  printf '#!/bin/sh\nexit 22\n' > "${FAKEROOT}/bin/curl"
+  chmod +x "${FAKEROOT}/bin/curl"
+  run env PATH="${FAKEROOT}/bin:${PATH}" bash "${DIR}/tryout/list-patches.sh" https://x main
+  [ "${status}" -eq 2 ] || fail "expected exit 2 on a fetch failure, got ${status}"
+
+  printf '#!/bin/sh\nprintf "not json\\n"\n' > "${FAKEROOT}/bin/curl"
+  run env PATH="${FAKEROOT}/bin:${PATH}" bash "${DIR}/tryout/list-patches.sh" https://x main
+  [ "${status}" -eq 3 ] || fail "expected exit 3 on a parse failure, got ${status}"
+}
+
+@test "ui_choose_multi returns every picked line and fails on a cancel" {
+  set -eu -o pipefail
+  # Without a TTY the plain path reads piped answers, one per line, and an empty
+  # answer is a cancel — the same contract ui_choose follows.
+  run bash -c "printf 'a\nb\n' | { source '${DIR}/tryout/functions.sh' >/dev/null 2>&1; ui_choose_multi 'Pick' one two three; }"
+  assert_success
+  assert_output --partial "a"
+  assert_output --partial "b"
+
+  run bash -c "printf '\n' | { source '${DIR}/tryout/functions.sh' >/dev/null 2>&1; ui_choose_multi 'Pick' one two; }"
+  assert_failure
+}
+
+@test "the multi picker uses gum choose --no-limit and never redirects its screen" {
+  set -eu -o pipefail
+  local body
+  body=$(sed -n '/^ui_choose_multi() {/,/^}/p' "${DIR}/tryout/functions.sh")
+  [ -n "${body}" ] || fail "no ui_choose_multi()"
+  printf '%s\n' "${body}" | grep -q -- '--no-limit' || fail "not a multi-select"
+  # gum draws on stderr; a 2>/dev/null here gives an invisible prompt.
+  if printf '%s\n' "${body}" | grep -q 'gum choose.*2>/dev/null'; then
+    fail "gum's screen is redirected"
+  fi
+  # Same TTY guard as ui_choose: gum exits 0 with no output when it has none.
+  printf '%s\n' "${body}" | grep -q 'have_gum && have_tty' || fail "no TTY guard"
+}
+
+@test "a bare patch command offers the list before giving up" {
+  set -eu -o pipefail
+  local body
+  body=$(sed -n '/^cmd_patch() {/,/^}/p' "${DIR}/commands/host/tryout")
+  [ -n "${body}" ] || fail "no cmd_patch()"
+  printf '%s\n' "${body}" | grep -q 'pick_patches' \
+    || fail "cmd_patch never offers the patch list"
+  # The fetch is separate from the pick: a spinner must not run over a chooser.
+  printf '%s\n' "${body}" | grep -q 'fetch_open_patches' || fail "no fetch step"
+  # And it still delegates the actual work.
+  printf '%s\n' "${body}" | grep -q 'delegate patch' || fail "cmd_patch does not delegate"
+}
+
+@test "picked patch numbers are appended to the patch list, once each" {
+  set -eu -o pipefail
+  local f="${FAKEROOT}/.ddev/config.tryout-patches.yaml"
+  mkdir -p "${FAKEROOT}/.ddev"
+
+  # An empty list, the shape a fresh install has.
+  cat > "${f}" <<'YAML'
+# Gerrit Patches
+#
+# Example: TRYOUT_PATCHES=56947,12345
+
+web_environment:
+  - TRYOUT_PATCHES=
+YAML
+  run helper_eval "persist_patches 95074 95671"
+  assert_success
+  run grep -c '^# Gerrit Patches' "${f}"
+  assert_output "1"
+  run grep '  - TRYOUT_PATCHES=' "${f}"
+  assert_output "  - TRYOUT_PATCHES=95074,95671"
+
+  # A populated list gains only what is new, in order, with no duplicate.
+  run helper_eval "persist_patches 95671 12345"
+  assert_success
+  run grep '  - TRYOUT_PATCHES=' "${f}"
+  assert_output "  - TRYOUT_PATCHES=95074,95671,12345"
+
+  # The rest of the file is preserved verbatim.
+  run grep -c 'Example: TRYOUT_PATCHES=56947,12345' "${f}"
+  assert_output "1"
+}
+
+@test "persisting refuses politely when the patch list is not there" {
+  set -eu -o pipefail
+  run helper_eval "persist_patches 1"
+  assert_failure
+}
+
+@test "several picked patches are applied in order and rebuilt once" {
+  # A rebuild is a full composer install; doing it per patch would run it three
+  # times for a three-patch pick.
+  set -eu -o pipefail
+  local body
+  body=$(sed -n '/^ctr_patch() {/,/^}/p' "${DIR}/tryout/commands.sh")
+  [ -n "${body}" ] || fail "no ctr_patch()"
+  printf '%s\n' "${body}" | grep -q 'for id in "${ids\[@\]}"' || fail "patches are not applied in a loop"
+  # Exactly one rebuild call in the multi-patch branch.
+  [ "$(printf '%s\n' "${body}" | sed -n '/for id in/,/^    else/p' | grep -c 'rebuild_typo3')" -eq 1 ] \
+    || fail "expected one rebuild for the whole batch"
+}
+
+@test "the site moved to a flag so change numbers can be positional" {
+  set -eu -o pipefail
+  local ctr host
+  ctr=$(sed -n '/^ctr_patch() {/,/^}/p' "${DIR}/tryout/commands.sh")
+  printf '%s\n' "${ctr}" | grep -q -- '--site)' || fail "container does not accept --site"
+  # And the old two-argument form still reaches it.
+  host=$(sed -n '/^cmd_patch() {/,/^}/p' "${DIR}/commands/host/tryout")
+  printf '%s\n' "${host}" | grep -q -- '--site "\$1"' || fail "host does not translate patch <id> <site>"
+}
+
+@test "the picker is skipped when a patch list is configured or there is no terminal" {
+  # `ddev start` and any scripted call must keep applying TRYOUT_PATCHES rather
+  # than opening a chooser nobody can answer.
+  set -eu -o pipefail
+  local body
+  body=$(sed -n '/^cmd_patch() {/,/^}/p' "${DIR}/commands/host/tryout")
+  printf '%s\n' "${body}" | grep -q 'TRYOUT_PATCHES' || fail "a configured list does not short-circuit"
+  printf '%s\n' "${body}" | grep -q '! have_tty' || fail "no TTY guard before the picker"
+}
+
+@test "the patch list is fetched under a spinner, and picked without one" {
+  # gum spin and gum choose both own the screen; running the chooser inside the
+  # spinner's pipeline makes the prompt unusable.
+  set -eu -o pipefail
+  local fetch pick
+  fetch=$(sed -n '/^fetch_open_patches() {/,/^}/p' "${DIR}/tryout/functions.sh")
+  pick=$(sed -n '/^pick_patches() {/,/^}/p' "${DIR}/tryout/functions.sh")
+  [ -n "${fetch}" ] || fail "no fetch_open_patches()"
+  [ -n "${pick}" ] || fail "no pick_patches()"
+  printf '%s\n' "${fetch}" | grep -q 'ui_spin' || fail "the fetch does not spin"
+  if printf '%s\n' "${pick}" | grep -q 'ui_spin'; then fail "the picker spins"; fi
+  printf '%s\n' "${pick}" | grep -q 'ui_choose_multi' || fail "the picker does not choose"
+  # An unreachable Gerrit is a failure, not an empty list.
+  printf '%s\n' "${fetch}" | grep -q 'return 1' || fail "a failed fetch is not signalled"
+}
+
+@test "pick_patches turns TSV rows into labels and returns the numbers" {
+  set -eu -o pipefail
+  # Rows arrive on stdin; without gum the chooser reads the answer from the same
+  # stream, so a picked label can follow the rows.
+  # Rows are arguments, so stdin stays free for the no-gum chooser's answer.
+  run bash -c "printf '95074   [BUGFIX] Something\n' \
+    | { source '${DIR}/tryout/functions.sh' >/dev/null 2>&1; \
+        pick_patches 'Pick' \
+          \"\$(printf '95074\\t[BUGFIX] Something\\tBenni Mack\\tCR+2 V+2')\" \
+          \"\$(printf '95671\\t[BUGFIX] Other\\tOli Bartsch\\tV+1')\"; }"
+  assert_success
+  assert_output "95074"
+}
+
+@test "the picker takes its rows as arguments, leaving stdin for the answer" {
+  # Reading rows from stdin would swallow the very input the no-gum chooser needs.
+  set -eu -o pipefail
+  local body
+  body=$(sed -n '/^pick_patches() {/,/^}/p' "${DIR}/tryout/functions.sh")
+  printf '%s\n' "${body}" | grep -qE 'for row in "\$@"' || fail "rows are not arguments"
+  if printf '%s\n' "${body}" | grep -qE 'while IFS= read -r row'; then
+    fail "pick_patches consumes stdin"
+  fi
+}

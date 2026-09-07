@@ -215,12 +215,25 @@ ctr_download() {
 # ─────────────────────────────────────────────────────────────────────
 # patch — Apply Gerrit patches
 # ─────────────────────────────────────────────────────────────────────
+# ctr_patch [--site <name>] [<change-id> ...]
+#
+# Several change numbers are applied in the order given, and the site — which used
+# to be the second positional argument — moved to a flag so that stays possible.
+# The host still accepts `patch <id> <site>` and translates.
 ctr_patch() {
     require_core
     ensure_gerrit_remote
 
-    # Optional 2nd arg targets a served site; without it the primary is patched.
-    local site="${2:-${PRIMARY_SITE}}"
+    local site="${PRIMARY_SITE}" ids=() a
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --site) site="${2:-${PRIMARY_SITE}}"; shift ;;
+            --site=*) site="${1#--site=}" ;;
+            *)      ids+=("$1") ;;
+        esac
+        shift
+    done
+
     if ! site_is_primary "${site}"; then
         if ! site_is_served "${site}"; then
             error "No served site '${site}'"
@@ -232,9 +245,16 @@ ctr_patch() {
         info "Patching site '${site}' ($(basename "${CORE_DIR}"), base ${BRANCH})"
     fi
 
-    if [ -n "${1:-}" ]; then
-        apply_patch "$1"
-        if [ "${PATCH_RESULT}" = "applied" ]; then
+    if [ ${#ids[@]} -gt 0 ]; then
+        # One rebuild at the end, not one per patch: each is a full composer
+        # install, and applying three changes would run it three times.
+        local applied=0 id
+        for id in "${ids[@]}"; do
+            apply_patch "${id}" || break
+            [ "${PATCH_RESULT}" = "applied" ] && applied=$((applied + 1))
+            [ ${#ids[@]} -gt 1 ] && echo ""
+        done
+        if [ "${applied}" -gt 0 ]; then
             rebuild_typo3 "${site}"
         fi
     else
@@ -245,8 +265,8 @@ ctr_patch() {
             info "No patches configured."
             echo ""
             echo "Usage:"
-            echo "  ddev tryout patch <change-id>   Apply a single Gerrit patch"
-            echo "  ddev tryout patch               Apply all from config"
+            echo "  ddev tryout patch              Browse the open changes and pick"
+            echo "  ddev tryout patch <change-id>  Apply a single Gerrit patch"
             echo ""
             echo "Configure in .ddev/config.tryout-patches.yaml:"
             echo "  TRYOUT_PATCHES=56947,12345"

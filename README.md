@@ -132,7 +132,8 @@ ddev tryout checkout <branch>   Switch TYPO3 version (main, 13.4, 12.4, ...)
 ddev tryout composer            Regenerate the Composer overlay from Core sysexts
                                 (it does not run Composer — that is `ddev composer`)
 ddev tryout patch <change-id>   Apply a Gerrit patch
-ddev tryout patch               Apply all patches from config
+ddev tryout patch               Browse the open changes and pick one or several
+                                (or apply the configured list, if there is one)
 ddev tryout reset               Reset Core to current branch + rebuild
 ddev tryout delete              Wipe DB + fileadmin, fresh setup
 ddev tryout help                Show the built-in help
@@ -290,6 +291,34 @@ ddev tryout patch 56947
 
 The latest patchset is resolved automatically via the Gerrit REST API,
 fetched, and cherry-picked onto your local Core branch.
+
+### Browsing what is open
+
+Run it bare to see what is currently up for review on the branch you are on, and
+pick one or several with <kbd>space</kbd>:
+
+```bash
+ddev tryout patch
+```
+
+```text
+Apply which changes? (space to select, enter to confirm)
+  95347   [TASK] Skip database setup for database-free…   Wouter Wolters    CR+1 V+1
+> 95074   [BUGFIX] Avoid stale deleted state on reproc…   Benni Mack        CR+2 V+2
+  95671   [BUGFIX] Ensure numeric site identifiers sta…   Oli Bartsch       CR+1 V+1
+  94993   [FEATURE] Add table-specific hidden record v…   Matthias Vogel    V-2
+```
+
+The columns are the change number, its subject, its owner and its review state
+(`CR` is Code-Review, `V` is Verified). Changes still marked work-in-progress are
+prefixed `WIP`. Everything picked is applied in the order shown, with a single
+rebuild at the end, and you are asked once afterwards whether to add the numbers
+to your patch list so they come back on the next `ddev start`.
+
+`--all-branches` widens the list beyond the branch in use. The picker needs a
+terminal and [gum](https://github.com/charmbracelet/gum); without either — in
+`ddev start`, or any script — a bare `patch` applies the configured list exactly
+as it always did.
 
 Check what is currently applied:
 

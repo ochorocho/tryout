@@ -98,9 +98,68 @@ cmd_download() {
 # ─────────────────────────────────────────────────────────────────────
 # patch — Apply Gerrit patches
 # ─────────────────────────────────────────────────────────────────────
+# With a change number, apply that one. Bare and with a terminal, browse the open
+# changes for the branch in use and pick one or several — the picking happens
+# here, on the host, because that is where gum and the terminal are. Bare without
+# a terminal, the container falls back to TRYOUT_PATCHES exactly as before.
 cmd_patch() {
     require_core
-    delegate patch "$@"
+
+    local site="" all_branches="false" args=() a
+    for a in "$@"; do
+        case "${a}" in
+            --all-branches) all_branches="true" ;;
+            *)              args+=("${a}") ;;
+        esac
+    done
+    set -- ${args[@]+"${args[@]}"}
+
+    # `patch <id> <site>` keeps working: the site becomes a flag, so several
+    # change numbers can follow.
+    if [ -n "${1:-}" ]; then
+        local id="$1"; shift
+        delegate patch ${1:+--site "$1"} "${id}"
+        return $?
+    fi
+
+    site="${1:-}"
+    # A configured list is a deliberate choice: apply it rather than asking.
+    if [ -n "$(echo "${TRYOUT_PATCHES:-}" | tr -d '[:space:]')" ] || ! have_tty; then
+        delegate patch ${site:+--site "${site}"}
+        return $?
+    fi
+
+    local branch="${BRANCH}"
+    [ "${all_branches}" = "true" ] && branch="-"
+
+    # Fetch first, then pick. The two cannot share a pipeline: the fetch wants a
+    # spinner and the picker wants the terminal, and a spinner over an
+    # interactive chooser would fight it for the screen.
+    local rows=() picks=() p
+    while IFS= read -r p; do [ -n "${p}" ] && rows+=("${p}"); done < <(fetch_open_patches "${branch}")
+    if [ ${#rows[@]} -eq 0 ]; then
+        error "Could not reach Gerrit, or no open changes on ${branch}"
+        error "  → ddev tryout patch <change-id>   to apply one by number"
+        return 1
+    fi
+    while IFS= read -r p; do [ -n "${p}" ] && picks+=("${p}"); done \
+        < <(pick_patches "Apply which changes? (space to select, enter to confirm)" "${rows[@]}")
+    if [ ${#picks[@]} -eq 0 ]; then
+        explain_missing "ddev tryout patch <change-id> [<site>]"
+        return 1
+    fi
+
+    local rc=0
+    delegate patch ${site:+--site "${site}"} "${picks[@]}" || rc=$?
+    [ "${rc}" -eq 0 ] || return "${rc}"
+
+    # Applying is per-checkout; the patch list is what makes it survive a reset
+    # or a fresh start. Offer once, and only when something was actually applied.
+    echo ""
+    read -r -p "Add ${picks[*]} to your patch list so they reapply on ddev start? [y/N] " confirm
+    if [[ "${confirm}" =~ ^[Yy]$ ]]; then
+        persist_patches "${picks[@]}"
+    fi
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -679,7 +738,7 @@ cmd_help() {
     echo -e "  ${BOLD}download [--reset]${NC}        Clone or update Core (--reset: hard reset)"
     echo -e "  ${BOLD}checkout <branch>${NC}         Switch TYPO3 version (main, 13.4, 12.4, ...)"
     echo -e "  ${BOLD}composer${NC}                  Regenerate the overlay (not: run Composer)"
-    echo -e "  ${BOLD}patch [<id>] [<site>]${NC}     Apply one Gerrit patch, or all from config"
+    echo -e "  ${BOLD}patch [<id>] [<site>]${NC}     Apply a Gerrit patch — bare, browse and pick"
     echo -e "  ${BOLD}worktree${NC}                  Manage side-by-side Core checkouts"
     echo -e "  ${BOLD}cs [setup|doctor]${NC}         Prepare this instance for Core contribution"
     echo -e "  ${BOLD}herdr [<name>|new]${NC}        Open Core worktrees as herdr workspaces"

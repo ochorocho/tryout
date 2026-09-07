@@ -156,6 +156,36 @@ ui_choose() {
     printf '%s' "${answer}"
 }
 
+# Pick SEVERAL of the arguments, one per line. Echoes the choices; a cancel or an
+# empty pick returns 1. Same two gum rules as ui_choose: its screen is stderr and
+# never redirected, and its exit code is not to be trusted — the output is.
+ui_choose_multi() {
+    local prompt="$1"; shift
+    [ $# -gt 0 ] || return 1
+
+    if have_gum && have_tty; then
+        local picked
+        picked="$(printf '%s\n' "$@" \
+            | gum choose --no-limit --header "${prompt}" --height 15)"
+        [ -n "${picked}" ] && { printf '%s\n' "${picked}"; return 0; }
+        return 1
+    fi
+
+    # No gum, or no terminal for it: read a line per pick until EOF or a blank.
+    if [ -t 2 ]; then
+        printf '  %s\n' "$@" >&2
+        printf '  %s (one per line, blank to finish): ' "${prompt}" >&2
+    fi
+    local answer="" got=""
+    while IFS= read -r answer; do
+        answer="$(printf '%s' "${answer}" | tr -d '\000-\037')"
+        [ -n "${answer}" ] || break
+        got="${got}${answer}"$'\n'
+    done
+    [ -n "${got}" ] || return 1
+    printf '%s' "${got}"
+}
+
 # Free text. Echoes the answer; empty means cancelled.
 ui_input() {
     local prompt="$1" placeholder="${2:-}"
@@ -241,6 +271,73 @@ ask_site() {
 
 # Local refs, ordered by usefulness: main, releases newest first, the pre-9
 # TYPO3_x-y refs last. checkout fetches afterwards anyway.
+# The open Gerrit changes for a branch, one TSV row each, under a spinner.
+# Fails when Gerrit cannot be reached or answers nothing.
+#
+# The listing is fetched in the container (curl and jq live there); picking from
+# it happens on the host, where gum and the terminal are — the host/container
+# split in two functions rather than one, because a spinner and an interactive
+# chooser cannot share a pipeline.
+fetch_open_patches() {
+    local branch="${1:-${BRANCH}}" limit="${2:-50}" out=""
+    local label="${branch}"
+    [ "${label}" = "-" ] && label="every branch"
+    out="$(ui_spin "Fetching open changes for ${label}" \
+        bash "$(tryout_script list-patches.sh)" "${GERRIT_API}" "${branch}" "${limit}")" || return 1
+    [ -n "${out}" ] || return 1
+    printf '%s\n' "${out}"
+}
+
+# Pick one or several changes. The rows come as arguments, NOT on stdin: without
+# gum the chooser reads the answer from stdin, and a function that had consumed
+# stdin to build its list would leave nothing for it to read.
+#
+# Echoes the chosen change numbers, one per line; nothing on a cancel.
+pick_patches() {
+    local prompt="${1:-Apply which changes?}"; shift
+    local row n s o sc labels=()
+
+    # What the user picks from is a rendered line; the number is column one, so
+    # it survives the round trip without a second lookup.
+    for row in "$@"; do
+        [ -n "${row}" ] || continue
+        IFS=$'\t' read -r n s o sc <<<"${row}"
+        labels+=("$(printf '%-7s %-68s %-18s %s' "${n}" "${s}" "${o}" "${sc}")")
+    done
+    [ ${#labels[@]} -gt 0 ] || return 1
+
+    ui_choose_multi "${prompt}" "${labels[@]}" | awk 'NF {print $1}'
+}
+
+# Append change numbers to TRYOUT_PATCHES in the user's patch list, keeping the
+# rest of the file — comments included — exactly as it was. Numbers already
+# there are not added twice.
+persist_patches() {
+    local file="${PROJECT_ROOT}/.ddev/config.tryout-patches.yaml"
+    [ -f "${file}" ] || {
+        error "No patch list at .ddev/config.tryout-patches.yaml"
+        return 1
+    }
+    [ $# -gt 0 ] || return 0
+
+    local current new_list="" n
+    current=$(sed -n 's/^ *- *TRYOUT_PATCHES=//p' "${file}" | head -1 | tr -d '[:space:]')
+    new_list="${current}"
+    for n in "$@"; do
+        case ",${new_list}," in
+            *",${n},"*) continue ;;     # already listed
+        esac
+        [ -n "${new_list}" ] && new_list="${new_list},${n}" || new_list="${n}"
+    done
+    [ "${new_list}" = "${current}" ] && return 0
+
+    # sed -i needs a suffix to work on both BSD and GNU; the backup goes away
+    # again immediately.
+    sed -i.tryout-bak "s|^\( *- *\)TRYOUT_PATCHES=.*|\1TRYOUT_PATCHES=${new_list}|" "${file}"
+    rm -f "${file}.tryout-bak"
+    success "Patch list is now: ${new_list}"
+}
+
 ask_branch() {
     local prompt="$1" branches=(main) b
     while IFS= read -r b; do
