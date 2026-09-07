@@ -166,6 +166,22 @@ Reset which site?
 `delete` adds an "every site" entry to that list, so wiping everything is a pick
 rather than a flag to remember.
 
+The `worktree` subcommands do the same with checkouts — `use`, `serve`, `unserve`,
+`remove` and `rename` show which branch each one is on, whether it has uncommitted
+work, and what it serves:
+
+```text
+Serve which worktree?
+> main            main                  c76e554c343  clean  ← primary
+  v13             (detached)            aa6a5bdadce  clean
+  bugfix          bugfix-9421           1f3a2b8c9d0  dirty
+```
+
+Each list is filtered to what the command can actually act on: `serve` offers only
+unserved checkouts, `unserve` only served ones, `use` and `remove` leave out the
+primary. A bare `adopt` lists the stray checkouts it found and lets you pick which
+to move in.
+
 ### Tab completion
 
 Every command, subcommand and flag completes with <kbd>Tab</kbd>, each with a short

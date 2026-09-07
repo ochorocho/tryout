@@ -446,7 +446,7 @@ cmd_worktree() {
                 return 0
             fi
 
-            local foreign
+            local foreign wt name target branch
             foreign=$(list_foreign_core_worktrees)
             if [ -z "${foreign}" ]; then
                 success "Every Core worktree is inside the project"
@@ -462,9 +462,28 @@ cmd_worktree() {
 
             [ "${dry}" = "true" ] && return 0
 
-            local wt name target branch
-            echo "${foreign}" | while IFS= read -r wt; do
-                [ -n "${wt}" ] || continue
+            # Which of them to take is a choice: herdr leaves checkouts behind
+            # that the user may still be working in. Offer them, and fall back to
+            # all of them where nobody can answer — the behaviour before this.
+            local chosen=() labels=() l
+            if have_tty; then
+                while IFS= read -r wt; do
+                    [ -n "${wt}" ] || continue
+                    branch=$(git -C "${wt}" branch --show-current 2>/dev/null || true)
+                    labels+=("$(printf '%s  %s' "$(pad_display "${wt}" 52)" "${branch:-(detached)}")")
+                done <<< "${foreign}"
+                while IFS= read -r l; do
+                    [ -n "${l}" ] && chosen+=("${l%% *}")
+                done < <(ui_choose_multi "Adopt which checkouts?" "${labels[@]}")
+                if [ ${#chosen[@]} -eq 0 ]; then
+                    warn "Nothing adopted"
+                    return 0
+                fi
+            else
+                while IFS= read -r wt; do [ -n "${wt}" ] && chosen+=("${wt}"); done <<< "${foreign}"
+            fi
+
+            for wt in "${chosen[@]}"; do
                 branch=$(git -C "${wt}" branch --show-current 2>/dev/null || true)
                 name=$(worktree_name_from_ref "${branch:-$(basename "${wt}")}")
                 if ! validate_worktree_name "${name}" >/dev/null 2>&1; then
@@ -497,7 +516,7 @@ cmd_worktree() {
             echo -e "  ${BOLD}serve <name>${NC}            Give <name> its own URL, PHP version and database"
             echo -e "  ${BOLD}unserve <name>${NC}          Drop the site, keep the worktree"
             echo -e "  ${BOLD}remove <name>${NC}           Remove a worktree (not the primary)"
-            echo -e "  ${BOLD}adopt [<path> [<name>]]${NC} Move stray checkouts into the project"
+            echo -e "  ${BOLD}adopt [<path> [<name>]]${NC} Move stray checkouts in (bare: pick from a list)"
             echo -e "  ${BOLD}rename <old> <new>${NC}      Rename a checkout (the branch is untouched)"
             echo ""
             echo "  Flags: --branch    (add: create a real branch, not detached)"

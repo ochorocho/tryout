@@ -2460,3 +2460,76 @@ YAML
   printf '%s\n' "${body}" | grep -q 'site_is_primary "${target}" && target=""' \
     || fail "the primary sentinel is forwarded verbatim"
 }
+
+# --- picking a worktree -----------------------------------------------------
+
+@test "ask_worktree labels each worktree with its branch, HEAD and state" {
+  set -eu -o pipefail
+  local main="${FAKEROOT}/typo3-core-main" wt="${FAKEROOT}/typo3-core-v13"
+  git init -q "${main}"
+  git -C "${main}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  git -C "${main}" worktree add -q --detach "${wt}" HEAD
+  mkdir -p "${FAKEROOT}/sites/v13"
+  printf 'php=8.4\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+
+  # The rendered rows carry branch, HEAD, state and what the site is.
+  run helper worktree_labels all
+  assert_success
+  assert_output --partial "main"
+  assert_output --partial "primary"
+  assert_output --partial "v13"
+  assert_output --partial "(detached)"
+  assert_output --partial "PHP 8.4"
+
+  # …but the answer is still the bare name the callers pass on.
+  run bash -c "printf 'v13\n' | { source '${DIR}/tryout/functions.sh' >/dev/null 2>&1; ask_worktree 'Which?'; }"
+  assert_success
+  assert_output "v13"
+}
+
+@test "ask_worktree keeps filtering by primary and served state" {
+  set -eu -o pipefail
+  local main="${FAKEROOT}/typo3-core-main" wt="${FAKEROOT}/typo3-core-v13"
+  git init -q "${main}"
+  git -C "${main}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  git -C "${main}" worktree add -q --detach "${wt}" HEAD
+  mkdir -p "${FAKEROOT}/sites/v13"
+  printf 'php=8.4\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+
+  # served: only v13. unserved and nonprimary: only main / only what is left.
+  run helper worktree_labels served
+  assert_output --partial "v13"
+  refute_output --partial "primary"
+
+  run helper worktree_labels nonprimary
+  assert_output --partial "v13"
+
+  run helper worktree_labels unserved
+  refute_output --partial "v13"
+}
+
+@test "worktree adopt offers the strays instead of taking all of them" {
+  set -eu -o pipefail
+  local body
+  body=$(awk '/^        adopt\)/,/^            ;;/' "${DIR}/commands/host/tryout")
+  [ -n "${body}" ] || fail "no adopt branch"
+  printf '%s\n' "${body}" | grep -q 'ui_choose_multi' \
+    || fail "adopt does not offer a multi-select"
+  # --dry-run still just reports, and an explicit path still bypasses the picker.
+  printf '%s\n' "${body}" | grep -q 'dry="true"' || fail "--dry-run is gone"
+  printf '%s\n' "${body}" | grep -q 'one_path' || fail "the explicit-path form is gone"
+}
+
+@test "every worktree subcommand that names a worktree can pick one" {
+  set -eu -o pipefail
+  local sub body
+  for sub in "use" "remove|rm" "serve" "unserve" "rename" "adopt"; do
+    body=$(awk -v pat="        ${sub})" 'index($0, pat) == 1, /^            ;;/' \
+      "${DIR}/commands/host/tryout")
+    [ -n "${body}" ] || fail "no '${sub}' branch"
+    printf '%s\n' "${body}" | grep -qE 'ask_worktree|ui_choose_multi' \
+      || fail "'${sub}' never offers a worktree list"
+  done
+}

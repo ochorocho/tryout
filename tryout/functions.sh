@@ -255,15 +255,45 @@ core_worktree_names() {
     done
 }
 
+# One rendered row per worktree, filtered by <mode> exactly as core_worktree_names
+# filters: "<name>  <branch>  <head>  <state>  <what it serves>".
+#
+# This runs a `git status` per worktree, which core_worktree_names deliberately
+# avoids — but a picker is opened by hand, once, and a list of bare names does not
+# say which branch is which. Never call it from the dashboard or completion.
+worktree_labels() {
+    local mode="${1:-all}" name head branch dirty active site
+    while IFS=$'\t' read -r name head branch dirty active; do
+        [ -n "${name}" ] || continue
+        case "${mode}" in
+            nonprimary) [ -n "${active}" ] && continue ;;
+            served)     site_is_served "${name}" || continue ;;
+            unserved)   site_is_served "${name}" && continue ;;
+        esac
+        site=""
+        if [ -n "${active}" ]; then
+            site="← primary"
+        elif site_is_served "${name}"; then
+            site="PHP $(site_php_version "${name}")"
+        fi
+        printf '%s  %s  %s  %s  %s\n' \
+            "$(pad_display "${name}" 14)" "$(pad_display "${branch}" 20)" \
+            "${head}" "$(pad_display "${dirty}" 5)" "${site}"
+    done < <(list_core_worktrees)
+}
+
+# Pick a worktree. Shows what each one is; answers with its bare name.
 ask_worktree() {
-    local prompt="$1" mode="${2:-all}" names=() n
-    while IFS= read -r n; do [ -n "${n}" ] && names+=("${n}"); done < <(core_worktree_names "${mode}")
-    if [ ${#names[@]} -eq 0 ]; then
+    local prompt="$1" mode="${2:-all}" labels=() l picked
+    while IFS= read -r l; do [ -n "${l}" ] && labels+=("${l}"); done < <(worktree_labels "${mode}")
+    if [ ${#labels[@]} -eq 0 ]; then
         error "No worktree to choose from"
         error "  → ddev tryout worktree add <name> [<branch>]"
         return 1
     fi
-    ui_choose "${prompt}" "${names[@]}"
+    picked="$(ui_choose "${prompt}" "${labels[@]}")" || return 1
+    # Column one is the name, whether the answer is a picked row or a typed name.
+    printf '%s' "${picked%% *}"
 }
 
 # Pick a site. Echoes the site NAME — the "@primary" sentinel for the primary, so
