@@ -338,8 +338,9 @@ fetched, and cherry-picked onto your local Core branch.
 
 ### Browsing what is open
 
-Run it bare to see what is currently up for review on the branch you are on, and
-pick one or several — gum's own footer names the toggle key:
+Run it bare and it asks which site to patch first, then shows what is currently up
+for review **on that site's branch** — a 13.4 site is offered 13.4's changes, not
+main's. Pick one or several; gum's own footer names the toggle key:
 
 ```bash
 ddev tryout patch

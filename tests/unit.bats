@@ -2941,3 +2941,36 @@ FAKE
   run helper worktree_name_from_ref "feature/TYPO3 v14!"
   assert_output "feature-TYPO3-v14-"
 }
+
+@test "patch asks which site first, and lists that site's branch" {
+  # The site decides which Core checkout is patched, and therefore which branch's
+  # open changes are worth showing: offering main's changes for a 13.4 site is
+  # simply the wrong list. So the site is resolved BEFORE the fetch.
+  set -eu -o pipefail
+  local body site_at fetch_at
+  body=$(sed -n '/^cmd_patch() {/,/^}$/p' "${DIR}/commands/host/tryout")
+  [ -n "${body}" ] || fail "no cmd_patch()"
+
+  printf '%s\n' "${body}" | grep -q 'ask_site' || fail "patch never asks for a site"
+  site_at=$(printf '%s\n' "${body}" | grep -n 'ask_site' | head -1 | cut -d: -f1)
+  fetch_at=$(printf '%s\n' "${body}" | grep -n 'fetch_open_patches' | head -1 | cut -d: -f1)
+  [ -n "${fetch_at}" ] || fail "no fetch"
+  [ "${site_at}" -lt "${fetch_at}" ] \
+    || fail "the site must be chosen before the changes are fetched"
+
+  # A named site still skips the question, and an explicit change number is
+  # applied without one either.
+  printf '%s\n' "${body}" | grep -q 'served_site_names' \
+    || fail "patch asks even when nothing else is served"
+}
+
+@test "the branch listed for a served site is that site's own, not the primary's" {
+  set -eu -o pipefail
+  local body
+  body=$(sed -n '/^cmd_patch() {/,/^}$/p' "${DIR}/commands/host/tryout")
+  # Without this a 13.4 worktree would be offered main's open changes.
+  printf '%s\n' "${body}" | grep -q 'site_core_dir' \
+    || fail "the site's own Core checkout is never consulted"
+  printf '%s\n' "${body}" | grep -q 'detect_detached_base_branch' \
+    || fail "a served site's base branch is never detected"
+}

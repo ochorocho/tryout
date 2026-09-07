@@ -138,7 +138,22 @@ cmd_patch() {
         return $?
     fi
 
+    # Which site comes first, because it decides which Core is patched — and so
+    # which branch's open changes are the right ones to show. Offering main's
+    # changes for a 13.4 site would be the wrong list, not merely a longer one.
+    if [ -z "${site}" ] && [ -n "$(served_site_names)" ]; then
+        site="$(ask_site "Patch which site?")" \
+            || { explain_missing "ddev tryout patch [<change-id>] [<site>]"; return 1; }
+    fi
+
+    # The branch to list: the project's for the primary, the site's own otherwise.
+    # A served worktree is checked out detached, so its base branch is detected the
+    # same way the container does it.
     local branch="${BRANCH}"
+    if [ -n "${site}" ] && ! site_is_primary "${site}"; then
+        CORE_DIR="$(site_core_dir "${site}")"
+        branch="$(detect_detached_base_branch)"
+    fi
     [ "${all_branches}" = "true" ] && branch="-"
 
     # Fetch first, then pick. The two cannot share a pipeline: the fetch wants a
@@ -157,6 +172,10 @@ cmd_patch() {
         explain_missing "ddev tryout patch <change-id> [<site>]"
         return 1
     fi
+
+    # "@primary" is the host's sentinel for the default; the container's parser
+    # takes --site as a served site's name.
+    site_is_primary "${site}" && site=""
 
     local rc=0
     delegate patch ${site:+--site "${site}"} "${picks[@]}" || rc=$?
