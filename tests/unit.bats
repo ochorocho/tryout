@@ -2600,3 +2600,150 @@ YAML
   # And it names the command that fixes it.
   printf '%s\n' "${body}" | grep -q 'add-on get' || fail "no next step given"
 }
+
+# --- keeping herdr in step with the worktrees -------------------------------
+# `ddev tryout herdr` used to only ever ADD: it opened a workspace per worktree
+# and skipped the ones already open. Nothing closed a workspace whose worktree
+# had been removed — its pane sat in a directory that no longer existed.
+
+# A herdr stub that answers `workspace list` with the given JSON and logs every
+# other call, so a test can see exactly what was closed.
+fake_herdr() {
+  mkdir -p "${FAKEROOT}/bin"
+  printf '%s' "$1" > "${FAKEROOT}/ws.json"
+  cat > "${FAKEROOT}/bin/herdr" <<FAKE
+#!/usr/bin/env bash
+# Drop the leading "--session <name>" the wrapper adds.
+[ "\$1" = "--session" ] && shift 2
+if [ "\$1" = "workspace" ] && [ "\$2" = "list" ]; then
+  cat "${FAKEROOT}/ws.json"
+  exit 0
+fi
+echo "CALL: \$*" >> "${FAKEROOT}/calls.log"
+FAKE
+  chmod +x "${FAKEROOT}/bin/herdr"
+  : > "${FAKEROOT}/calls.log"
+}
+
+@test "a workspace whose worktree is gone is an orphan; one still on disk is not" {
+  set -eu -o pipefail
+  # v13 exists on disk, v12 does not.
+  mkdir -p "${FAKEROOT}/typo3-core-v13"
+  ln -s typo3-core-v13 "${FAKEROOT}/typo3-core"
+  fake_herdr '{"result":{"workspaces":[
+    {"workspace_id":"w1","label":"core-v13"},
+    {"workspace_id":"w2","label":"core-v12"}
+  ]}}'
+
+  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    herdr_orphan_workspaces
+  "
+  assert_success
+  assert_output --partial "w2"
+  assert_output --partial "core-v12"
+  refute_output --partial "core-v13"
+}
+
+@test "workspaces that are not ours are never touched, however stale they look" {
+  # The session is per project, but a user may have opened anything in it. Only
+  # the core-<name> label marks a workspace as one this command manages.
+  set -eu -o pipefail
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  fake_herdr '{"result":{"workspaces":[
+    {"workspace_id":"w1","label":"my-notes"},
+    {"workspace_id":"w2","label":"typo3-core-main"},
+    {"workspace_id":"w3","label":"core-gone"}
+  ]}}'
+
+  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    herdr_orphan_workspaces
+  "
+  assert_success
+  assert_output --partial "core-gone"
+  refute_output --partial "my-notes"
+  # Labelled like a directory, but not our scheme — leave it alone.
+  refute_output --partial "typo3-core-main"
+}
+
+@test "close_orphan_workspaces closes each orphan once, by id, and says so" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  fake_herdr '{"result":{"workspaces":[
+    {"workspace_id":"w1","label":"core-main"},
+    {"workspace_id":"w2","label":"core-v12"},
+    {"workspace_id":"w3","label":"core-bugfix"}
+  ]}}'
+
+  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    close_orphan_workspaces
+  "
+  assert_success
+  assert_output --partial "core-v12"
+  assert_output --partial "core-bugfix"
+
+  run cat "${FAKEROOT}/calls.log"
+  assert_line "CALL: workspace close w2"
+  assert_line "CALL: workspace close w3"
+  # main is still on disk, so it is left open.
+  refute_output --partial "close w1"
+}
+
+@test "nothing is closed when every worktree is still there" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  fake_herdr '{"result":{"workspaces":[{"workspace_id":"w1","label":"core-main"}]}}'
+
+  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    close_orphan_workspaces
+  "
+  assert_success
+  run cat "${FAKEROOT}/calls.log"
+  assert_output ""
+}
+
+@test "a single-clone project's one workspace is never an orphan" {
+  # Before any worktree exists, typo3-core/ is a plain clone and the workspace is
+  # labelled after its branch — herdr_checkout_dir resolves that to typo3-core/.
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core"
+  git init -q "${FAKEROOT}/typo3-core"
+  git -C "${FAKEROOT}/typo3-core" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "${FAKEROOT}/typo3-core" branch -M main
+  fake_herdr '{"result":{"workspaces":[{"workspace_id":"w1","label":"core-main"}]}}'
+
+  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    herdr_orphan_workspaces
+  "
+  assert_success
+  assert_output ""
+}
+
+@test "herdr syncs on a bare run, and leaves other workspaces alone when named" {
+  set -eu -o pipefail
+  local body
+  body=$(sed -n '/^cmd_herdr() {/,/^}$/p' "${DIR}/commands/host/tryout")
+  [ -n "${body}" ] || fail "no cmd_herdr()"
+  printf '%s\n' "${body}" | grep -q 'close_orphan_workspaces' \
+    || fail "cmd_herdr never closes orphaned workspaces"
+  # Guarded on no worktree having been named: a targeted command must not close
+  # workspaces that have nothing to do with it.
+  printf '%s\n' "${body}" | grep -q '\[ -z "\${only}" \] && close_orphan_workspaces' \
+    || fail "the cleanup is not guarded by an empty \${only}"
+  # …and it runs after the open loop, so a rename settles in one command.
+  local open_at close_at
+  open_at=$(printf '%s\n' "${body}" | grep -n 'open_worktree_in_herdr' | head -1 | cut -d: -f1)
+  close_at=$(printf '%s\n' "${body}" | grep -n 'close_orphan_workspaces' | head -1 | cut -d: -f1)
+  [ "${open_at}" -lt "${close_at}" ] || fail "orphans are closed before the open loop"
+}

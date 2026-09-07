@@ -1090,6 +1090,50 @@ herdr_workspace_id() {
         | head -1
 }
 
+# Workspaces this command manages whose worktree is no longer on disk, one per
+# line as "<workspace_id>\t<label>\t<name>".
+#
+# Only the core-<name> label marks a workspace as ours: the session is per
+# project, but a user may have opened anything else in it, and those must never
+# be touched. One `workspace list` call, then a filesystem test each — this runs
+# on every bare `ddev tryout herdr`, so it must not cost a round trip per
+# workspace.
+herdr_orphan_workspaces() {
+    local id label name
+    while IFS=$'\t' read -r id label; do
+        [ -n "${id}" ] || continue
+        case "${label}" in
+            core-*) name="${label#core-}" ;;
+            *)      continue ;;
+        esac
+        [ -n "${name}" ] || continue
+        # herdr_checkout_dir knows both layouts: typo3-core-<name>, and the plain
+        # typo3-core/ clone a project has before its first worktree.
+        [ -d "$(herdr_checkout_dir "${name}")" ] && continue
+        printf '%s\t%s\t%s\n' "${id}" "${label}" "${name}"
+    done < <(herdr_cli workspace list 2>/dev/null \
+        | jq -r '.result.workspaces[]? | [.workspace_id, .label] | @tsv' 2>/dev/null)
+}
+
+# Close every workspace whose worktree is gone, so a session matches the project.
+# Deliberately unconditional: no prompt, and no exception for a workspace whose
+# agent is still working. A `worktree rename` is a remove plus an add to herdr,
+# so the old workspace goes and the new one is opened in the same run — the old
+# pane's scrollback with it. That is the trade for herdr staying exactly in step.
+close_orphan_workspaces() {
+    local id label name closed=0
+    while IFS=$'\t' read -r id label name; do
+        [ -n "${id}" ] || continue
+        if herdr_cli workspace close "${id}" >/dev/null 2>&1; then
+            echo -e "  ${RED}✗${NC} closed ${label} ${DIM}— $(basename "$(herdr_checkout_dir "${name}")") is gone${NC}"
+            closed=$((closed + 1))
+        else
+            warn "Could not close ${label}"
+        fi
+    done < <(herdr_orphan_workspaces)
+    return 0
+}
+
 # A worktree name derived from a branch (or any path segment). herdr names its own
 # checkouts from a generated word list on a "worktree/<slug>" branch, so take the last
 # segment, drop a typo3-core- prefix, and force it into validate_worktree_name's

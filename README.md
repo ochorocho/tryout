@@ -936,6 +936,26 @@ herdr --session tryout-my-typo3-site server stop    # stop it (panes and agents 
 herdr session delete tryout-my-typo3-site           # forget a stopped session
 ```
 
+A bare `ddev tryout herdr` keeps the session in step with the project in **both**
+directions: it opens a workspace for any worktree that has none, and closes any
+workspace whose worktree has been removed.
+
+```text
+==> Opening 'v14'...
+==> 'v14' — claude 'v14' + shell
+  ✗ closed core-v13 — typo3-core-v13 is gone
+```
+
+That close is unconditional — a workspace goes even if its agent is still
+working — so the session always matches what is on disk. A `worktree rename` is
+a remove plus an add as far as herdr is concerned, so the old workspace closes
+and the new one opens in the same run. Name a worktree
+(`ddev tryout herdr v14`) to open just that one and leave every other workspace
+untouched.
+
+Only workspaces labelled `core-<name>`, the ones this command created, are ever
+closed; anything else you have opened in the session is left alone.
+
 > herdr is optional and the add-on never installs it. The command needs `herdr` and
 > `jq` on the host, and works from any terminal — it does not have to be run from
 > inside a herdr pane. Without those it exits with a hint and changes nothing.

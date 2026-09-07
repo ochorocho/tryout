@@ -641,6 +641,13 @@ cmd_herdr() {
         fi
     done
 
+    # Now the other direction: a worktree that has been removed leaves a workspace
+    # whose pane sits in a directory that no longer exists. Only on a bare run —
+    # naming one worktree must not close workspaces it has nothing to do with.
+    # After the open loop, so a rename (a remove plus an add, to herdr) settles in
+    # a single command.
+    [ -z "${only}" ] && close_orphan_workspaces
+
     # Land the user on the first Core workspace rather than wherever they were.
     if [ "${focus}" != "false" ] && [ -n "${first_ws}" ]; then
         herdr_cli workspace focus "${first_ws}" >/dev/null 2>&1 || true
@@ -724,7 +731,10 @@ cmd_herdr_help() {
     echo "         --yes         setup-keys: write without asking"
     echo ""
     echo "  Worktrees already open in any workspace are skipped, so the"
-    echo "  command is safe to re-run."
+    echo "  command is safe to re-run. A bare run also CLOSES workspaces whose"
+    echo "  worktree has been removed — including one whose agent is still"
+    echo "  working, so the session always matches the project. Name a worktree"
+    echo "  to open just that one and leave every other workspace alone."
     echo ""
     echo "  Runs in a herdr session of its own, 'tryout-<project>', started on"
     echo "  demand, and attaches to it — your default session is never touched."
