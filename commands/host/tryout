@@ -172,7 +172,14 @@ cmd_patch() {
 # ─────────────────────────────────────────────────────────────────────
 cmd_reset() {
     require_core
-    delegate reset "$@"
+    local site="${1:-}"
+    # Bare with several sites served, ask which one — a reset rebuilds a whole
+    # site, so guessing the primary is not obviously right any more.
+    if [ -z "${site}" ] && [ -n "$(served_site_names)" ]; then
+        site="$(ask_site "Reset which site?")" \
+            || { explain_missing "ddev tryout reset [<site>]"; have_tty && return 1; }
+    fi
+    delegate reset ${site:+"${site}"}
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -189,6 +196,15 @@ cmd_delete() {
         esac
     done
 
+    # Bare with sites served, ask rather than assume: this destroys data, and the
+    # primary is only one of several candidates. "--all" rides along in the list
+    # so wiping everything is a pick rather than a flag to remember.
+    if [ -z "${target}" ] && [ -n "$(served_site_names)" ]; then
+        target="$(ask_site "Wipe which site?" "--all         every site, primary included")" \
+            || { explain_missing "ddev tryout delete [<site>|--all]"; have_tty && return 1; }
+        case "${target}" in --all*) target="--all" ;; esac
+    fi
+
     # Resolve which site(s) to wipe. Defaulting to the primary keeps existing
     # muscle memory, but with sites served we must name what gets destroyed —
     # silently dropping `db` while orphaning db_<name> is the trap here.
@@ -196,7 +212,7 @@ cmd_delete() {
         sites=("${PRIMARY_SITE}")
         local s
         while IFS= read -r s; do [ -n "${s}" ] && sites+=("${s}"); done < <(served_site_names)
-    elif [ -n "${target}" ]; then
+    elif [ -n "${target}" ] && ! site_is_primary "${target}"; then
         if ! site_is_served "${target}"; then
             error "No served site '${target}'"
             error "  → ddev tryout worktree list"
@@ -218,6 +234,9 @@ cmd_delete() {
         fi
     fi
 
+    # The primary is the container's default, and its sentinel is not a word the
+    # container-side argument parser takes.
+    site_is_primary "${target}" && target=""
     delegate delete ${target:+"${target}"} --yes
 }
 

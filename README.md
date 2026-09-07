@@ -153,7 +153,18 @@ ddev tryout cs uninstall        Remove hooks and reset push URL
 
 Once you serve more than one site, `patch`, `reset`, `checkout` and `delete` take an
 optional site name and `delete` takes `--all` — see
-[Serving several sites at once](#serving-several-sites-at-once).
+[Serving several sites at once](#serving-several-sites-at-once). Leave the name off
+and `exec`, `reset` and `delete` ask which site you mean, showing what each one is:
+
+```text
+Reset which site?
+> primary       https://my-typo3-site.ddev.site
+  v13           https://v13.my-typo3-site.ddev.site  PHP 8.4
+  v12           https://v12.my-typo3-site.ddev.site  PHP 8.2
+```
+
+`delete` adds an "every site" entry to that list, so wiping everything is a pick
+rather than a flag to remember.
 
 ### Tab completion
 

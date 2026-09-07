@@ -2390,3 +2390,73 @@ YAML
   printf '%s\n' "${body}" | grep -q 'describe_patches' \
     || fail "the confirmation still lists bare numbers"
 }
+
+# --- picking a site ---------------------------------------------------------
+
+@test "ask_site shows what each site is, and returns the name behind it" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/sites/v13" "${FAKEROOT}/sites/v12"
+  printf 'php=8.4\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  printf 'php=8.2\n' > "${FAKEROOT}/sites/v12/.tryout-site"
+
+  # The label carries the URL and PHP version; the answer is the bare name.
+  run bash -c "printf 'v13          https://v13.unitproj.ddev.site  PHP 8.4\n' \
+    | { source '${DIR}/tryout/functions.sh' >/dev/null 2>&1; ask_site 'Which?'; }"
+  assert_success
+  assert_output "v13"
+
+  # The primary is offered as "primary" but answers with the sentinel, which is
+  # what site_is_primary understands.
+  run bash -c "printf 'primary       https://unitproj.ddev.site\n' \
+    | { source '${DIR}/tryout/functions.sh' >/dev/null 2>&1; \
+        DDEV_PRIMARY_URL=https://unitproj.ddev.site ask_site 'Which?'; }"
+  assert_success
+  assert_output "@primary"
+}
+
+@test "ask_site offers the extra entries it is given, unchanged" {
+  # delete uses this for --all: wiping everything is a pick, not a flag to recall.
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/sites/v13"
+  printf 'php=8.4\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  run bash -c "printf -- '--all         every site\n' \
+    | { source '${DIR}/tryout/functions.sh' >/dev/null 2>&1; ask_site 'Which?' '--all         every site'; }"
+  assert_success
+  assert_output -- "--all         every site"
+
+  # Typing just the name works too: the caller matches on the first word.
+  run bash -c "printf -- '--all\n' \
+    | { source '${DIR}/tryout/functions.sh' >/dev/null 2>&1; ask_site 'Which?' '--all         every site'; }"
+  assert_success
+  assert_output -- "--all"
+}
+
+@test "exec, reset and delete all ask which site when there are several" {
+  set -eu -o pipefail
+  local fn body
+  for fn in cmd_exec cmd_reset cmd_delete; do
+    body=$(sed -n "/^${fn}() {/,/^}/p" "${DIR}/commands/host/tryout")
+    [ -n "${body}" ] || fail "no ${fn}"
+    printf '%s\n' "${body}" | grep -q 'ask_site' || fail "${fn} never offers a site list"
+    printf '%s\n' "${body}" | grep -q 'explain_missing' \
+      || fail "${fn} does not fall through to the usage line"
+  done
+
+  # reset and delete only ask once something else is served — a single-site
+  # project keeps working without a prompt.
+  for fn in cmd_reset cmd_delete; do
+    body=$(sed -n "/^${fn}() {/,/^}/p" "${DIR}/commands/host/tryout")
+    printf '%s\n' "${body}" | grep -q 'served_site_names' \
+      || fail "${fn} asks even with no served site"
+  done
+}
+
+@test "a picked primary does not reach the container as a sentinel" {
+  # "@primary" is the host's word for the default; ctr_delete parses positional
+  # arguments and would take it for a site name.
+  set -eu -o pipefail
+  local body
+  body=$(sed -n '/^cmd_delete() {/,/^}/p' "${DIR}/commands/host/tryout")
+  printf '%s\n' "${body}" | grep -q 'site_is_primary "${target}" && target=""' \
+    || fail "the primary sentinel is forwarded verbatim"
+}

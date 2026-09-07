@@ -266,10 +266,44 @@ ask_worktree() {
     ui_choose "${prompt}" "${names[@]}"
 }
 
+# Pick a site. Echoes the site NAME — the "@primary" sentinel for the primary, so
+# callers keep passing what site_is_primary understands — while the list shows a
+# readable label: what each site is, on which PHP, at which URL.
+#
+# extra… are further entries offered verbatim below the sites (delete uses this
+# for "--all"); picking one echoes it unchanged.
 ask_site() {
-    local prompt="$1" sites=("${PRIMARY_SITE}") n
-    while IFS= read -r n; do [ -n "${n}" ] && sites+=("${n}"); done < <(served_site_names)
-    ui_choose "${prompt}" "${sites[@]}"
+    local prompt="$1"; shift
+    local names=("${PRIMARY_SITE}") labels=() n i=0
+    while IFS= read -r n; do [ -n "${n}" ] && names+=("${n}"); done < <(served_site_names)
+
+    for n in "${names[@]}"; do
+        if site_is_primary "${n}"; then
+            labels+=("$(printf '%s  %s' "$(pad_display "primary" 12)" "${DDEV_PRIMARY_URL:-}")")
+        else
+            labels+=("$(printf '%s  https://%s  %s' "$(pad_display "${n}" 12)" \
+                "$(site_hostname "${n}")" "PHP $(site_php_version "${n}")")")
+        fi
+    done
+    for n in "$@"; do labels+=("${n}"); done
+
+    local picked
+    picked="$(ui_choose "${prompt}" "${labels[@]}")" || return 1
+
+    # Map the label back to the name it stands for; anything extra is itself.
+    for i in "${!labels[@]}"; do
+        if [ "${labels[${i}]}" = "${picked}" ]; then
+            [ "${i}" -lt "${#names[@]}" ] && { printf '%s' "${names[${i}]}"; return 0; }
+            printf '%s' "${picked}"; return 0
+        fi
+    done
+
+    # Not an exact label: either a name typed at the no-gum prompt, or a label
+    # whose spacing does not match byte for byte. The first word decides — it is
+    # the site name in every label this function builds.
+    picked="${picked%% *}"
+    [ "${picked}" = "primary" ] && { printf '%s' "${PRIMARY_SITE}"; return 0; }
+    printf '%s' "${picked}"
 }
 
 # Local refs, ordered by usefulness: main, releases newest first, the pre-9
