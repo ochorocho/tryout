@@ -274,6 +274,29 @@ ask_site() {
 
 # Local refs, ordered by usefulness: main, releases newest first, the pre-9
 # TYPO3_x-y refs last. checkout fetches afterwards anyway.
+# "<number> - <subject>" for each of the space-separated change numbers in $1,
+# looked up in the TSV rows that follow. A number with no row — a hand-typed one —
+# still gets a line, just without a subject.
+describe_patches() {
+    local wanted="$1"; shift
+    local id row n s rest
+    for id in ${wanted}; do
+        s=""
+        for row in "$@"; do
+            # All the way to `rest`: a two-variable read would put every
+            # remaining column into the subject, owner and scores included.
+            IFS=$'\t' read -r n s rest <<<"${row}"
+            [ "${n}" = "${id}" ] && break
+            s=""
+        done
+        if [ -n "${s}" ]; then
+            printf '%s - %s\n' "${id}" "${s}"
+        else
+            printf '%s\n' "${id}"
+        fi
+    done
+}
+
 # Pad a string to <width> COLUMNS. printf's %-Ns counts bytes, so a name like
 # "Frédéric" or a "…" would leave the column short and shift everything after it.
 pad_display() {

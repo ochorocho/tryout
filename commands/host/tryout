@@ -155,8 +155,13 @@ cmd_patch() {
 
     # Applying is per-checkout; the patch list is what makes it survive a reset
     # or a fresh start. Offer once, and only when something was actually applied.
+    # Name each change rather than listing bare numbers: what is about to be
+    # written to a config file should be readable without looking anything up.
     echo ""
-    read -r -p "Add ${picks[*]} to your patch list so they reapply on ddev start? [y/N] " confirm
+    echo "  Add to your patch list, so they reapply on every ddev start:"
+    describe_patches "${picks[*]}" "${rows[@]}" | sed 's/^/    /'
+    echo ""
+    read -r -p "  Add them? [y/N] " confirm
     if [[ "${confirm}" =~ ^[Yy]$ ]]; then
         persist_patches "${picks[@]}"
     fi

@@ -2366,3 +2366,27 @@ YAML
     fail "a multi-byte ellipsis in the truncation shortens the padded column"
   fi
 }
+
+@test "the persist prompt names each change, not just its number" {
+  # "Add 93838 to your patch list?" tells the user nothing about what 93838 is,
+  # and it is about to be written into a config file they keep.
+  set -eu -o pipefail
+  run helper_eval "describe_patches '95347 93838' \
+    \"\$(printf '95347\\t[TASK] Skip database setup\\tWouter Wolters\\tV+1')\" \
+    \"\$(printf '93838\\t[FEATURE] Translate forms\\tJosua Vogel\\tV+1')\""
+  assert_success
+  assert_line "95347 - [TASK] Skip database setup"
+  assert_line "93838 - [FEATURE] Translate forms"
+
+  # A number nobody listed still gets a line rather than vanishing.
+  run helper_eval "describe_patches '11111' \
+    \"\$(printf '95347\\t[TASK] Something\\tX\\tV+1')\""
+  assert_success
+  assert_output "11111"
+
+  # And the prompt uses it.
+  local body
+  body=$(sed -n '/^cmd_patch() {/,/^}/p' "${DIR}/commands/host/tryout")
+  printf '%s\n' "${body}" | grep -q 'describe_patches' \
+    || fail "the confirmation still lists bare numbers"
+}

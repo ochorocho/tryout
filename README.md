@@ -313,8 +313,17 @@ x toggle • ←↓↑→ navigate • enter submit • ctrl+a select all
 The columns are the change number, its subject, its owner and its review state
 (`CR` is Code-Review, `V` is Verified). Changes still marked work-in-progress are
 prefixed `WIP`. Everything picked is applied in the order shown, with a single
-rebuild at the end, and you are asked once afterwards whether to add the numbers
-to your patch list so they come back on the next `ddev start`.
+rebuild at the end, and you are asked once afterwards whether to add them to your
+patch list so they come back on the next `ddev start` — listed by number *and*
+subject, since that is what ends up in a file you keep:
+
+```text
+  Add to your patch list, so they reapply on every ddev start:
+    95347 - [TASK] Skip database setup for database-free functional tests
+    93838 - [FEATURE] Translate forms in the backend
+
+  Add them? [y/N]
+```
 
 `--all-branches` widens the list beyond the branch in use. The picker needs a
 terminal and [gum](https://github.com/charmbracelet/gum); without either — in
