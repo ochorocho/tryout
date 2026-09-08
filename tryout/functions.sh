@@ -1574,6 +1574,20 @@ open_worktree_in_herdr() {
     fi
 
     if herdr_worktree_is_open "${dir}"; then
+        # Open, but not necessarily COMPLETE. A workspace opened by hand, or by a
+        # scheme older than the Terminal tab or the panel, is missing whichever of
+        # those did not exist yet — and returning here is what left it that way:
+        # `ddev tryout herdr <name>` skips the reconcile pass, so nothing else
+        # would ever reach it. Backfill the same three things the fresh path ends
+        # with; each is a no-op when already present.
+        local open_ws; open_ws="$(herdr_workspace_id "${name}")"
+        # Adopted under another label, so herdr_workspace_id cannot find it. The
+        # bare run's sync renames those; here, leave it be rather than guess.
+        if [ -n "${open_ws}" ]; then
+            ensure_terminal_tab "${open_ws}" "${dir}" || true
+            ensure_first_tab_label "${open_ws}" || true
+            ensure_panel_pane "${open_ws}" "${dir}" "${name}" || true
+        fi
         info "'${name}' is already open — skipping"
         return 0
     fi

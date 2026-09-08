@@ -3554,6 +3554,37 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
   assert_output ""
 }
 
+@test "an already-open workspace still gets its tab and panel" {
+  set -eu -o pipefail
+  # Open is not the same as complete. A workspace opened by hand, or before the
+  # Terminal tab and the panel existed, is missing whatever came later — and the
+  # early return for "already open" is what kept it that way: `ddev tryout herdr
+  # <name>` skips the reconcile pass, so nothing else ever reached it. That is
+  # how typo3-core-main ended up as the one workspace with no tryout panel.
+  local fn
+  fn=$(sed -n '/^open_worktree_in_herdr()/,/^}/p' "${DIR}/tryout/functions.sh")
+
+  # The skip branch, from "is open" to its return, must do the backfill.
+  local skip
+  # Comments stripped: they name these helpers while explaining them, so a grep
+  # over the raw text passes even when the call itself is gone.
+  skip=$(printf '%s\n' "${fn}" | sed -n '/herdr_worktree_is_open/,/^    fi$/p' \
+         | grep -v '^[[:space:]]*#')
+  [ -n "${skip}" ] || fail "no already-open branch"
+  printf '%s' "${skip}" | grep -q 'ensure_panel_pane' \
+    || fail "an open workspace must still get the panel"
+  printf '%s' "${skip}" | grep -q 'ensure_terminal_tab' \
+    || fail "an open workspace must still get its Terminal tab"
+  # Each is a no-op when already present, so this is safe to run every time —
+  # but it must not abort the run when one fails, since other worktrees follow.
+  printf '%s' "${skip}" | grep -q 'ensure_panel_pane .* || true' \
+    || fail "a backfill failure must not end the run"
+  # And it needs the workspace id, which is keyed on the core-<name> label: a
+  # workspace still under some other label is left to the bare run's sync.
+  printf '%s' "${skip}" | grep -q 'herdr_workspace_id' \
+    || fail "the backfill must resolve the workspace it is repairing"
+}
+
 @test "the panel pane is docked once, beside the agent" {
   set -eu -o pipefail
   # It sits next to the agent, not in the Terminal tab: the panel drives the
