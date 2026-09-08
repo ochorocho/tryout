@@ -1162,6 +1162,118 @@ FAKE
   run helper_eval "printf 'main\n' | ${nogum} ui_choose 'pick' benni main"
   assert_success
   assert_output --partial "main"
+
+  # A confirm with no terminal is "could not ask" (2), never a yes — with or
+  # without gum, and whatever is piped at it.
+  run helper_eval "${nogum} ui_confirm 'sure?' </dev/null"
+  assert_equal "${status}" 2
+  run helper_eval "printf 'y\n' | ${nogum} ui_confirm 'sure?'"
+  assert_equal "${status}" 2
+}
+
+@test "ui_confirm separates a declined answer from an unanswerable one" {
+  set -eu -o pipefail
+
+  # The three-way return is the whole point of the helper. A caller says
+  # "Aborted." for a no and "pass --yes" for no-terminal, and cannot tell them
+  # apart from gum, which exits 1 for both. 2 means nobody was there to ask.
+  run helper_eval "ui_confirm 'sure?' </dev/null"
+  assert_equal "${status}" 2
+  # Nothing was asked, so nothing may be printed into whatever captured us.
+  refute_output --partial "sure?"
+
+  # A piped "y" is not a person answering: no terminal is still 2, never 0.
+  # Anything else here would let a script wipe a database by accident.
+  run helper_eval "printf 'y\n' | ui_confirm 'sure?'"
+  assert_equal "${status}" 2
+}
+
+@test "ui_confirm defaults to no, so Enter never confirms" {
+  set -eu -o pipefail
+  command -v expect >/dev/null 2>&1 || skip "expect not installed"
+
+  # gum preselects Yes unless --default=false, so a bare Enter used to confirm.
+  # Every prompt here is [y/N]; Enter has to decline in BOTH renderings.
+  local script="source '${DIR}/tryout/functions.sh'; rc=0; ui_confirm 'Delete this?' || rc=\$?; echo \"RC=\${rc}\""
+
+  # gum branch.
+  run expect -c "log_user 0
+    set timeout 10
+    spawn bash -c {${script}}
+    expect -re {Delete this}
+    send -- \"\r\"
+    expect -re {RC=([0-9]+)} { puts \$expect_out(1,string) }"
+  assert_output --partial "1"
+
+  # plain branch, gum off PATH.
+  run expect -c "log_user 0
+    set timeout 10
+    spawn bash -c {export PATH=/usr/bin:/bin:/usr/sbin:/sbin; ${script}}
+    expect -re {\\[y/N\\]}
+    send -- \"\r\"
+    expect -re {RC=([0-9]+)} { puts \$expect_out(1,string) }"
+  assert_output --partial "1"
+}
+
+@test "ui_confirm reads y as yes and an arrow key as no" {
+  set -eu -o pipefail
+  command -v expect >/dev/null 2>&1 || skip "expect not installed"
+
+  # An arrow key arrives as ESC [ A. Stripping only the ESC would leave a
+  # printable "[A"; a stray "y" in such a tail must never read as a yes.
+  local script="source '${DIR}/tryout/functions.sh'; export PATH=/usr/bin:/bin:/usr/sbin:/sbin; rc=0; ui_confirm 'Delete this?' || rc=\$?; echo \"RC=\${rc}\""
+  local drive="log_user 0
+    set timeout 10
+    spawn bash -c {${script}}
+    expect -re {\\[y/N\\]}"
+
+  run expect -c "${drive}
+    send -- \"y\r\"
+    expect -re {RC=([0-9]+)} { puts \$expect_out(1,string) }"
+  assert_output --partial "0"
+
+  run expect -c "${drive}
+    send -- \"\033\[A\r\"
+    expect -re {RC=([0-9]+)} { puts \$expect_out(1,string) }"
+  assert_output --partial "1"
+}
+
+@test "confirmations go through ui_confirm, not a hand-rolled read" {
+  set -eu -o pipefail
+
+  # A raw `read -r -p` cannot tell a no from an empty room, and under `set -u`
+  # the unset variable it leaves behind aborts the command with a bash error
+  # instead of a usable message. That is what cmd_delete used to do.
+  run grep -nE 'read -r -p.*\[y/N\]' "${DIR}/commands/host/tryout"
+  assert_failure
+
+  # And gum is optional, so a raw `gum confirm` would hard-break the no-gum path.
+  run bash -c "grep -n 'gum confirm' '${DIR}/commands/host/tryout' '${DIR}/tryout/commands.sh'"
+  assert_failure
+}
+
+@test "worktree remove asks only where something is irreversibly lost" {
+  set -eu -o pipefail
+
+  # --force switches off git's dirty-tree refusal, and a served worktree takes
+  # its database with it. Those two ask; a plain remove stays a single keystroke,
+  # because git already refuses it when there is anything to lose.
+  local branch
+  branch="$(awk '/^        remove\|rm\)/{f=1} f{print} f&&/^            ;;/{exit}' \
+    "${DIR}/commands/host/tryout")"
+
+  printf '%s' "${branch}" | grep -q 'ui_confirm' \
+    || fail "worktree remove must confirm before an irreversible removal"
+
+  # Grepping for the words alone would pass even with the gate rewritten to
+  # `if false`. Pin the condition itself: both irreversible cases must be in it.
+  local gate
+  gate="$(printf '%s' "${branch}" | grep -n 'ui_confirm' | head -1 | cut -d: -f1)"
+  gate="$(printf '%s' "${branch}" | sed -n "1,${gate}p" | grep -E '^\s*if .*; then$' | tail -1)"
+  printf '%s' "${gate}" | grep -q 'wt_force' \
+    || fail "the confirmation must be gated on --force, got: ${gate}"
+  printf '%s' "${gate}" | grep -q 'site_is_served' \
+    || fail "a served worktree loses its database, so it must confirm too, got: ${gate}"
 }
 
 @test "have_tty tests stderr, not stdout, so the chooser survives \$(...)" {
@@ -1196,7 +1308,7 @@ FAKE
   # ui_choose and ui_input once carried 2>/dev/null to hush "could not open
   # TTY"; the effect was a chooser the user could not see. have_tty guards the
   # no-terminal case instead.
-  run grep -nE 'gum (choose|filter|input) .*2>/dev/null' "${DIR}/tryout/functions.sh"
+  run grep -nE 'gum (choose|filter|input|confirm) .*2>/dev/null' "${DIR}/tryout/functions.sh"
   assert_failure
   # The same trap one level up: hushing an ask_* helper hides the gum UI it draws.
   # The popup did exactly that and its branch chooser answered nothing.

@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=3
+TRYOUT_VERSION=4
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -136,30 +136,24 @@ ui_choose() {
 
     if have_gum && have_tty; then
         local picked
-        # gum draws its interface on STDERR — never redirect it here, or the
-        # user is asked to choose from a list they cannot see. have_tty above
-        # is what keeps gum's "could not open TTY" complaint off a pipe.
-        # Always `gum choose`, never `gum filter` for long lists: filter cannot
-        # be cancelled with ESC (only Ctrl-C), and ESC-cancels is the one rule
-        # every prompt here follows. A taller list is the trade.
+        # Never redirect stderr: that is where gum draws the list.
+        # `choose`, never `filter` — filter cannot be cancelled with ESC.
         picked="$(printf '%s\n' "$@" | gum choose --header "${prompt}" --height 15)"
         # An empty answer means no TTY or a cancel; either way, nothing was chosen.
         [ -n "${picked}" ] && { printf '%s' "${picked}"; return 0; }
         return 1
     fi
 
-    # No gum, or no terminal for it. Reading a piped answer still works, but the
-    # prompt itself is only drawn when there is a terminal to draw it on —
-    # otherwise it lands in whatever is capturing this.
+    # A piped answer still works; the prompt is only drawn where it can be seen,
+    # or it lands in whatever is capturing this.
     if [ -t 2 ]; then
         printf '  %s\n' "$*" >&2
         printf '  %s: ' "${prompt}" >&2
     fi
     local answer=""
     read -r answer || return 1
-    # An arrow key at a plain read arrives as a full escape sequence (ESC [ B).
-    # Dropping the ESC byte alone would leave a printable "[B" that reads like a
-    # typed name, so strip the whole sequence, then any stray control bytes.
+    # An arrow key arrives as a full escape sequence (ESC [ B). Dropping the ESC
+    # alone would leave a printable "[B" that reads like a typed name.
     answer="$(printf '%s' "${answer}" \
         | sed $'s/\033\[[0-9;]*[A-Za-z]//g; s/\033[NOP]*[A-Za-z]//g' \
         | tr -d '\000-\037')"
@@ -216,6 +210,35 @@ ui_input() {
     read -r answer || return 1
     [ -n "${answer}" ] || return 1
     printf '%s' "${answer}"
+}
+
+# Confirm a destructive action.
+#   0 confirmed   1 declined (no, ESC, Ctrl-C)   2 no terminal to ask on
+# 1 and 2 must stay apart: callers say "Aborted." for one, "pass --yes" for the
+# other. gum conflates them — it exits 1 either way — hence the have_tty gate.
+ui_confirm() {
+    local prompt="$1"
+    have_tty || return 2
+
+    if have_gum; then
+        # rc, not `if`: a bare `gum confirm` under `set -e` kills the script.
+        local rc=0
+        # --default=false, or gum preselects Yes and a bare Enter confirms.
+        gum confirm --default=false --affirmative "Yes" --negative "No" "${prompt}" || rc=$?
+        [ "${rc}" -eq 0 ] && return 0
+        return 1
+    fi
+
+    # stderr, not stdout: DDEV pipes a host command's stdout, always.
+    printf '  %s [y/N] ' "${prompt}" >&2
+    local answer=""
+    read -r answer || return 1
+    # Strip escape sequences — see ui_choose; a stray "y" in one would confirm.
+    answer="$(printf '%s' "${answer}" \
+        | sed $'s/\033\[[0-9;]*[A-Za-z]//g; s/\033[NOP]*[A-Za-z]//g' \
+        | tr -d '\000-\037')"
+    case "${answer}" in [Yy]|[Yy][Ee][Ss]) return 0 ;; esac
+    return 1
 }
 
 # Run a command behind a spinner, preserving its exit code — the error handling

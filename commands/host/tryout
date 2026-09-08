@@ -189,8 +189,8 @@ cmd_patch() {
     echo "  Add to your patch list, so they reapply on every ddev start:"
     describe_patches "${picks[*]}" "${rows[@]}" | sed 's/^/    /'
     echo ""
-    read -r -p "  Add them? [y/N] " confirm
-    if [[ "${confirm}" =~ ^[Yy]$ ]]; then
+    # Nothing is destroyed either way: a decline and no terminal both mean "skip".
+    if ui_confirm "Add them?"; then
         persist_patches "${picks[@]}"
     fi
 }
@@ -251,15 +251,19 @@ cmd_delete() {
         sites=("${PRIMARY_SITE}")
     fi
 
-    # The question is asked here, where the terminal is; the container only ever
-    # sees a confirmed request.
+    # Asked here, where the terminal is; the container only sees a confirmed
+    # request. The warning stays outside the prompt — it names every database and
+    # fileadmin about to go, and a confirm renders one line.
     if [ "${assume_yes}" != "true" ]; then
         delete_warning "${target}" "${sites[@]}"
-        read -r -p "Are you sure? [y/N] " confirm
-        if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
-            info "Aborted."
-            return
-        fi
+        local rc=0
+        ui_confirm "Are you sure?" || rc=$?
+        case "${rc}" in
+            1) info "Aborted."; return ;;
+            2) error "Refusing to wipe without confirmation — nothing to ask on."
+               error "  → ddev tryout delete${target:+ ${target}} --yes"
+               return 1 ;;
+        esac
     fi
 
     # The primary is the container's default, and its sentinel is not a word the
@@ -407,6 +411,25 @@ cmd_worktree() {
             shift || true
             [ -n "${name}" ] || name="$(ask_worktree "Remove which worktree?" nonprimary)" \
                 || { explain_missing "ddev tryout worktree remove <name> [--force]"; return 1; }
+            # Ask only where something is lost. A plain remove is already guarded
+            # by git's refusal to drop a dirty tree; --force switches that off,
+            # and a served worktree takes its database with it.
+            local wt_force="false" a
+            for a in "$@"; do [ "${a}" = "--force" ] && wt_force="true"; done
+            if [ "${wt_force}" = "true" ] || site_is_served "${name}"; then
+                local what="worktree '${name}'"
+                core_worktree_is_dirty "$(core_worktree_dir "${name}")" \
+                    && what="${what} and its uncommitted changes"
+                site_is_served "${name}" && what="${what}, plus its site and database"
+                local rc=0
+                ui_confirm "Remove ${what}?" || rc=$?
+                case "${rc}" in
+                    1) info "Aborted."; return ;;
+                    2) error "Refusing to remove without confirmation — nothing to ask on."
+                       error "  → run it in a terminal, or remove it without --force"
+                       return 1 ;;
+                esac
+            fi
             delegate worktree remove "${name}" "$@"
             ;;
 
