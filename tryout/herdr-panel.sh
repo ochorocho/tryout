@@ -102,9 +102,14 @@ build_menu() {
         add "checkout" "switch TYPO3 version" "checkout"
         add "patch" "apply a Gerrit change" "patch"
         add "composer" "regenerate the overlay" "composer"
+        # Only here: making a worktree is a project-level act, and the popup asks
+        # for the name and the branch. A scoped panel offers `worktree remove`
+        # instead — the one that is about the checkout it is looking at.
+        add "worktree add" "create a new worktree" "worktree add"
     elif [ "${STATE}" = "unserved" ]; then
         add "worktree serve" "give it its own URL" "worktree serve ${WORKTREE}"
         add "worktree use" "make it the primary" "worktree use ${WORKTREE}"
+        add "worktree remove" "delete this checkout" "worktree remove ${WORKTREE}"
     else
         add "checkout" "switch TYPO3 version" "checkout${site:+ --site ${site}}"
         add "patch" "apply a Gerrit change" "patch${site:+ --site ${site}}"
@@ -118,6 +123,10 @@ build_menu() {
             && add "composer" "regenerate the overlay" "composer"
         [ "${STATE}" = "served" ] \
             && add "worktree use" "make it the primary" "worktree use ${WORKTREE}"
+        # Names its own worktree, like every other scoped row, so the popup only
+        # has to confirm. It always confirms here: a served worktree takes its
+        # site and database with it, which is exactly what cmd_worktree asks about.
+        add "worktree remove" "delete this checkout" "worktree remove ${WORKTREE}"
         # Last, and the only rows that run right here with no popup: they raise
         # the browser and are done, so a popup would just sit in front of it.
         # Two rows rather than one with a flag — the panel has no way to ask.
@@ -172,10 +181,14 @@ trap cleanup EXIT INT TERM
 # Sequential output needs no coordinates at all, so the question does not arise.
 render() {
     local i=0
-    # The primary can move under an open panel — `worktree use` from a shell or
-    # another panel — and a stale header would then claim a role this worktree no
-    # longer has. Two filesystem reads, so re-asking every draw costs nothing.
-    STATE="$(worktree_state)"
+    # Rebuild the whole menu, not just the header. What this worktree IS can change
+    # under an open panel — `worktree use` elsewhere, or a command this panel just
+    # ran — and the rows have to follow, not only the state line. The popup path
+    # especially: it returns as soon as the popup STARTS, long before its command
+    # finishes, so there is no later moment it could rebuild from. Cheap enough to
+    # do unconditionally: build_menu is the same two filesystem reads the header
+    # needed anyway, and the draw only happens on a keystroke.
+    build_menu
     printf '\033[2J\033[H'
     # Which worktree this drives and what it is: the same panel in another
     # workspace offers a different list, and that only reads if the scope is shown.

@@ -2888,11 +2888,28 @@ panel_menu() { # $1=worktree $2=approot
   assert_success
   assert_output --partial "STATE=served"
 
-  # And render must be the thing that re-asks, not only build_menu.
+  # And render is what re-asks, by rebuilding the whole menu: the ROWS have to
+  # follow a state change too, not just the header. The popup path is why it must
+  # happen here — it returns as soon as the popup starts, so there is no later
+  # moment it could rebuild from.
   local fn
-  fn=$(sed -n '/^render()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  printf '%s' "${fn}" | grep -q 'worktree_state' \
-    || fail "render must recompute the state, or the header goes stale"
+  # Comments stripped: this function's own comment explains why it calls
+  # build_menu, so a grep over the raw text passes even when the call is gone.
+  fn=$(sed -n '/^render()/,/^}/p' "${DIR}/tryout/herdr-panel.sh" | grep -v '^[[:space:]]*#')
+  printf '%s' "${fn}" | grep -q 'build_menu' \
+    || fail "render must rebuild the menu, or the rows go stale"
+
+  # Behaviour: the rows follow, not only the state line. alpha is served above,
+  # so unserving it must drop the rows that need a site.
+  local rows
+  rows="$(panel_menu alpha "${FAKEROOT}")"
+  printf '%s' "${rows}" | grep -q 'ROW reset|' || fail "a served panel offers reset"
+  rm "${FAKEROOT}/sites/alpha/.tryout-site"
+  rows="$(panel_menu alpha "${FAKEROOT}")"
+  printf '%s' "${rows}" | grep -q 'ROW reset|' \
+    && fail "reset survived unserving: the rows did not follow the state"
+  printf '%s' "${rows}" | grep -q 'ROW worktree serve|' \
+    || fail "an unserved panel must offer the way to give it a site"
 }
 
 @test "a new worktree gets a branch of its own, tracking the base" {
@@ -3130,6 +3147,50 @@ panel_menu() { # $1=worktree $2=approot
   "
   assert_success
   assert_output --partial "https://example.ddev.site"
+}
+
+@test "worktree add is offered off-worktree, remove only on one" {
+  set -eu -o pipefail
+  # They are opposites in scope. Creating a worktree is a project-level act and
+  # the popup asks for everything it needs, so it belongs where nothing is scoped.
+  # Removing one is about a specific checkout, so it belongs on that checkout's
+  # own panel — where it names itself and the popup only has to confirm.
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-cold" \
+           "${FAKEROOT}/typo3-core-live" "${FAKEROOT}/sites/live"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
+
+  # No worktree: add, and nothing to remove.
+  run panel_menu "" "${FAKEROOT}"
+  assert_success
+  assert_output --partial "ROW worktree add|worktree add"
+  refute_output --partial "ROW worktree remove|"
+
+  # Every scoped shape offers remove, naming its own worktree — and never add,
+  # which would be a second way to do a thing this panel is not about.
+  local w
+  for w in main live cold; do
+    run panel_menu "${w}" "${FAKEROOT}"
+    assert_success
+    assert_output --partial "ROW worktree remove|worktree remove ${w}"
+    refute_output --partial "ROW worktree add|"
+  done
+
+  # remove never carries the sentinel: cmd_worktree passes its argument through.
+  run panel_menu main "${FAKEROOT}"
+  assert_success
+  refute_output --partial "@primary"
+
+  # It goes through the popup, not the direct path: it prompts before deleting a
+  # checkout, and a confirmation cannot happen in a pane with no terminal.
+  local menu
+  menu=$(sed -n '/^build_menu()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
+  printf '%s' "${menu}" | grep -q 'add "worktree remove" .* direct$' \
+    && fail "remove must not skip the popup: it has to confirm first"
+  printf '%s' "${menu}" | grep -q 'add "worktree add" .* direct$' \
+    && fail "add must not skip the popup: it asks for a name and a branch"
+  printf '%s' "${menu}" | grep -q 'add "worktree add"' \
+    || fail "the off-worktree panel must offer worktree add"
 }
 
 @test "the launch rows come last, in frontend then backend order" {
