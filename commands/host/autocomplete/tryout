@@ -272,6 +272,7 @@ case "${VERB}" in
         c herdr    "Open Core worktrees as herdr workspaces"
         c panel    "Dock a clickable command panel (inside herdr)"
         c exec     "Run a command in a site's PHP/root/database"
+        c launch   "Open a site in the browser"
         c reset    "Reset Core to current branch + rebuild"
         c delete   "Wipe DB + fileadmin, fresh setup"
         c help     "Show help"
@@ -311,6 +312,12 @@ case "${VERB}" in
     reset)
         # reset [<site>]
         [ "${POS}" -le 1 ] && sites
+        ;;
+
+    launch)
+        # launch [<worktree>] — bare, it uses the worktree you are standing in.
+        [ "${POS}" -le 1 ] && ! wants_flag && sites
+        flag --backend "open /typo3/ instead of the frontend"
         ;;
 
     exec)

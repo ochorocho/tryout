@@ -1701,7 +1701,7 @@ LINES
   [ -n "${ctr_verbs}" ]
   for verb in ${host_verbs}; do
     case "${verb}" in
-      herdr|panel|help) continue ;;  # host by nature: herdr panes, and static text
+      herdr|panel|launch|help) continue ;;  # host by nature: herdr panes, a browser, static text
     esac
     printf '%s\n' "${ctr_verbs}" | grep -qx "${verb}" || fail "container dispatcher lacks '${verb}'"
   done
@@ -3001,6 +3001,113 @@ panel_menu() { # $1=worktree $2=approot
   "
   assert_success
   assert_output --partial "reached with BRANCH=[]"
+}
+
+@test "worktree_name_for_path names the worktree a path sits in" {
+  set -eu -o pipefail
+  # `launch` reads the cwd with this, and sync_herdr_workspaces reads a pane's
+  # cwd with it. One definition, because the two subtleties below are easy to
+  # get wrong twice: /private/var, and how deep a match is allowed to be.
+  local root
+  root="$(mktemp -d)"
+  mkdir -p "${root}/typo3-core-jiiha/Build" "${root}/typo3-core-main" "${root}/packages"
+  ln -sfn typo3-core-main "${root}/typo3-core"
+
+  run bash -c "
+    set -euo pipefail
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    PROJECT_ROOT='${root}'
+    plain_core_name() { echo plainclone; }
+    p() { printf '%s ' \"\$(worktree_name_for_path \"\$1\" \"\${2:-any}\" || echo none)\"; }
+    p '${root}/typo3-core-jiiha'
+    p '${root}/typo3-core-jiiha' top
+    p '${root}/typo3-core-jiiha/Build'
+    p '${root}/typo3-core-jiiha/Build' top
+    p '${root}/packages'
+    p '${root}'
+    p '${root}/typo3-core'
+    echo
+  "
+  assert_success
+  # in-worktree | same, top | subdir | subdir rejected by top | not ours | root | via the symlink
+  assert_output "jiiha jiiha jiiha none none none main "
+  rm -rf "${root}"
+}
+
+@test "launch opens the worktree you are standing in" {
+  set -eu -o pipefail
+  local fn
+  fn=$(sed -n '/^cmd_launch()/,/^}/p' "${DIR}/commands/host/tryout")
+  [ -n "${fn}" ] || fail "no cmd_launch"
+
+  # The cwd is the whole point: a bare `launch` inside a checkout must not ask.
+  printf '%s' "${fn}" | grep -q 'worktree_name_for_path "${PWD}"' \
+    || fail "launch must resolve the worktree from the cwd"
+  # The active worktree IS the primary, and only the primary knows its own URL
+  # (a non-standard port lives in DDEV_PRIMARY_URL, not in the hostname).
+  printf '%s' "${fn}" | grep -q 'active_worktree_name' \
+    || fail "the active worktree must resolve to the primary site"
+  printf '%s' "${fn}" | grep -q 'DDEV_PRIMARY_URL' \
+    || fail "the primary URL must come from DDEV, not be rebuilt"
+  # An unserved checkout has no URL; opening some other site's would be worse
+  # than refusing, so it refuses with the two ways to give it one.
+  printf '%s' "${fn}" | grep -q 'is not served' \
+    || fail "an unserved worktree must be refused, not silently redirected"
+  # And outside a worktree it asks, then falls through to the usage line.
+  printf '%s' "${fn}" | grep -q 'ask_site' \
+    || fail "launch must ask when the cwd answers nothing"
+  printf '%s' "${fn}" | grep -q 'explain_missing' \
+    || fail "a cancelled pick must explain instead of failing bare"
+}
+
+@test "launch takes the active worktree by name, not just @primary" {
+  set -eu -o pipefail
+  # The active worktree has no sites/<name>/ marker — it IS the primary — so
+  # looking it up by name reads as "not served". The panel passes exactly that
+  # (its own worktree name, primary included), and so does anyone typing the
+  # name `worktree list` shows them.
+  local fn
+  fn=$(sed -n '/^cmd_launch()/,/^}/p' "${DIR}/commands/host/tryout")
+  printf '%s' "${fn}" | grep -q 'active_worktree_name 2>/dev/null.*site="${PRIMARY_SITE}"' \
+    || fail "the active worktree's name must resolve to the primary site"
+
+  # The panel names its own worktree for launch, the way it does for reset.
+  local menu
+  menu=$(sed -n '/^build_menu()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
+  printf '%s' "${menu}" | grep -q 'add "launch" .*@primary' \
+    && fail "the panel must never pass the @primary sentinel"
+  printf '%s' "${menu}" | grep -q 'add "launch" .* "launch ${site}"' \
+    || fail "the panel must launch its own worktree"
+}
+
+@test "launch is host-only and never reaches the container" {
+  set -eu -o pipefail
+  # There is no browser in the web container, and nothing here needs one — so
+  # unlike almost every other verb, launch does its work on the host.
+  local fn
+  fn=$(sed -n '/^cmd_launch()/,/^}/p' "${DIR}/commands/host/tryout")
+  printf '%s' "${fn}" | grep -q 'delegate ' \
+    && fail "launch must not delegate: the container has no browser"
+
+  # open_url must not try either, and must still print the URL when it cannot open.
+  local ou
+  ou=$(sed -n '/^open_url()/,/^}/p' "${DIR}/tryout/functions.sh")
+  [ -n "${ou}" ] || fail "no open_url"
+  printf '%s' "${ou}" | grep -q 'TRYOUT_IN_CONTAINER' \
+    || fail "open_url must not spawn an opener inside the container"
+  printf '%s' "${ou}" | grep -q 'xdg-open' \
+    || fail "open_url must handle Linux"
+  printf '%s' "${ou}" | grep -q 'darwin\*|Darwin' \
+    || fail "open_url must handle macOS"
+
+  # No opener is not a failure: the URL is the useful part.
+  run bash -c "
+    set -euo pipefail
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    TRYOUT_IN_CONTAINER=1 open_url https://example.ddev.site
+  "
+  assert_success
+  assert_output --partial "https://example.ddev.site"
 }
 
 @test "the panel offers download where there is a site to update" {

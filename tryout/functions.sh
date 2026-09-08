@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=10
+TRYOUT_VERSION=11
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -711,6 +711,67 @@ validate_worktree_name() {
 core_is_symlinked() { [ -L "${CORE_DIR}" ]; }
 
 # Name of the active worktree, empty on the legacy plain-clone layout.
+# Hand a URL to the desktop's browser. Host-only: the container has no browser,
+# and DDEV runs host commands with a real environment, so `open`/`xdg-open` are
+# there to be found.
+#
+# Output goes nowhere: xdg-open is chatty on some desktops and prints straight
+# over the line we just wrote. The URL is echoed regardless, so a headless box
+# (or a container shell) still leaves the user something to click.
+open_url() {
+    local url="${1:-}" opener=""
+    [ -n "${url}" ] || return 1
+
+    case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+        darwin*|Darwin) opener="open" ;;
+        *)              opener="xdg-open" ;;
+    esac
+
+    if [ "${TRYOUT_IN_CONTAINER:-}" != "1" ] && command -v "${opener}" >/dev/null 2>&1; then
+        if "${opener}" "${url}" >/dev/null 2>&1; then
+            success "Opened ${url}"
+            return 0
+        fi
+    fi
+
+    # No opener, or it refused. Not an error: the URL is the useful part.
+    info "Open: ${url}"
+}
+
+# The Core worktree a path belongs to, or nothing if it is not in one.
+#
+# `top` matches only a worktree's own directory — what herdr wants, since a
+# workspace sitting in a subdirectory is not that worktree's workspace. The
+# default also matches anything INSIDE one, which is what a cwd needs: you run
+# `ddev tryout launch` from wherever you happen to be in the checkout.
+#
+# The path is resolved first: on macOS the project is reached through /var while
+# other tools report /private/var, and a plain prefix test would match neither.
+worktree_name_for_path() {
+    local path="${1:-}" mode="${2:-any}" root real name=""
+    [ -n "${path}" ] || return 1
+    root="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P)" || return 1
+    real="$(cd "${path}" 2>/dev/null && pwd -P)" || return 1
+
+    local rest=""
+    case "${real}" in
+        "${root}/typo3-core-"*) name="${real#"${root}/typo3-core-"}"
+                                rest="${name#*/}"
+                                [ "${rest}" = "${name}" ] && rest=""
+                                name="${name%%/*}" ;;
+        "${root}/typo3-core")   name="$(plain_core_name)" ;;
+        "${root}/typo3-core/"*) name="$(plain_core_name)"
+                                rest="${real#"${root}/typo3-core/"}" ;;
+        *) return 1 ;;
+    esac
+
+    # typo3-core-<name>/Build/... is still <name>; only `top` insists on the root.
+    [ "${mode}" = "top" ] && [ -n "${rest}" ] && return 1
+
+    [ -n "${name}" ] || return 1
+    printf '%s' "${name}"
+}
+
 active_worktree_name() {
     core_is_symlinked || return 0
     basename "$(readlink "${CORE_DIR}")" | sed "s|^$(basename "${CORE_WORKTREE_PREFIX}")||"
@@ -1382,12 +1443,7 @@ sync_herdr_workspaces() {
 
         # Inside the project: is it one of our Core worktrees?
         name=""
-        case "${real}" in
-            "${root}/typo3-core-"*) name="${real#"${root}/typo3-core-"}" ;;
-            "${root}/typo3-core")   name="$(plain_core_name)" ;;
-        esac
-        # Only the top level of a worktree counts, not a directory inside one.
-        case "${name}" in */*) name="" ;; esac
+        name="$(worktree_name_for_path "${real}" top)"
 
         if [ -n "${name}" ]; then
             # Ours. Fix the label if it is not the one everything else keys on.

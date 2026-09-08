@@ -140,6 +140,8 @@ ddev tryout help                Show the built-in help
 
 ddev tryout worktree            Manage side-by-side Core checkouts (own help)
 ddev tryout exec <site> <cmd>   Run a command in a site's PHP, root and database
+ddev tryout launch              Open the worktree you are in, in the browser
+ddev tryout launch <worktree>   Open that worktree's site (--backend for /typo3/)
 
 ddev tryout herdr               Open every Core worktree as a herdr workspace
 ddev tryout herdr new           Create a worktree and open it
@@ -741,7 +743,24 @@ ddev tryout checkout 13.4 v13
 ddev tryout delete v13          # only that site's DB and fileadmin
 ddev tryout delete --all        # every site, named in the confirmation
 ddev tryout exec v13 vendor/bin/typo3 cache:flush
+ddev tryout launch v13          # open its URL in the browser
 ```
+
+### Opening a site in the browser
+
+`launch` opens the site of the worktree you are standing in, so from inside a
+checkout it needs no argument at all:
+
+```bash
+cd typo3-core-v13
+ddev tryout launch              # https://v13.<project>.ddev.site
+ddev tryout launch --backend    # ...and straight into /typo3/
+```
+
+Outside a worktree it asks, listing each served site with the URL it would open.
+A worktree that is not served has no URL, and `launch` says so rather than
+opening some other site's: give it one with `worktree serve`, or make it the
+primary with `worktree use`.
 
 ### Opening worktrees in herdr
 

@@ -101,6 +101,8 @@ build_menu() {
         add "download" "update from its base branch" "download${site:+ ${site}}"
         add "reset" "reset Core + rebuild" "reset${site:+ ${site}}"
         add "exec" "run a command in it" "exec ${site}"
+        # The popup runs on the host, so this reaches a real browser.
+        add "launch" "open its URL in the browser" "launch ${site}"
         # composer has no site: it always rewrites the PRIMARY overlay. Offering
         # it on a served worktree's panel would silently target the wrong Core —
         # exactly what this menu exists to prevent.

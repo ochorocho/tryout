@@ -673,6 +673,81 @@ cmd_panel() {
 }
 
 # ─────────────────────────────────────────────────────────────────────
+# launch — Open a site in the browser
+# ─────────────────────────────────────────────────────────────────────
+# Host-only: there is no browser in the container, and nothing here needs one.
+#
+# The worktree you are standing in is the answer whenever there is one, so
+# `ddev tryout launch` from inside a checkout takes no argument at all. From
+# anywhere else it asks, listing each served site with the URL it opens.
+cmd_launch() {
+    local site="" backend="false" a
+    for a in "$@"; do
+        case "${a}" in
+            --backend|-b) backend="true" ;;
+            -h|--help)    cmd_launch_help; return 0 ;;
+            -*)           error "Unknown option: ${a}"; cmd_launch_help; return 1 ;;
+            *)            site="${a}" ;;
+        esac
+    done
+
+    # Standing in a worktree answers the question. Only when it is actually
+    # served, though — an unserved checkout has no URL, and silently opening a
+    # different site's would be worse than saying so.
+    if [ -z "${site}" ]; then
+        local here
+        if here="$(worktree_name_for_path "${PWD}" 2>/dev/null)" && [ -n "${here}" ]; then
+            # The active worktree is the primary, and the primary is always served.
+            if [ "${here}" = "$(active_worktree_name 2>/dev/null)" ] || site_is_served "${here}"; then
+                site="${here}"
+            else
+                error "Worktree '${here}' is not served — it has no URL"
+                error "  → ddev tryout worktree serve ${here}"
+                error "  → or: ddev tryout worktree use ${here}   (serve it as the primary)"
+                return 1
+            fi
+        fi
+    fi
+
+    [ -n "${site}" ] || site="$(ask_site "Which site to open?")" \
+        || { explain_missing "ddev tryout launch [<worktree>] [--backend]"; return 1; }
+
+    # The active worktree IS the primary and has no sites/<name>/ marker of its
+    # own, so it would read as "not served" by name. The panel passes exactly
+    # that — its own worktree name, primary included — and so does anyone typing
+    # the name they see in `worktree list`.
+    if [ "${site}" = "$(active_worktree_name 2>/dev/null)" ]; then site="${PRIMARY_SITE}"; fi
+
+    if ! site_is_served "${site}"; then
+        error "No served site '${site}'"
+        error "  → ddev tryout worktree list"
+        return 1
+    fi
+
+    local url
+    if site_is_primary "${site}"; then
+        # DDEV knows the primary's URL, including a non-standard port or scheme.
+        url="${DDEV_PRIMARY_URL:-https://$(site_hostname "${site}")}"
+    else
+        url="https://$(site_hostname "${site}")"
+    fi
+    if [ "${backend}" = "true" ]; then url="${url%/}/typo3/"; fi
+
+    open_url "${url}"
+}
+
+cmd_launch_help() {
+    echo ""
+    echo -e "${BOLD}ddev tryout launch${NC} — open a site in the browser"
+    echo ""
+    echo -e "  ${BOLD}launch${NC}                  The worktree you are in, or pick from a list"
+    echo -e "  ${BOLD}launch <worktree>${NC}       That worktree's site"
+    echo ""
+    echo "  Flags: --backend   open /typo3/ instead of the frontend"
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
 # herdr — Open every Core worktree in its own herdr tab
 # ─────────────────────────────────────────────────────────────────────
 cmd_herdr() {
@@ -890,6 +965,7 @@ cmd_help() {
     echo -e "  ${BOLD}panel${NC}                     Dock a clickable command panel (inside herdr)"
     echo -e "  ${DIM}                            herdr plugin link <project> adds prompting popups${NC}"
     echo -e "  ${BOLD}exec <site> <cmd>${NC}         Run a command in a site's PHP/root/database"
+    echo -e "  ${BOLD}launch [<worktree>]${NC}       Open a site in the browser (--backend for /typo3/)"
     echo -e "  ${BOLD}reset [<site>]${NC}            Reset Core to current branch + rebuild"
     echo -e "  ${BOLD}delete [<site>]${NC}           Wipe DB + fileadmin, fresh setup (--all for every site)"
     echo -e "  ${BOLD}help${NC}                      Show this help"
@@ -920,6 +996,7 @@ case "${ACTION}" in
     panel)    cmd_panel "$@" ;;
     herdr)    cmd_herdr "$@" ;;
     exec)     cmd_exec "$@" ;;
+    launch)   cmd_launch "$@" ;;
     reset)    cmd_reset "$@" ;;
     delete)   cmd_delete "$@" ;;
     help)     cmd_help "$@" ;;
