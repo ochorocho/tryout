@@ -78,6 +78,42 @@ APPROOT="${TRYOUT_PANEL_APPROOT:-}"
     || fail "$(basename "${APPROOT}") is a DDEV project, but the tryout add-on is not installed in it."
 command -v ddev >/dev/null 2>&1 || fail "ddev not found on the host."
 
+# The session these workspaces live in, derived the way herdr_session_name does —
+# this script cannot source functions.sh, and DDEV exports DDEV_SITENAME only to
+# commands it runs itself, while this one is launched by herdr.
+herdr_session() {
+    local n="${DDEV_SITENAME:-}"
+    if [ -z "${n}" ] && [ -f "${APPROOT}/.ddev/config.yaml" ]; then
+        n="$(sed -n 's/^name: *//p' "${APPROOT}/.ddev/config.yaml" 2>/dev/null \
+             | head -1 | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//')"
+    fi
+    [ -n "${n}" ] && { printf 'tryout-%s' "${n}"; return; }
+    printf 'tryout'
+}
+
+# Focus the origin clone's workspace: after removing or unserving the worktree this
+# popup belongs to, that workspace may be the one that just disappeared, and herdr
+# would be left showing whatever it fell back to. The origin clone is the one
+# workspace that is always there — it owns the object store and cannot be removed.
+# Found by its .git DIRECTORY, since `git worktree add` writes a .git FILE.
+herdr_focus_main() {
+    command -v herdr >/dev/null 2>&1 || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    local d name ws
+    for d in "${APPROOT}"/typo3-core-*/; do
+        [ -d "${d}.git" ] || continue
+        name="$(basename "${d%/}")"; name="${name#typo3-core-}"
+        ws="$(herdr --session "$(herdr_session)" workspace list 2>/dev/null \
+              | jq -r --arg l "core-${name}" \
+                  'first(.result.workspaces[]? | select(.label == $l) | .workspace_id) // empty' \
+                  2>/dev/null)"
+        [ -n "${ws}" ] || continue
+        herdr --session "$(herdr_session)" workspace focus "${ws}" >/dev/null 2>&1 || true
+        return 0
+    done
+    return 0
+}
+
 cd "${APPROOT}" || fail "Cannot enter ${APPROOT}"
 
 printf "\n  ${BOLD}ddev tryout %s${NC}\n\n" "${VERB}"
@@ -91,5 +127,24 @@ ddev tryout ${VERB}
 rc=$?
 
 [ "${rc}" -eq 0 ] || printf "\n${RED}✗${NC} exited ${rc}\n"
+
+# A verb that changes which worktrees exist leaves the herdr session out of step:
+# `worktree remove` and `unserve` strand a workspace whose checkout is gone, and
+# `add` without --herdr leaves a worktree with none. A bare `ddev tryout herdr`
+# is the reconcile pass for exactly that — it opens what is missing and closes
+# what is orphaned — so run it here, where the command has actually finished.
+#
+# Only for those verbs: it walks every workspace, which is wasted work after a
+# patch or a launch, and only on success, since a failed command changed nothing.
+case "${rc}:${VERB}" in
+    0:worktree\ *)
+        printf "\n  ${DIM}reloading workspaces…${NC}\n"
+        ddev tryout herdr >/dev/null 2>&1 || true
+        # Back to the origin clone: after removing or unserving the worktree this
+        # popup was opened from, its own workspace may be the one that just went.
+        herdr_focus_main
+        ;;
+esac
+
 pause
 exit "${rc}"

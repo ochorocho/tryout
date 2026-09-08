@@ -3317,6 +3317,68 @@ panel_menu() { # $1=worktree $2=approot
     || fail "the popup path must defer its refresh"
 }
 
+@test "unserve is offered only where there is a site to take away" {
+  set -eu -o pipefail
+  # It is the inverse of serve, and unserve_worktree refuses a site that is not
+  # served — so on an unserved checkout the row could only ever fail.
+  mkdir -p "${FAKEROOT}/typo3-core-main/.git" "${FAKEROOT}/typo3-core-cold" \
+           "${FAKEROOT}/typo3-core-live" "${FAKEROOT}/sites/live"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
+
+  # The primary and a served worktree both have a site.
+  local w
+  for w in main live; do
+    run panel_menu "${w}" "${FAKEROOT}"
+    assert_success
+    assert_output --partial "ROW worktree unserve|worktree unserve ${w}"
+  done
+
+  # An unserved checkout offers serve instead — there is nothing to take away.
+  run panel_menu cold "${FAKEROOT}"
+  assert_success
+  refute_output --partial "ROW worktree unserve|"
+  assert_output --partial "ROW worktree serve|worktree serve cold"
+}
+
+@test "a worktree verb reloads the workspaces and focuses the origin clone" {
+  set -eu -o pipefail
+  # `worktree remove` and `unserve` strand a workspace whose checkout is gone, and
+  # the popup is the only place that knows when the command actually finished — the
+  # panel returns as soon as the popup STARTS. A bare `ddev tryout herdr` is the
+  # reconcile pass for exactly that.
+  local fn
+  fn=$(sed -n '/^case "${rc}:${VERB}" in/,/^esac$/p' "${DIR}/tryout/herdr-panel-run.sh")
+  [ -n "${fn}" ] || fail "no post-command reload"
+
+  # Only for worktree verbs: the pass walks every workspace, which is wasted work
+  # after a patch or a launch.
+  printf '%s' "${fn}" | grep -q 'worktree' \
+    || fail "the reload must be scoped to the verbs that change the worktree set"
+  # And only on success — a failed command changed nothing.
+  printf '%s' "${fn}" | grep -q '0:' \
+    || fail "a failed command must not trigger a reload"
+  printf '%s' "${fn}" | grep -q 'ddev tryout herdr' \
+    || fail "the reload is the reconcile pass"
+  printf '%s' "${fn}" | grep -q 'herdr_focus_main' \
+    || fail "focus must land somewhere that still exists"
+
+  # The origin clone is the one workspace that is always there — remove_core_worktree
+  # refuses to drop the checkout owning the object store — and it is found by its
+  # .git DIRECTORY, since `git worktree add` writes a .git FILE.
+  local fm
+  fm=$(sed -n '/^herdr_focus_main()/,/^}/p' "${DIR}/tryout/herdr-panel-run.sh" \
+       | grep -v '^[[:space:]]*#')
+  [ -n "${fm}" ] || fail "no herdr_focus_main"
+  printf '%s' "${fm}" | grep -q '\-d "${d}.git"' \
+    || fail "the origin clone is the one with a .git directory"
+  printf '%s' "${fm}" | grep -q 'workspace focus' \
+    || fail "it must actually focus the workspace"
+  # It runs where herdr and jq may not be, so it must not blow up without them.
+  printf '%s' "${fm}" | grep -q 'command -v jq' \
+    || fail "a missing jq must be survivable"
+}
+
 @test "a worktree made from the panel opens as a workspace" {
   set -eu -o pipefail
   # The panel lives IN herdr, so a worktree created from it that did not appear

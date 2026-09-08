@@ -168,6 +168,10 @@ build_menu() {
             && add "composer" "regenerate the overlay" "composer"
         [ "${STATE}" = "served" ] \
             && add "worktree use" "make it the primary" "worktree use ${WORKTREE}"
+        # The inverse of serve, so only where there is a site to take away. It keeps
+        # the database by default — `--drop-db` is the popup's to ask for — because
+        # unserving is about the URL, not the data.
+        add "worktree unserve" "stop serving it" "worktree unserve ${WORKTREE}"
         # The origin clone offers `add`: it owns the object store every other
         # worktree branches from, so that is where making one belongs. It never
         # offers `remove` — remove_core_worktree refuses to drop the checkout
