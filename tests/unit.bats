@@ -2538,18 +2538,44 @@ run_with_fake_herdr() {
 
 @test "opening a worktree names its tab from the agent it actually started" {
   set -eu -o pipefail
-  # The three agent-start outcomes decide the name, so the label cannot drift from
-  # what the success/warn lines report.
-  local fn
+  # The agent-start outcomes decide the name, so the label cannot drift from what
+  # the success/warn lines report. start_agent_in_pane owns those outcomes — both
+  # routes into a workspace use it, the fresh open and the backfill of one that was
+  # already there — and it answers 0 whenever the agent is up.
+  local fn ag
   fn=$(sed -n '/^open_worktree_in_herdr()/,/^}/p' "${DIR}/tryout/functions.sh")
+  ag=$(sed -n '/^start_agent_in_pane()/,/^}/p' "${DIR}/tryout/functions.sh")
+  [ -n "${ag}" ] || fail "no start_agent_in_pane"
 
   # Default is Shell; only a started agent promotes it to Claude.
   printf '%s' "${fn}" | grep -q 'tab_label="Shell"' \
     || fail "the tab must default to Shell"
-  [ "$(printf '%s' "${fn}" | grep -c 'tab_label="Claude"')" -eq 2 ] \
-    || fail "both agent-running branches must name the tab Claude"
+  printf '%s' "${fn}" | grep -q 'start_agent_in_pane .* && tab_label="Claude"' \
+    || fail "a started agent must promote the tab to Claude"
   printf '%s' "${fn}" | grep -q 'ensure_terminal_tab' \
     || fail "opening a worktree must add its Terminal tab"
+
+  # Two of the three outcomes mean "the agent is up": started, and started but
+  # blocked on its own UI (the folder-trust prompt on a first run). Only the third
+  # is a failure, and only it leaves the tab a shell.
+  [ "$(printf '%s' "${ag}" | grep -c 'return 0')" -eq 2 ] \
+    || fail "both agent-running outcomes must report success"
+  printf '%s' "${ag}" | grep -q 'agent_not_ready' \
+    || fail "a first run waiting on folder trust is not a failure"
+  printf '%s' "${ag}" | grep -q 'Could not start claude' \
+    || fail "a real failure must say so"
+
+  # And the tab label follows the agent LATER too: a workspace that gains one on a
+  # backfill was already renamed Shell, so a rename that only fires on herdr's own
+  # "1" would leave it saying Shell beside a running claude.
+  # Pin the SELECTOR, not just the word "Shell" — that appears in the rename call
+  # below whatever the selector matches, so a grep for it passes either way.
+  local lbl sel
+  lbl=$(sed -n '/^ensure_first_tab_label()/,/^}/p' "${DIR}/tryout/functions.sh")
+  sel=$(printf '%s\n' "${lbl}" | sed -n '/tabs\[0\]/,/tab_id/p')
+  [ -n "${sel}" ] || fail "no first-tab selector"
+  printf '%s' "${sel}" | grep -q 'Shell' \
+    || fail "an already-named Shell tab must be re-checked, not skipped"
 }
 
 # --- the per-worktree panel -------------------------------------------------
@@ -3579,10 +3605,41 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
   # but it must not abort the run when one fails, since other worktrees follow.
   printf '%s' "${skip}" | grep -q 'ensure_panel_pane .* || true' \
     || fail "a backfill failure must not end the run"
-  # And it needs the workspace id, which is keyed on the core-<name> label: a
-  # workspace still under some other label is left to the bare run's sync.
-  printf '%s' "${skip}" | grep -q 'herdr_workspace_id' \
-    || fail "the backfill must resolve the workspace it is repairing"
+  # It must find the workspace by DIRECTORY, not by label. A workspace old enough
+  # to be missing the tab and the panel is old enough to be missing the
+  # core-<name> label too, so looking it up by that label found nothing and the
+  # whole branch did nothing — which is exactly how typo3-core-main stayed broken
+  # through a fix that was supposed to repair it.
+  printf '%s' "${skip}" | grep -q 'herdr_workspace_id_for_dir' \
+    || fail "the backfill must find the workspace by directory, not by label"
+  printf '%s' "${skip}" | grep -qE 'herdr_workspace_id "' \
+    && fail "a label lookup cannot find a workspace whose label is the problem"
+  # And it adopts the label, so everything keyed on it finds the workspace after.
+  printf '%s' "${skip}" | grep -q 'workspace rename' \
+    || fail "the backfill must adopt the core-<name> label"
+  # An agent too, when the workspace has none and one was asked for.
+  printf '%s' "${skip}" | grep -q 'start_agent_in_pane' \
+    || fail "a workspace with no agent must get one"
+  printf '%s' "${skip}" | grep -q 'use_agent' \
+    || fail "--no-agent must still be honoured on the backfill"
+  printf '%s' "${skip}" | grep -q 'herdr_workspace_has_agent' \
+    || fail "an agent already running must not be restarted"
+}
+
+@test "the backfill starts its agent in the worktree, not in the panel" {
+  set -eu -o pipefail
+  # The panel pane sits in the PROJECT ROOT, not the worktree — that is deliberate,
+  # so its popup's relative path resolves. Starting claude there would run it in
+  # the wrong directory, so the pane is chosen by cwd and the panel excluded by
+  # label. Both conditions matter: cwd alone still matches nothing useful if the
+  # panel ever moved, and label alone would match the Terminal pane.
+  local fn
+  fn=$(sed -n '/^herdr_workspace_agent_pane()/,/^}/p' "${DIR}/tryout/functions.sh")
+  [ -n "${fn}" ] || fail "no herdr_workspace_agent_pane"
+  printf '%s' "${fn}" | grep -q '.cwd == \$d' \
+    || fail "the agent pane must be the one sitting in the worktree"
+  printf '%s' "${fn}" | grep -q '(.label // "") != \$l' \
+    || fail "the panel must be excluded: it lives in the project root"
 }
 
 @test "the panel pane is docked once, beside the agent" {

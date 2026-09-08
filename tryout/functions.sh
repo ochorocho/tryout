@@ -1223,6 +1223,44 @@ herdr_worktree_is_open() {
 herdr_workspace_label() { echo "core-${1}"; }
 
 # Workspace id for a worktree's workspace, empty when it is not open.
+# Does this workspace already run an agent anywhere in it?
+herdr_workspace_has_agent() {
+    herdr_cli pane list 2>/dev/null \
+        | jq -e --arg w "$1" \
+            '[.result.panes[]? | select(.workspace_id == $w and .agent != null)] | length > 0' \
+            >/dev/null 2>&1
+}
+
+# The pane an agent belongs in: the one sitting in the worktree, not the panel
+# docked beside it — which is in the project root and would run claude in the
+# wrong directory.
+herdr_workspace_agent_pane() {
+    local ws="$1" dir="$2"
+    herdr_cli pane list 2>/dev/null \
+        | jq -r --arg w "${ws}" --arg d "${dir}" --arg l "${PANEL_PANE_LABEL}" \
+            'first(.result.panes[]? | select(.workspace_id == $w and .cwd == $d
+                                             and (.label // "") != $l) | .pane_id) // empty' \
+            2>/dev/null
+}
+
+# A workspace's current label.
+herdr_workspace_label_of() {
+    herdr_cli workspace list 2>/dev/null \
+        | jq -r --arg w "$1" \
+            'first(.result.workspaces[]? | select(.workspace_id == $w) | .label) // empty' 2>/dev/null
+}
+
+# Workspace id for whichever workspace holds a pane in this directory, empty when
+# none does. Unlike herdr_workspace_id this does NOT go through the label — which
+# matters precisely when the label is the thing that is wrong, as on a workspace
+# opened before the core-<name> scheme existed.
+herdr_workspace_id_for_dir() {
+    local dir="$1"
+    herdr_cli pane list 2>/dev/null \
+        | jq -r --arg d "${dir}" \
+            'first(.result.panes[]? | select(.cwd == $d) | .workspace_id) // empty' 2>/dev/null
+}
+
 herdr_workspace_id() {
     herdr_cli workspace list 2>/dev/null \
         | jq -r --arg l "$(herdr_workspace_label "${1}")" \
@@ -1244,8 +1282,12 @@ ensure_first_tab_label() {
     local ws="$1" first agent
     [ -n "${ws}" ] || return 0
 
+    # "1" is herdr's own name for an unnamed tab, but "Shell" is OURS — set when
+    # the workspace had no agent — and an agent starting later must be allowed to
+    # correct it. Any other label is the user's and is left alone.
     first=$(herdr_cli tab list --workspace "${ws}" 2>/dev/null \
-        | jq -r '.result.tabs[0]? | select(.label == "1") | .tab_id // empty' 2>/dev/null)
+        | jq -r '.result.tabs[0]? | select(.label == "1" or .label == "Shell" or .label == "Claude")
+                 | .tab_id // empty' 2>/dev/null)
     [ -n "${first}" ] || return 0
 
     # An agent anywhere in the workspace means the first tab is the one running it:
@@ -1559,6 +1601,46 @@ list_foreign_core_worktrees() {
 # labelled Terminal holds a plain shell. Both are rooted at the worktree. A tab
 # rather than a split, so the shell costs the agent no width. Focus stays where the
 # caller was unless asked.
+# Start claude in a pane. Returns 0 when the agent is up — including the case where
+# it is up but blocked on its own UI — so the caller can name the tab for what is
+# actually in it. Used by both routes into a workspace: the fresh open, and the
+# backfill of one that was already there but had no agent.
+start_agent_in_pane() {
+    local name="$1" pane="$2" agent start_err rc=0 attempt=0
+    [ -n "${pane}" ] || return 1
+    agent="$(herdr_agent_name "${name}")"
+
+    # `workspace create` answers before the pane's shell reaches its prompt, and
+    # `agent start` needs an idle shell to take over — so a first attempt can lose
+    # that race. Retry a few times before believing a failure.
+    while :; do
+        rc=0
+        start_err=$(herdr_cli agent start "${agent}" --kind claude --pane "${pane}" 2>&1 >/dev/null) || rc=$?
+        # Success, or a definite answer (the agent is up but blocked on its own
+        # UI) — either way, stop.
+        [ "${rc}" -eq 0 ] && break
+        printf '%s' "${start_err}" | grep -q 'agent_not_ready' && break
+        attempt=$((attempt + 1))
+        [ "${attempt}" -ge 5 ] && break
+        sleep 1
+    done
+
+    if [ "${rc}" -eq 0 ]; then
+        success "'${name}' — claude '${agent}'"
+        return 0
+    fi
+    if printf '%s' "${start_err}" | grep -q 'agent_not_ready'; then
+        # Claude launched but is waiting on its own UI — on a worktree it has not
+        # seen before that is the folder-trust prompt. It is running and named, so
+        # this is a normal first run, not a failure.
+        success "'${name}' — claude '${agent}'"
+        info "  ${DIM}'${agent}' is waiting for input (folder trust?) — open core-${name}${NC}"
+        return 0
+    fi
+    warn "Could not start claude in '${name}' — left as a shell"
+    return 1
+}
+
 open_worktree_in_herdr() {
     local name="$1" use_agent="${2:-true}" focus="${3:-false}" dir ws_json root_pane agent
     local first_tab tab_label="Shell"
@@ -1580,11 +1662,30 @@ open_worktree_in_herdr() {
         # `ddev tryout herdr <name>` skips the reconcile pass, so nothing else
         # would ever reach it. Backfill the same three things the fresh path ends
         # with; each is a no-op when already present.
-        local open_ws; open_ws="$(herdr_workspace_id "${name}")"
-        # Adopted under another label, so herdr_workspace_id cannot find it. The
-        # bare run's sync renames those; here, leave it be rather than guess.
+        # By DIRECTORY, not by label: a workspace old enough to be missing the tab
+        # and the panel is old enough to be missing the core-<name> label too, and
+        # looking it up by the label it does not have was why this branch did
+        # nothing at all for the one workspace that needed it.
+        local open_ws; open_ws="$(herdr_workspace_id_for_dir "${dir}")"
         if [ -n "${open_ws}" ]; then
+            # Adopt the label as well, so everything that keys on it — the sync
+            # pass, orphan cleanup, `herdr <name>` focusing — finds it afterwards.
+            local want; want="$(herdr_workspace_label "${name}")"
+            if [ "$(herdr_workspace_label_of "${open_ws}")" != "${want}" ]; then
+                herdr_cli workspace rename "${open_ws}" "${want}" >/dev/null 2>&1 || true
+            fi
+            # An agent too, if the workspace has none and one was asked for. The
+            # fresh path starts it before this early return, so a workspace that
+            # predates the agent — or lost it — never got one back.
+            if [ "${use_agent}" = "true" ] && ! herdr_workspace_has_agent "${open_ws}"; then
+                # The worktree's own pane, never the panel beside it.
+                local root; root="$(herdr_workspace_agent_pane "${open_ws}" "${dir}")"
+                if [ -n "${root}" ]; then
+                    start_agent_in_pane "${name}" "${root}" || true
+                fi
+            fi
             ensure_terminal_tab "${open_ws}" "${dir}" || true
+            # After the agent, so the tab is named for what is now in it.
             ensure_first_tab_label "${open_ws}" || true
             ensure_panel_pane "${open_ws}" "${dir}" "${name}" || true
         fi
@@ -1629,39 +1730,7 @@ open_worktree_in_herdr() {
     fi
 
     if [ "${use_agent}" = "true" ]; then
-        agent="$(herdr_agent_name "${name}")"
-        local start_err rc=0 attempt=0
-
-        # `workspace create` answers before the pane's shell reaches its prompt, and
-        # `agent start` needs an idle shell to take over — so a first attempt can
-        # lose that race. Retry a few times before believing a failure.
-        while :; do
-            rc=0
-            start_err=$(herdr_cli agent start "${agent}" --kind claude --pane "${root_pane}" 2>&1 >/dev/null) || rc=$?
-            # Success, or a definite answer (the agent is up but blocked on its own
-            # UI) — either way, stop.
-            [ "${rc}" -eq 0 ] && break
-            printf '%s' "${start_err}" | grep -q 'agent_not_ready' && break
-            attempt=$((attempt + 1))
-            [ "${attempt}" -ge 5 ] && break
-            sleep 1
-        done
-
-        # The tab is named for what is actually in it, so the three outcomes below
-        # decide it: only a running agent earns "Claude".
-        if [ "${rc}" -eq 0 ]; then
-            tab_label="Claude"
-            success "'${name}' — claude '${agent}'"
-        elif printf '%s' "${start_err}" | grep -q 'agent_not_ready'; then
-            # Claude launched but is waiting on its own UI — on a worktree it has
-            # not seen before that is the folder-trust prompt. It is running and
-            # named, so this is a normal first run, not a failure.
-            tab_label="Claude"
-            success "'${name}' — claude '${agent}'"
-            info "  ${DIM}'${agent}' is waiting for input (folder trust?) — open core-${name}${NC}"
-        else
-            warn "Could not start claude in '${name}' — left as a shell"
-        fi
+        start_agent_in_pane "${name}" "${root_pane}" && tab_label="Claude"
     else
         success "'${name}' — shell"
     fi
