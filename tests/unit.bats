@@ -2799,32 +2799,30 @@ panel_menu() { # $1=worktree $2=approot
     || fail "the panel must restore mouse mode after running inline"
 }
 
-@test "the popup sets readable colours, and only in the popup" {
+@test "status output states its own colour instead of inheriting one" {
   set -eu -o pipefail
-  # The popup does not inherit the pane's colours — it comes up on a light ground,
-  # where `status` labels that carry no colour of their own, and every dim line,
-  # are unreadable. OSC 10/11 set the terminal DEFAULTS, which is what makes this
-  # survive the ESC[0m that follows every coloured span in that output; an SGR
-  # pair would be wiped by the first reset.
-  local fn="${DIR}/tryout/herdr-panel-run.sh"
-  run grep -q '033\]11;' "${fn}"
-  assert_success
-  run grep -q '033\]10;' "${fn}"
-  assert_success
-  # And it must hand the terminal back, or the colours leak into whatever follows.
-  run grep -qE '033\]111|033\]110' "${fn}"
-  assert_success
-  run grep -q 'trap restore_colours' "${fn}"
-  assert_success
+  # A herdr popup does not inherit the pane's colours, so text with none of its
+  # own — the "Core:" labels and their values — was unreadable there. Stating the
+  # colour fixes it for every theme and every background, which repainting the
+  # popup could not: herdr has 11 themes and no way to ask which is active.
+  local body
+  body=$(sed -n '/^ctr_status_body()/,/^}/p' "${DIR}/tryout/commands.sh")
 
-  # Gated on the popup marker: the inline fallback runs in the PANEL'S own pane,
-  # which already has the session's colours.
-  run grep -q 'if \[ -n "${TRYOUT_PANEL_STARTED:-}" \]; then' "${fn}"
-  assert_success
+  # Every line the status prints says what colour it is.
+  local bare
+  bare=$(printf '%s' "${body}" | grep -c 'echo -e "' || true)
+  [ "${bare}" -gt 0 ] || fail "no status output found"
+  printf '%s' "${body}" | grep 'echo -e "' | grep -v '${TEXT}' \
+    && fail "a status line inherits the terminal's colour instead of stating one"
 
-  # Behaviour: inline emits no OSC, the popup path does.
-  run bash -c "TRYOUT_PANEL_APPROOT=/nonexistent timeout 5 bash '${fn}' status </dev/null 2>&1 | LC_ALL=C grep -c $'\033]11;' || true"
-  assert_output "0"
+  # The icons return TO that colour rather than resetting to nothing, or the text
+  # after them on the same line goes bare again.
+  printf '%s' "${body}" | grep -q 'local OK="${GREEN}✓${TEXT}"' \
+    || fail "the OK icon must return to the text colour, not reset"
+
+  # And the popup itself repaints nothing: the terminal's own theme decides.
+  run grep -qE '033\]1[01];' "${DIR}/tryout/herdr-panel-run.sh"
+  assert_failure
 }
 
 @test "the popup waits to be read even with no keyboard behind it" {

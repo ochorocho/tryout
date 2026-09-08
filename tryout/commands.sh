@@ -24,14 +24,14 @@ ctr_status() {
 }
 
 ctr_status_body() {
-    local OK="${GREEN}✓${NC}"
-    local WARN="${YELLOW}!${NC}"
-    local FAIL="${RED}✗${NC}"
+    local OK="${GREEN}✓${TEXT}"
+    local WARN="${YELLOW}!${TEXT}"
+    local FAIL="${RED}✗${TEXT}"
 
     # Core repository
     if [ ! -d "${CORE_DIR}/.git" ] && [ ! -f "${CORE_DIR}/.git" ]; then
-        echo -e "  Core:      ${FAIL} not cloned"
-        echo -e "             ${DIM}→ ddev tryout download${NC}"
+        echo -e "${TEXT}  Core:      ${FAIL} not cloned${NC}"
+        echo -e "${TEXT}             ${DIM}→ ddev tryout download${NC}"
         return
     fi
 
@@ -48,31 +48,31 @@ ctr_status_body() {
         tree_icon="${WARN}"
     fi
 
-    echo -e "  Core:      ${tree_icon} ${current_branch} (${commit_short}) — ${tree_state}"
-    [ -n "${commit_date}" ] && echo -e "             ${DIM}${commit_date}${NC}"
+    echo -e "${TEXT}  Core:      ${tree_icon} ${current_branch} (${commit_short}) — ${tree_state}${NC}"
+    [ -n "${commit_date}" ] && echo -e "${TEXT}             ${DIM}${commit_date}${NC}"
 
     # Worktrees (only meaningful once migrated to the symlink layout)
     if core_is_symlinked; then
         local active wt_count
         active=$(active_worktree_name)
         wt_count=$(list_core_worktrees | wc -l | tr -d ' ')
-        echo -e "  Worktree:  ${OK} ${active} ${DIM}(${wt_count} total)${NC}"
+        echo -e "${TEXT}  Worktree:  ${OK} ${active} ${DIM}(${wt_count} total)${NC}"
         list_core_worktrees | while IFS=$'\t' read -r name head branch dirty is_active; do
             [ -n "${is_active}" ] && continue
-            echo -e "             ${DIM}${name} — ${branch} (${head})${NC}"
+            echo -e "${TEXT}             ${DIM}${name} — ${branch} (${head})${NC}"
         done
         # Composer binds vendor/ to the resolved real path, so a switch without a
         # rebuild silently keeps serving the previous Core.
         if vendor_core_mismatch; then
-            echo -e "             ${WARN} vendor/ was built from a different Core"
-            echo -e "             ${DIM}→ ddev tryout worktree use ${active}${NC}"
+            echo -e "${TEXT}             ${WARN} vendor/ was built from a different Core${NC}"
+            echo -e "${TEXT}             ${DIM}→ ddev tryout worktree use ${active}${NC}"
         fi
         # A checkout outside the project is invisible to every other command, so say so.
         local stray_count
         stray_count=$(list_foreign_core_worktrees | grep -c . || true)
         if [ "${stray_count}" -gt 0 ]; then
-            echo -e "             ${WARN} ${stray_count} checkout(s) outside the project"
-            echo -e "             ${DIM}→ ddev tryout worktree adopt${NC}"
+            echo -e "${TEXT}             ${WARN} ${stray_count} checkout(s) outside the project${NC}"
+            echo -e "${TEXT}             ${DIM}→ ddev tryout worktree adopt${NC}"
         fi
     fi
 
@@ -81,12 +81,12 @@ ctr_status_body() {
         local ahead
         ahead=$(git -C "${CORE_DIR}" rev-list --count "origin/${BRANCH}..HEAD" 2>/dev/null || echo "0")
         if [ "${ahead}" -gt 0 ]; then
-            echo -e "  Patches:   ${OK} ${ahead} applied"
+            echo -e "${TEXT}  Patches:   ${OK} ${ahead} applied${NC}"
             git -C "${CORE_DIR}" log --oneline "origin/${BRANCH}..HEAD" 2>/dev/null | head -10 | while IFS= read -r line; do
-                echo -e "             ${DIM}${line}${NC}"
+                echo -e "${TEXT}             ${DIM}${line}${NC}"
             done
         else
-            echo -e "  Patches:   ${DIM}none applied${NC}"
+            echo -e "${TEXT}  Patches:   ${DIM}none applied${NC}"
         fi
     fi
 
@@ -94,36 +94,36 @@ ctr_status_body() {
     local patches="${TRYOUT_PATCHES:-}"
     patches=$(echo "${patches}" | tr -d '[:space:]')
     if [ -n "${patches}" ]; then
-        echo -e "  Config:    ${CYAN}TRYOUT_PATCHES=${patches}${NC}"
+        echo -e "${TEXT}  Config:    ${CYAN}TRYOUT_PATCHES=${patches}${NC}"
     else
-        echo -e "  Config:    ${DIM}no patches configured${NC}"
+        echo -e "${TEXT}  Config:    ${DIM}no patches configured${NC}"
     fi
 
     # Custom extensions
     local ext_count
     ext_count=$(find "${PROJECT_ROOT}/packages" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
     if [ "${ext_count}" -gt 0 ]; then
-        echo -e "  Packages:  ${OK} ${ext_count} custom extension(s)"
+        echo -e "${TEXT}  Packages:  ${OK} ${ext_count} custom extension(s)${NC}"
         find "${PROJECT_ROOT}/packages" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | while IFS= read -r dir; do
-            echo -e "             ${DIM}$(basename "${dir}")${NC}"
+            echo -e "${TEXT}             ${DIM}$(basename "${dir}")${NC}"
         done
     else
-        echo -e "  Packages:  ${DIM}none in packages/${NC}"
+        echo -e "${TEXT}  Packages:  ${DIM}none in packages/${NC}"
     fi
 
     # Composer
     if [ -d "${PROJECT_ROOT}/vendor" ]; then
-        echo -e "  Composer:  ${OK} installed"
+        echo -e "${TEXT}  Composer:  ${OK} installed${NC}"
     else
-        echo -e "  Composer:  ${FAIL} not installed"
-        echo -e "             ${DIM}→ ddev composer install${NC}"
+        echo -e "${TEXT}  Composer:  ${FAIL} not installed${NC}"
+        echo -e "${TEXT}             ${DIM}→ ddev composer install${NC}"
     fi
 
     # TYPO3
     if [ -f "${PROJECT_ROOT}/config/system/settings.php" ]; then
-        echo -e "  TYPO3:     ${OK} configured"
+        echo -e "${TEXT}  TYPO3:     ${OK} configured${NC}"
     else
-        echo -e "  TYPO3:     ${FAIL} not set up"
+        echo -e "${TEXT}  TYPO3:     ${FAIL} not set up${NC}"
     fi
 
     # Contribution setup (Gerrit hooks / push URL)
@@ -136,17 +136,17 @@ ctr_status_body() {
         cs_parts+=("push-url")
     fi
     if [ ${#cs_parts[@]} -eq 4 ]; then
-        echo -e "  Contrib:   ${OK} ready (${CS_USER:-?})"
+        echo -e "${TEXT}  Contrib:   ${OK} ready (${CS_USER:-?})${NC}"
     elif [ ${#cs_parts[@]} -gt 0 ]; then
-        echo -e "  Contrib:   ${WARN} partial (${cs_parts[*]})"
-        echo -e "             ${DIM}→ ddev tryout cs doctor${NC}"
+        echo -e "${TEXT}  Contrib:   ${WARN} partial (${cs_parts[*]})${NC}"
+        echo -e "${TEXT}             ${DIM}→ ddev tryout cs doctor${NC}"
     else
-        echo -e "  Contrib:   ${DIM}not configured${NC}"
-        echo -e "             ${DIM}→ ddev tryout cs${NC}"
+        echo -e "${TEXT}  Contrib:   ${DIM}not configured${NC}"
+        echo -e "${TEXT}             ${DIM}→ ddev tryout cs${NC}"
     fi
 
     # Site URL
-    echo -e "  Site:      ${BOLD}${DDEV_PRIMARY_URL:-}${NC}"
+    echo -e "${TEXT}  Site:      ${BOLD}${DDEV_PRIMARY_URL:-}${NC}"
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -368,7 +368,7 @@ ctr_delete() {
     for s in "${sites[@]}"; do
         echo -e "  ${BOLD}$(site_hostname "${s}")/typo3/${NC}"
     done
-    echo -e "  ${BOLD}Login:${NC}    admin / Password.1"
+    echo -e "  ${BOLD}Login:${TEXT}    admin / Password.1${NC}"
     echo ""
 }
 
@@ -451,7 +451,7 @@ ctr_checkout() {
 
     echo ""
     success "Now on TYPO3 branch ${target_branch}"
-    echo -e "  ${BOLD}Site:${NC} https://$(site_hostname "${site}")"
+    echo -e "  ${BOLD}Site:${TEXT} https://$(site_hostname "${site}")${NC}"
 }
 
 # ─────────────────────────────────────────────────────────────────────

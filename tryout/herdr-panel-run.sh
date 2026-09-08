@@ -80,22 +80,6 @@ command -v ddev >/dev/null 2>&1 || fail "ddev not found on the host."
 
 cd "${APPROOT}" || fail "Cannot enter ${APPROOT}"
 
-# The popup does not inherit the pane's colours: it comes up on a LIGHT ground,
-# so `status` output that carries no colour of its own — the "Core:" labels — and
-# anything dim is unreadable there. Set the terminal's DEFAULT foreground and
-# background for the popup rather than an SGR pair: ESC[0m, which follows every
-# coloured span in that output, resets TO these rather than away from them.
-# OSC 111/110 hand the popup back the way it was found, whatever it was.
-# Only in the popup. The inline fallback runs in the PANEL'S own pane, which
-# already has the session's colours, and repainting that would be a regression.
-# TRYOUT_PANEL_STARTED is set by the panel only when it opens a popup.
-if [ -n "${TRYOUT_PANEL_STARTED:-}" ]; then
-    printf '\033]11;#1e1e2e\033\\\033]10;#cdd6f4\033\\'
-    printf '\033[2J\033[H'
-    restore_colours() { printf '\033]111\033\\\033]110\033\\\033[0m'; }
-    trap restore_colours EXIT INT TERM
-fi
-
 printf "\n  ${BOLD}ddev tryout %s${NC}\n\n" "${VERB}"
 
 # Every verb runs right here, however long it takes. Splitting a pane for the slow

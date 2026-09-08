@@ -47,6 +47,11 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 DIM='\033[2m'
+# Ordinary text, stated rather than inherited. Output that carries no colour of
+# its own takes the terminal's default foreground, and a herdr popup does not
+# inherit the pane's — labels and values came out unreadable there. 37 is the
+# basic ANSI white every theme maps to something legible on its own background.
+TEXT='\033[37m'
 NC='\033[0m'
 
 # --- Output helpers ---
