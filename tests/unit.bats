@@ -3407,14 +3407,69 @@ panel_menu() { # $1=worktree $2=approot
   refute_output --partial "@primary"
 }
 
-@test "the panel pane is docked once, into the Terminal tab" {
+@test "the agent's tab is found by position, not by its label" {
   set -eu -o pipefail
-  # It belongs beside the shell, not beside claude: splitting the agent's tab is
-  # the width-stealing clutter the tabs were meant to end.
+  # ensure_first_tab_label names it "Claude" when an agent is running and "Shell"
+  # when none is, and a user can rename it again — so keying on any label would
+  # lose the panel's home the moment one of those happened.
+  fake_herdr_tabs '{"result":{"tabs":[
+    {"tab_id":"w1:t1","label":"Claude"},
+    {"tab_id":"w1:t2","label":"Terminal"}]}}'
+  run_with_fake_herdr 'herdr_agent_tab_id w1'
+  assert_success
+  assert_output "w1:t1"
+
+  # Same answer with no agent, where the first tab is called Shell...
+  fake_herdr_tabs '{"result":{"tabs":[
+    {"tab_id":"w1:t1","label":"Shell"},
+    {"tab_id":"w1:t2","label":"Terminal"}]}}'
+  run_with_fake_herdr 'herdr_agent_tab_id w1'
+  assert_success
+  assert_output "w1:t1"
+
+  # ...and with a name nobody predicted.
+  fake_herdr_tabs '{"result":{"tabs":[
+    {"tab_id":"w1:t1","label":"my notes"},
+    {"tab_id":"w1:t2","label":"Terminal"}]}}'
+  run_with_fake_herdr 'herdr_agent_tab_id w1'
+  assert_success
+  assert_output "w1:t1"
+
+  # A workspace with no tabs answers nothing rather than a bogus id.
+  fake_herdr_tabs '{"result":{"tabs":[]}}'
+  run_with_fake_herdr 'herdr_agent_tab_id w1'
+  assert_success
+  assert_output ""
+}
+
+@test "the panel pane is docked once, beside the agent" {
+  set -eu -o pipefail
+  # It sits next to the agent, not in the Terminal tab: the panel drives the
+  # worktree the agent is working in, so it belongs where you are looking. Keyed
+  # on the FIRST tab rather than its label, which ensure_first_tab_label sets to
+  # "Claude" or "Shell" and a user may change again.
   local fn
   fn=$(sed -n '/^ensure_panel_pane()/,/^}/p' "${DIR}/tryout/functions.sh")
+  printf '%s' "${fn}" | grep -q 'herdr_agent_tab_id' \
+    || fail "the panel must dock beside the agent"
   printf '%s' "${fn}" | grep -q 'herdr_terminal_tab_id' \
-    || fail "the panel must dock into the Terminal tab"
+    && fail "the panel no longer docks into the Terminal tab"
+  # The split target is the agent's pane, never a panel already sitting there —
+  # splitting that would nest one panel inside another.
+  printf '%s' "${fn}" | grep -q '(.label // "") != \$l' \
+    || fail "the split target must exclude the panel itself"
+  # An existing panel is MOVED, not closed and redocked: closing kills a running
+  # panel, and every workspace opened before this has one in the Terminal tab.
+  printf '%s' "${fn}" | grep -q 'pane move' \
+    || fail "a panel in the old place must be moved, not recreated"
+  # Both ways of placing it leave focus alone: a reconcile pass runs over every
+  # workspace, and without this each one would pull focus onto its panel.
+  local placements nofocus code
+  code=$(printf '%s\n' "${fn}" | grep -v '^[[:space:]]*#')
+  placements=$(printf '%s\n' "${code}" | grep -c 'pane \(split\|move\)' || true)
+  nofocus=$(printf '%s\n' "${code}" | grep -c '\-\-no-focus' || true)
+  [ "${placements}" -eq "${nofocus}" ] \
+    || fail "${placements} placement(s) but ${nofocus} --no-focus"
   # Idempotent: the backfill runs on every bare `ddev tryout herdr`.
   printf '%s' "${fn}" | grep -q 'PANEL_PANE_LABEL' \
     || fail "it must look for an existing panel before docking another"

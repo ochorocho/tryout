@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=13
+TRYOUT_VERSION=14
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -1292,10 +1292,21 @@ ensure_panel_pane() {
     local ws="$1" dir="$2" name="$3" has tab_pane
     [ -n "${ws}" ] || return 0
 
-    # A label alone is not proof the panel is running: it survives a herdr server
-    # restart while the process behind it does not. Replace such a corpse, or the
-    # pane stays blank for good and no re-run can recover it.
-    local existing
+    # The agent's tab is what gets split: the panel drives the worktree the agent
+    # is working in, so it belongs where you are already looking.
+    local tab; tab="$(herdr_agent_tab_id "${ws}")"
+    [ -n "${tab}" ] || return 1
+
+    # The pane to split is the agent's own, never a panel already sitting there:
+    # splitting the panel would nest one inside the other. Its label is the only
+    # thing that tells them apart.
+    tab_pane=$(herdr_cli pane list 2>/dev/null \
+        | jq -r --arg w "${ws}" --arg t "${tab}" --arg l "${PANEL_PANE_LABEL}" \
+            '[.result.panes[]? | select(.workspace_id == $w and .tab_id == $t
+                                        and (.label // "") != $l)][0].pane_id // empty' 2>/dev/null)
+    [ -n "${tab_pane}" ] || return 1
+
+    local existing existing_tab
     existing=$(herdr_cli pane list 2>/dev/null \
         | jq -r --arg w "${ws}" --arg l "${PANEL_PANE_LABEL}" \
             '.result.panes[]? | select(.workspace_id == $w and .label == $l) | .pane_id' \
@@ -1303,16 +1314,26 @@ ensure_panel_pane() {
     if [ -n "${existing}" ]; then
         if herdr_cli pane process-info --pane "${existing}" 2>/dev/null \
             | jq -e '.result != null' >/dev/null 2>&1; then
+            # Alive. A panel docked before this one sits in the Terminal tab, so
+            # move it rather than close and redock: closing would kill a running
+            # panel and flash the pane for nothing.
+            existing_tab=$(herdr_cli pane list 2>/dev/null \
+                | jq -r --arg p "${existing}" \
+                    '.result.panes[]? | select(.pane_id == $p) | .tab_id' 2>/dev/null | head -1)
+            if [ -n "${existing_tab}" ] && [ "${existing_tab}" != "${tab}" ]; then
+                # --no-focus, as the split below: a reconcile pass must not yank
+                # focus off the agent onto a panel the user did not ask for.
+                herdr_cli pane move "${existing}" --tab "${tab}" --split right \
+                    --target-pane "${tab_pane}" --ratio "${PANEL_DOCK_RATIO}" \
+                    --no-focus >/dev/null 2>&1 || true
+            fi
             return 0
         fi
+        # A label alone is not proof the panel is running: it survives a herdr
+        # server restart while the process behind it does not. Replace such a
+        # corpse, or the pane stays blank for good and no re-run can recover it.
         herdr_cli pane close "${existing}" >/dev/null 2>&1 || true
     fi
-
-    # The Terminal tab's own pane is what gets split.
-    tab_pane=$(herdr_cli pane list 2>/dev/null \
-        | jq -r --arg w "${ws}" --arg t "$(herdr_terminal_tab_id "${ws}")" \
-            '[.result.panes[]? | select(.workspace_id == $w and .tab_id == $t)][0].pane_id // empty' 2>/dev/null)
-    [ -n "${tab_pane}" ] || return 1
 
     # An install predating the panel has no script to run.
     local script; script="$(tryout_script herdr-panel.sh)"
@@ -1325,7 +1346,7 @@ ensure_panel_pane() {
     local new
     # Same geometry and same working directory as `ddev tryout panel`, or the two
     # routes hand you visibly different panels. 0.78 leaves the panel the narrow
-    # right-hand strip; the shell beside it keeps the room. The project root, not
+    # right-hand strip; the agent beside it keeps the room. The project root, not
     # the worktree, because the popup's manifest command is a relative path that
     # herdr resolves against this cwd — see run_selected.
     new=$(herdr_cli pane split "${tab_pane}" --direction right --ratio "${PANEL_DOCK_RATIO}" \
@@ -1346,6 +1367,14 @@ herdr_terminal_tab_id() {
     herdr_cli tab list --workspace "${1}" 2>/dev/null \
         | jq -r --arg l "${TERMINAL_TAB_LABEL}" \
             '.result.tabs[]? | select(.label == $l) | .tab_id' 2>/dev/null | head -1
+}
+
+# The agent's tab: the workspace's FIRST, whatever it is called. ensure_first_tab_label
+# names it "Claude" or "Shell" depending on what is in it, and a user may rename it
+# again — so the position is the reliable key, not the label.
+herdr_agent_tab_id() {
+    herdr_cli tab list --workspace "${1}" 2>/dev/null \
+        | jq -r '.result.tabs[0]?.tab_id // empty' 2>/dev/null
 }
 
 ensure_terminal_tab() {
