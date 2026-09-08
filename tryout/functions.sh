@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=16
+TRYOUT_VERSION=17
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -1513,8 +1513,11 @@ sync_herdr_workspaces() {
         fi
 
         # Inside the project: is it one of our Core worktrees?
-        name=""
-        name="$(worktree_name_for_path "${real}" top)"
+        # `|| true` is load-bearing: the function returns non-zero for a path that
+        # is not one — a workspace whose checkout has since been removed, which is
+        # exactly what this loop exists to find — and a bare assignment under
+        # `set -e` makes that abort the whole command, silently.
+        name="$(worktree_name_for_path "${real}" top 2>/dev/null || true)"
 
         if [ -n "${name}" ]; then
             # Ours. Fix the label if it is not the one everything else keys on.

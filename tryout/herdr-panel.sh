@@ -59,6 +59,38 @@ is_origin_checkout() {
     [ -d "${APPROOT}/typo3-core-${WORKTREE}/.git" ]
 }
 
+# Branch and applied-patch count, cached. Unlike worktree_state these are git
+# reads, and render runs on EVERY keystroke — an arrow key must not pay for them.
+# So they are refreshed only when something could have changed them: at startup,
+# and after a command this panel ran.
+GIT_BRANCH=""
+GIT_AHEAD=""
+# Whether the reads below actually ran. Without it an empty GIT_BRANCH is
+# ambiguous: a detached HEAD, or no checkout to ask about at all.
+GIT_READ=0
+# Set when a popup was launched: it returns on start, not on completion, so the
+# answer is only reliable by the next keystroke.
+GIT_STALE=0
+
+refresh_git_info() {
+    GIT_BRANCH=""; GIT_AHEAD=""; GIT_READ=0
+    [ -n "${WORKTREE}" ] && [ -n "${APPROOT}" ] || return 0
+    local dir="${APPROOT}/typo3-core-${WORKTREE}"
+    [ -d "${dir}" ] || return 0
+    GIT_READ=1
+
+    GIT_BRANCH="$(git -C "${dir}" symbolic-ref --short -q HEAD 2>/dev/null)" || GIT_BRANCH=""
+
+    # Commits on top of the upstream ARE the applied patches — the same measure
+    # `ddev tryout status` reports. Only where an upstream is recorded: working it
+    # out for a detached HEAD means for-each-ref --contains over every remote
+    # branch, which took 0.7s on a real Core and has no place in a redraw.
+    if [ -n "${GIT_BRANCH}" ]; then
+        GIT_AHEAD="$(git -C "${dir}" rev-list --count '@{upstream}..HEAD' 2>/dev/null)" || GIT_AHEAD=""
+    fi
+    return 0
+}
+
 worktree_state() {
     [ -n "${WORKTREE}" ] && [ -n "${APPROOT}" ] || { echo "unserved"; return 0; }
     local active=""
@@ -114,12 +146,12 @@ build_menu() {
         # Only here: making a worktree is a project-level act, and the popup asks
         # for the name and the branch. A scoped panel offers `worktree remove`
         # instead — the one that is about the checkout it is looking at.
-        add "worktree add" "create a new worktree" "worktree add"
+        add "worktree add" "create it and open it here" "worktree add --herdr"
     elif [ "${STATE}" = "unserved" ]; then
         add "worktree serve" "give it its own URL" "worktree serve ${WORKTREE}"
         add "worktree use" "make it the primary" "worktree use ${WORKTREE}"
         if is_origin_checkout; then
-            add "worktree add" "create a new worktree" "worktree add"
+            add "worktree add" "create it and open it here" "worktree add --herdr"
         else
             add "worktree remove" "delete this checkout" "worktree remove ${WORKTREE}"
         fi
@@ -144,7 +176,7 @@ build_menu() {
         # round: remove names itself, so the popup has only to confirm, and it does
         # confirm, because a served worktree takes its site and database with it.
         if is_origin_checkout; then
-            add "worktree add" "create a new worktree" "worktree add"
+            add "worktree add" "create it and open it here" "worktree add --herdr"
         else
             add "worktree remove" "delete this checkout" "worktree remove ${WORKTREE}"
         fi
@@ -223,6 +255,14 @@ render() {
         fi
         i=$(( i + 1 ))
     done
+    # Below the items: what this checkout is sitting on, and what is on top of it.
+    if [ "${GIT_READ}" = "1" ]; then
+        printf "\n  ${DIM}%s${NC}\n" "${GIT_BRANCH:-detached}"
+        if [ -n "${GIT_AHEAD}" ] && [ "${GIT_AHEAD}" -gt 0 ] 2>/dev/null; then
+            printf "  ${DIM}%s patch%s${NC}\n" "${GIT_AHEAD}" \
+                "$([ "${GIT_AHEAD}" -eq 1 ] || echo es)"
+        fi
+    fi
     printf "\n  ${DIM}%s${NC}\n" "${HINTS[${SEL}]}"
     # What a direct row had to say, shown once. Cleared here rather than by a
     # timer or a keypress: the next draw is the next keystroke, which is exactly
@@ -289,6 +329,10 @@ run_direct() {
     return 0
 }
 
+# A command may have moved the branch or applied a patch, so re-read after one runs
+# — the one moment the cache can go stale. Not on a keystroke: see refresh_git_info.
+refresh_after_command() { GIT_STALE=0; refresh_git_info; }
+
 run_selected() {
     # The arguments, not the label: a row reads "reset" but runs "reset benni".
     local verb="${ARGS[${SEL}]}"
@@ -300,6 +344,7 @@ run_selected() {
     # exists to avoid.
     if [ -n "${DIRECT[${SEL}]}" ]; then
         run_direct "${verb}"
+        refresh_after_command
         return 0
     fi
 
@@ -341,6 +386,10 @@ run_selected() {
         [ -n "${TRYOUT_PANEL_DEBUG:-}" ] && \
             printf '  popup ok: %s\n' "${popup_err}" >> "${TMPDIR:-/tmp}/tryout-panel.log"
         rm -f "${marker}" 2>/dev/null || true
+        # The popup is still running: it returns on START, not on completion. So
+        # mark the cache stale and let the next keystroke pick the answer up —
+        # by then the command has had time to finish.
+        GIT_STALE=1
         return 0
     fi
     [ -n "${TRYOUT_PANEL_DEBUG:-}" ] && \
@@ -361,8 +410,9 @@ run_selected() {
     # so every later click would go unnoticed.
     mouse_on
     # Serving or unserving changes what this worktree is, so the list it offers
-    # has to change with it.
+    # has to change with it — and the command may have moved the branch too.
     build_menu
+    refresh_after_command
 }
 
 # --- input ------------------------------------------------------------------
@@ -415,11 +465,15 @@ handle_escape() {
 }
 
 build_menu
+refresh_git_info
 mouse_on
 
 while :; do
     render
     IFS= read -rsn1 key || break
+    # A popup launched on the previous keystroke has had time to finish by now, so
+    # this is the first moment its result can be read back.
+    if [ "${GIT_STALE}" -eq 1 ]; then refresh_after_command; fi
     case "${key}" in
         $'\033') handle_escape "$(read_escape_tail)" || break ;;
         ""|$'\n') run_selected ;;

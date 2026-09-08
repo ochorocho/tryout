@@ -3236,6 +3236,123 @@ panel_menu() { # $1=worktree $2=approot
     || fail "the off-worktree panel must offer worktree add"
 }
 
+@test "the panel shows its branch and applied patches below the rows" {
+  set -eu -o pipefail
+  command -v git >/dev/null || skip "git not available"
+  # Commits on top of the upstream ARE the applied patches — the same measure
+  # `ddev tryout status` reports.
+  local root="${FAKEROOT}/gitinfo"
+  mkdir -p "${root}/sites/live" "${root}/typo3-core-main"
+  ln -s typo3-core-main "${root}/typo3-core"
+  printf 'php=8.3\n' > "${root}/sites/live/.tryout-site"
+  git init -q -b main "${root}/up"
+  git -C "${root}/up" commit -q --allow-empty -m base
+  git clone -q "${root}/up" "${root}/typo3-core-live" 2>/dev/null
+
+  draw() {
+    TRYOUT_PANEL_WORKTREE=live TRYOUT_PANEL_APPROOT="${root}" /bin/bash -c "
+      eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
+      trap - EXIT INT TERM
+      build_menu; refresh_git_info; render >/dev/null; render
+    " 2>/dev/null | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g'
+  }
+
+  # Clean: the branch, and no patch line.
+  run draw
+  assert_success
+  assert_output --partial "main"
+  # Not a bare "patch": that is also a menu row. The count line is what must be
+  # absent when nothing is applied.
+  refute_output --regexp '[0-9]+ patch'
+
+  # One commit on top is one patch, singular.
+  git -C "${root}/typo3-core-live" commit -q --allow-empty -m 'a patch'
+  run draw
+  assert_output --partial "1 patch"
+  refute_output --partial "1 patches"
+
+  # Two is plural.
+  git -C "${root}/typo3-core-live" commit -q --allow-empty -m 'another'
+  run draw
+  assert_output --partial "2 patches"
+
+  # A detached checkout says so rather than showing nothing: it has no branch and
+  # no upstream, so both reads come back empty and the line would have vanished.
+  git -C "${root}/typo3-core-live" checkout -q --detach HEAD
+  run draw
+  assert_output --partial "detached"
+}
+
+@test "the git reads are cached, never run on a keystroke" {
+  set -eu -o pipefail
+  # render runs on EVERY keystroke, so an arrow key must not pay for git. Working
+  # out the base of a DETACHED head is the one that really bites: it means
+  # for-each-ref --contains over every remote branch, 0.7s on a real Core.
+  local fn rn
+  # Comments stripped: this function's own comment names for-each-ref while
+  # explaining why it is avoided, and a raw grep cannot tell the two apart.
+  fn=$(sed -n '/^refresh_git_info()/,/^}/p' "${DIR}/tryout/herdr-panel.sh" \
+       | grep -v '^[[:space:]]*#')
+  rn=$(sed -n '/^render()/,/^}/p' "${DIR}/tryout/herdr-panel.sh" | grep -v '^[[:space:]]*#')
+  [ -n "${fn}" ] || fail "no refresh_git_info"
+
+  if printf '%s' "${rn}" | grep -q 'refresh_git_info'; then
+    fail "render must read the cache, not refill it"
+  fi
+  if printf '%s' "${rn}" | grep -qE '\bgit '; then
+    fail "render must not run git at all"
+  fi
+  # And the expensive detached lookup is not in the panel to begin with.
+  if printf '%s' "${fn}" | grep -q 'for-each-ref'; then
+    fail "the detached-base lookup is far too slow for a redraw"
+  fi
+  # It is refilled where something could have changed it: after a command.
+  local sel
+  sel=$(sed -n '/^run_selected()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
+  printf '%s' "${sel}" | grep -q 'refresh_after_command\|GIT_STALE=1' \
+    || fail "a command that ran must refresh the cache"
+  # The popup returns on START, so it cannot refresh at return time — it marks the
+  # cache stale and the next keystroke picks the answer up.
+  printf '%s' "${sel}" | grep -q 'GIT_STALE=1' \
+    || fail "the popup path must defer its refresh"
+}
+
+@test "a worktree made from the panel opens as a workspace" {
+  set -eu -o pipefail
+  # The panel lives IN herdr, so a worktree created from it that did not appear
+  # there is a worktree you then have to go and open by hand. --herdr is what
+  # creates the workspace, starts its agent and focuses it.
+  local menu
+  menu=$(sed -n '/^build_menu()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
+  local bare
+  bare=$(printf '%s\n' "${menu}" | grep -c '"worktree add"$' || true)
+  [ "${bare}" -eq 0 ] || fail "${bare} panel row(s) create a worktree without opening it"
+  printf '%s' "${menu}" | grep -q 'add "worktree add" .* "worktree add --herdr"' \
+    || fail "the panel must pass --herdr so the workspace appears"
+}
+
+@test "a workspace whose checkout is gone does not abort the sync" {
+  set -eu -o pipefail
+  # worktree_name_for_path returns non-zero for a path that is not one of ours —
+  # which is exactly what a workspace left behind by `worktree remove` looks like,
+  # and precisely what the reconcile loop exists to find. Assigned bare under
+  # `set -e` that aborted the whole command with no output at all.
+  local fn
+  fn=$(sed -n '/^sync_herdr_workspaces()/,/^}/p' "${DIR}/tryout/functions.sh")
+  printf '%s' "${fn}" | grep -q 'worktree_name_for_path .* || true' \
+    || fail "a path that is not ours must not abort the reconcile pass"
+
+  # Behaviour: the assignment form used here survives a non-zero return.
+  run bash -c "
+    set -euo pipefail
+    f() { return 1; }
+    name=\"\$(f 2>/dev/null || true)\"
+    echo \"reached with name=[\${name}]\"
+  "
+  assert_success
+  assert_output "reached with name=[]"
+}
+
 @test "the origin clone is told apart by its .git, not by its name" {
   set -eu -o pipefail
   # "main" is just the name this project happens to use; another may call the
