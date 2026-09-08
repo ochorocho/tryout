@@ -286,6 +286,7 @@ case "${VERB}" in
         ;;
 
     checkout)
+        flag --site "pin the site, so only the branch is asked for"
         # checkout <branch> [<site>]
         if [ "${POS}" -le 1 ]; then
             branches

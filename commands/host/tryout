@@ -114,11 +114,17 @@ cmd_download() {
 cmd_patch() {
     require_core
 
-    local site="" all_branches="false" args=() a
-    for a in "$@"; do
-        case "${a}" in
-            --all-branches) all_branches="true" ;;
-            *)              args+=("${a}") ;;
+    local site="" all_branches="false" args=()
+    # --site names the site without occupying the change-id slot. The panel needs
+    # it: it knows which worktree it drives but not which change you want, and
+    # positionally the id comes first — so `patch benni` would fetch a Gerrit
+    # change called "benni" and apply it to the primary.
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --all-branches) all_branches="true"; shift ;;
+            --site)         site="${2:-}"; shift 2 || shift ;;
+            --site=*)       site="${1#--site=}"; shift ;;
+            *)              args+=("$1"); shift ;;
         esac
     done
     set -- ${args[@]+"${args[@]}"}
@@ -127,11 +133,13 @@ cmd_patch() {
     # change numbers can follow.
     if [ -n "${1:-}" ]; then
         local id="$1"; shift
-        delegate patch ${1:+--site "$1"} "${id}"
+        # A --site flag wins; otherwise the old `patch <id> <site>` form still works.
+        [ -n "${site}" ] || site="${1:-}"
+        delegate patch ${site:+--site "${site}"} "${id}"
         return $?
     fi
 
-    site="${1:-}"
+    [ -n "${site}" ] || site="${1:-}"
     # A configured list is a deliberate choice: apply it rather than asking.
     if [ -n "$(echo "${TRYOUT_PATCHES:-}" | tr -d '[:space:]')" ] || ! have_tty; then
         delegate patch ${site:+--site "${site}"}
@@ -276,7 +284,21 @@ cmd_delete() {
 # checkout — Switch TYPO3 Core branch (version)
 # ─────────────────────────────────────────────────────────────────────
 cmd_checkout() {
-    local target_branch="${1:-}" site="${2:-}"
+    # --site pins the site while leaving the branch to be asked for. The panel
+    # needs that: it knows which worktree it drives, but not which branch you
+    # want, and positionally the branch has to come first.
+    local args=() site=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --site)   site="${2:-}"; shift 2 || shift ;;
+            --site=*) site="${1#--site=}"; shift ;;
+            *)        args+=("$1"); shift ;;
+        esac
+    done
+    set -- ${args[@]+"${args[@]}"}
+
+    local target_branch="${1:-}"
+    [ -n "${site}" ] || site="${2:-}"
     require_core
 
     # No branch: ask, if someone is there to answer.
@@ -620,6 +642,9 @@ cmd_panel() {
     # Linking the plugin is optional and buys one thing: the popup. Without it the
     # panel still runs every command, just in its own pane instead of a modal. Say
     # so once, here, because nothing else would ever mention it.
+    # The plugin registry is machine-wide, so this needs no --session — and
+    # pinning it to tryout-<project> would misreport "not linked" whenever that
+    # server is not running, which here it need not be.
     if ! herdr plugin list 2>/dev/null | grep -q 'ddev-tryout'; then
         info "Commands will run in the panel itself."
         echo -e "  ${DIM}For a popup that prompts instead, register the plugin once:${NC}"
@@ -627,9 +652,21 @@ cmd_panel() {
         echo ""
     fi
 
+    # Which session to dock into. Pinning tryout-<project> unconditionally would be
+    # the mirror of the bug this fixes: run from a pane in the user's own session,
+    # it would search ours and find nothing. So ask whether the calling pane is one
+    # of ours, and leave it to the ambient session when it is not.
+    local session=""
+    if [ -n "${HERDR_PANE_ID:-}" ] \
+       && herdr_cli pane list 2>/dev/null \
+          | jq -e --arg p "${HERDR_PANE_ID}" \
+              '[.result.panes[]? | select(.pane_id == $p)] | length > 0' >/dev/null 2>&1; then
+        session="$(herdr_session_name)"
+    fi
+
     # The script does the work: it is also the plugin action's entry point, so the
     # toggle behaves the same however it was reached.
-    bash "$(tryout_script herdr-panel-open.sh)"
+    TRYOUT_PANEL_SESSION="${session}" bash "$(tryout_script herdr-panel-open.sh)"
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -767,7 +804,8 @@ cmd_herdr_help() {
     echo -e "${BOLD}ddev tryout herdr${NC} — open Core worktrees in herdr"
     echo ""
     echo "  Creates one herdr workspace per Core worktree (labelled core-<name>),"
-    echo "  each with a Claude tab and a Terminal tab rooted at that worktree."
+    echo "  each with a Claude tab and a Terminal tab rooted at that worktree,"
+    echo "  and a command panel docked beside the Terminal shell."
     echo ""
     echo -e "  ${BOLD}herdr${NC}                 Open every worktree"
     echo -e "  ${BOLD}herdr <name>${NC}          Open just that one"

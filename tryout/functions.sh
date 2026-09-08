@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=7
+TRYOUT_VERSION=9
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -1175,6 +1175,93 @@ ensure_first_tab_label() {
     return 0
 }
 
+# The pane running the command panel, beside the Terminal tab's shell.
+PANEL_PANE_LABEL="tryout"
+# How much of the split the SHELL keeps; the panel gets the rest. herdr clamps to
+# 0.1-0.9. Both routes that dock a panel must use it, or they look different.
+PANEL_DOCK_RATIO="0.78"
+
+# What a worktree is, which decides what can be done to it:
+#   primary        it IS the project's site
+#   served         it has a site, URL and database of its own
+#   checkout-only  a checkout and nothing more — most worktrees, most of the time
+# Site-scoped verbs (checkout, reset, patch) need one of the first two; offering
+# them on the third would mean a command that fails, or silently hits the primary.
+core_worktree_state() {
+    local name="$1"
+    [ -n "${name}" ] || { echo "checkout-only"; return 0; }
+    if [ "${name}" = "$(active_worktree_name)" ]; then
+        echo "primary"
+    elif site_is_served "${name}"; then
+        echo "served"
+    else
+        echo "checkout-only"
+    fi
+}
+
+# Dock the panel in a workspace's Terminal tab, unless it is already there.
+# Deliberately that tab and not the agent's: the panel would take width from
+# claude in every workspace, which is the clutter it exists to avoid.
+ensure_panel_pane() {
+    local ws="$1" dir="$2" name="$3" has tab_pane
+    [ -n "${ws}" ] || return 0
+
+    # A label alone is not proof the panel is running: it survives a herdr server
+    # restart while the process behind it does not. Replace such a corpse, or the
+    # pane stays blank for good and no re-run can recover it.
+    local existing
+    existing=$(herdr_cli pane list 2>/dev/null \
+        | jq -r --arg w "${ws}" --arg l "${PANEL_PANE_LABEL}" \
+            '.result.panes[]? | select(.workspace_id == $w and .label == $l) | .pane_id' \
+            2>/dev/null | head -1)
+    if [ -n "${existing}" ]; then
+        if herdr_cli pane process-info --pane "${existing}" 2>/dev/null \
+            | jq -e '.result != null' >/dev/null 2>&1; then
+            return 0
+        fi
+        herdr_cli pane close "${existing}" >/dev/null 2>&1 || true
+    fi
+
+    # The Terminal tab's own pane is what gets split.
+    tab_pane=$(herdr_cli pane list 2>/dev/null \
+        | jq -r --arg w "${ws}" --arg t "$(herdr_terminal_tab_id "${ws}")" \
+            '[.result.panes[]? | select(.workspace_id == $w and .tab_id == $t)][0].pane_id // empty' 2>/dev/null)
+    [ -n "${tab_pane}" ] || return 1
+
+    # An install predating the panel has no script to run.
+    local script; script="$(tryout_script herdr-panel.sh)"
+    [ -f "${script}" ] || return 0
+
+    # The panel runs outside DDEV, so it cannot source this file: it is handed the
+    # three things it would otherwise have to guess. The session especially —
+    # without it a bare `herdr` in the panel means the DEFAULT session, not the
+    # tryout-<project> one these workspaces live in.
+    local new
+    # Same geometry and same working directory as `ddev tryout panel`, or the two
+    # routes hand you visibly different panels. 0.78 leaves the panel the narrow
+    # right-hand strip; the shell beside it keeps the room. The project root, not
+    # the worktree, because the popup's manifest command is a relative path that
+    # herdr resolves against this cwd — see run_selected.
+    new=$(herdr_cli pane split "${tab_pane}" --direction right --ratio "${PANEL_DOCK_RATIO}" \
+            --no-focus --cwd "${PROJECT_ROOT}" \
+            --env "TRYOUT_PANEL_WORKTREE=${name}" \
+            --env "TRYOUT_PANEL_APPROOT=${PROJECT_ROOT}" \
+            --env "TRYOUT_PANEL_SESSION=$(herdr_session_name)" 2>/dev/null \
+          | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
+    [ -n "${new}" ] || return 1
+
+    herdr_cli pane rename "${new}" "${PANEL_PANE_LABEL}" >/dev/null 2>&1 || true
+    herdr_cli pane run "${new}" bash "${script}" >/dev/null 2>&1 || return 1
+    return 0
+}
+
+# The Terminal tab of a workspace, empty when it has none yet.
+herdr_terminal_tab_id() {
+    herdr_cli tab list --workspace "${1}" 2>/dev/null \
+        | jq -r --arg l "${TERMINAL_TAB_LABEL}" \
+            '.result.tabs[]? | select(.label == $l) | .tab_id' 2>/dev/null | head -1
+}
+
 ensure_terminal_tab() {
     local ws="$1" dir="$2" has
     [ -n "${ws}" ] || return 0
@@ -1290,6 +1377,10 @@ sync_herdr_workspaces() {
             ensure_terminal_tab "${id}" "${real}" \
                 || warn "Could not add a Terminal tab to ${label}"
             ensure_first_tab_label "${id}" || true
+            # The panel rides along: it lives in the Terminal tab, so it can only
+            # be docked once that tab exists.
+            ensure_panel_pane "${id}" "${real}" "${name}" \
+                || warn "Could not add the tryout panel to ${label}"
         fi
     done < <(herdr_cli workspace list 2>/dev/null \
         | jq -r '.result.workspaces[]? | [.workspace_id, .label] | @tsv' 2>/dev/null)
@@ -1456,8 +1547,11 @@ open_worktree_in_herdr() {
     # the run — several worktrees may still be waiting behind this one.
     [ -n "${first_tab}" ] \
         && herdr_cli tab rename "${first_tab}" "${tab_label}" >/dev/null 2>&1
-    ensure_terminal_tab "$(herdr_workspace_id "${name}")" "${dir}" \
+    local ws_id; ws_id="$(herdr_workspace_id "${name}")"
+    ensure_terminal_tab "${ws_id}" "${dir}" \
         || warn "Could not add a Terminal tab for '${name}'"
+    ensure_panel_pane "${ws_id}" "${dir}" "${name}" \
+        || warn "Could not add the tryout panel for '${name}'"
     return 0
 }
 
