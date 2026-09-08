@@ -59,25 +59,6 @@ if (empty($sysextNames)) {
     exit(1);
 }
 
-// Detect active branch to determine version-specific packages.
-// A worktree may sit on a detached HEAD, where `branch --show-current` prints an
-// empty line — truthy, so `?:` would not catch it. Fall back to the TYPO3 version
-// declared by EXT:core, which is accurate whatever the checkout looks like.
-$branch = trim((string)shell_exec("git -C " . escapeshellarg($coreDir) . " branch --show-current 2>/dev/null"));
-
-if ($branch === '') {
-    $coreComposer = $sysextDir . '/core/composer.json';
-    if (file_exists($coreComposer)) {
-        $coreData = json_decode(file_get_contents($coreComposer), true);
-        $alias = $coreData['extra']['branch-alias']['dev-main'] ?? '';
-        if ($alias !== '') {
-            // e.g. "13.4.x-dev" -> "13.4"
-            $branch = preg_replace('/\.x-dev$/', '', $alias);
-        }
-    }
-}
-$branch = $branch !== '' ? $branch : 'main';
-
 // Keep non-sysext requires (custom packages from packages/*),
 // but drop managed typo3/* packages so they can be re-evaluated
 $managedPrefixes = ['typo3/cms-', 'typo3/theme-'];
@@ -96,14 +77,17 @@ foreach ($oldRequire as $package => $version) {
     }
 }
 
-// Add all discovered sysexts
+// Add all discovered sysexts — and ONLY those. Nothing is added by branch name:
+// typo3/theme-camino used to be appended on main/v14+, but the glob above already
+// finds it when typo3/sysext/theme_camino is there, and on 13.4 (where it is not)
+// the entry pointed Composer at a path that does not exist:
+//
+//   Source path "../../typo3-core-main/typo3/sysext/theme_camino" is not found
+//
+// which fails `composer install` and therefore the whole checkout. The sysexts on
+// disk are the only thing that decides what goes in here.
 foreach ($sysextNames as $name) {
     $newRequire[$name] = '@dev';
-}
-
-// Packages only included on main / v14+
-if ($branch === 'main' || version_compare($branch, '14', '>=')) {
-    $newRequire['typo3/theme-camino'] = '@dev';
 }
 
 ksort($newRequire);

@@ -3407,6 +3407,57 @@ panel_menu() { # $1=worktree $2=approot
   refute_output --partial "@primary"
 }
 
+@test "the overlay requires exactly the sysexts on disk, nothing by branch name" {
+  set -eu -o pipefail
+  # typo3/theme-camino used to be appended whenever the branch looked like main or
+  # v14+. On 13.4 there is no typo3/sysext/theme_camino, so the entry pointed a
+  # path repository at a directory that does not exist:
+  #   Source path "…/typo3-core-main/typo3/sysext/theme_camino" is not found
+  # which fails composer install and with it the whole checkout. A detached
+  # worktree made it worse: the fallback read EXT:core's branch-alias, got "main",
+  # and added camino to a 13.4 tree. The sysexts present decide, and nothing else.
+  command -v php >/dev/null || skip "php not available"
+
+  # A fake Core: two sysexts, no theme_camino — a 13.4-shaped tree.
+  local core="${FAKEROOT}/core13" proj="${FAKEROOT}/proj13"
+  mkdir -p "${core}/typo3/sysext/core" "${core}/typo3/sysext/backend" "${proj}"
+  printf '{"name":"typo3/cms-core","extra":{"branch-alias":{"dev-main":"13.4.x-dev"}}}\n' \
+    > "${core}/typo3/sysext/core/composer.json"
+  printf '{"name":"typo3/cms-backend"}\n' > "${core}/typo3/sysext/backend/composer.json"
+  printf '{"name":"x/y","require":{"typo3/theme-camino":"@dev","acme/own":"^1.0"}}\n' \
+    > "${proj}/composer.tryout.json"
+
+  run env PROJECT_ROOT="${proj}" TRYOUT_CORE_DIR="${core}" \
+      php "${DIR}/tryout/sync-composer.php"
+  assert_success
+
+  local req
+  req=$(python3 -c "
+import json; print(' '.join(sorted(json.load(open('${proj}/composer.tryout.json'))['require'])))")
+  # Not required, because it is not there.
+  printf '%s' "${req}" | grep -q 'typo3/theme-camino' \
+    && fail "camino required on a tree that has no theme_camino: ${req}"
+  # The sysexts that ARE there, and the user's own package, all survive.
+  printf '%s' "${req}" | grep -q 'typo3/cms-core' || fail "cms-core missing: ${req}"
+  printf '%s' "${req}" | grep -q 'typo3/cms-backend' || fail "cms-backend missing: ${req}"
+  printf '%s' "${req}" | grep -q 'acme/own' || fail "custom package dropped: ${req}"
+
+  # And where the sysext IS present, the ordinary scan picks it up — so main keeps
+  # camino without anything special-casing it.
+  local core14="${FAKEROOT}/core14" proj14="${FAKEROOT}/proj14"
+  mkdir -p "${core14}/typo3/sysext/core" "${core14}/typo3/sysext/theme_camino" "${proj14}"
+  printf '{"name":"typo3/cms-core"}\n' > "${core14}/typo3/sysext/core/composer.json"
+  printf '{"name":"typo3/theme-camino"}\n' > "${core14}/typo3/sysext/theme_camino/composer.json"
+  printf '{"name":"x/y","require":{}}\n' > "${proj14}/composer.tryout.json"
+
+  run env PROJECT_ROOT="${proj14}" TRYOUT_CORE_DIR="${core14}" \
+      php "${DIR}/tryout/sync-composer.php"
+  assert_success
+  run python3 -c "
+import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tryout.json'))['require'])"
+  assert_output "True"
+}
+
 @test "the agent's tab is found by position, not by its label" {
   set -eu -o pipefail
   # ensure_first_tab_label names it "Claude" when an agent is running and "Shell"
