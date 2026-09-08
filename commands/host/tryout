@@ -386,7 +386,10 @@ cmd_worktree() {
             while [ $# -gt 0 ]; do
                 case "$1" in
                     --herdr)   in_herdr="true" ;;
-                    --branch|--serve) flags+=("$1") ;;
+                    # --branch is the old spelling of the default; still taken so
+                    # an existing habit or script does not start erroring.
+                    --branch)  ;;
+                    --detach|--serve) flags+=("$1") ;;
                     --php)     flags+=("--php=${2:-}"); shift ;;
                     --php=*)   flags+=("$1") ;;
                     *)         branch="$1" ;;
@@ -589,7 +592,7 @@ cmd_worktree() {
             echo ""
             echo -e "${BOLD}ddev tryout worktree${NC} — side-by-side Core checkouts"
             echo ""
-            echo -e "  ${BOLD}add <name> [<branch>]${NC}   Create typo3-core-<name> (detached at origin/<branch>)"
+            echo -e "  ${BOLD}add <name> [<branch>]${NC}   Create typo3-core-<name> on a branch <name>, off origin/<branch>"
             echo -e "  ${BOLD}list${NC}                    List worktrees and served sites"
             echo -e "  ${BOLD}use <name>${NC}              Point the PRIMARY site at <name>, then rebuild"
             echo -e "  ${BOLD}serve <name>${NC}            Give <name> its own URL, PHP version and database"
@@ -598,7 +601,7 @@ cmd_worktree() {
             echo -e "  ${BOLD}adopt [<path> [<name>]]${NC} Move stray checkouts in (bare: pick from a list)"
             echo -e "  ${BOLD}rename <old> <new>${NC}      Rename a checkout (the branch is untouched)"
             echo ""
-            echo "  Flags: --branch    (add: create a real branch, not detached)"
+            echo "  Flags: --detach    (add: no branch, just a checkout)"
             echo "         --serve     (add: serve it immediately)"
             echo "         --herdr     (add: open it as a herdr workspace)"
             echo "         --php 8.2   (add/serve: run this site on another PHP version)"

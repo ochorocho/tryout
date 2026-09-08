@@ -283,6 +283,7 @@ case "${VERB}" in
 
     download)
         flag --reset "hard-reset Core to the current branch"
+        [ "${POS}" -le 1 ] && ! wants_flag && sites
         ;;
 
     checkout)
@@ -390,7 +391,7 @@ case "${VERB}" in
                 fi
                 ;;
             add)
-                # add <name> [<branch>] [--branch] [--serve] [--php 8.2] [--herdr]
+                # add <name> [<branch>] [--detach] [--serve] [--php 8.2] [--herdr]
                 if [ "${POS}" -le 2 ]; then
                     hint "name for the new worktree (becomes typo3-core-<name>)"
                 elif [ "${PREV}" = "--php" ]; then
@@ -398,7 +399,7 @@ case "${VERB}" in
                 else
                     # A branch goes right after the name; later words are flags.
                     [ "${POS}" -eq 3 ] && ! wants_flag && branches
-                    flag --branch "create a real branch, not a detached checkout"
+                    flag --detach "no branch, just a checkout"
                     flag --serve  "serve it immediately"
                     flag --php    "run it on another PHP version"
                     flag --herdr  "open it as a herdr workspace"

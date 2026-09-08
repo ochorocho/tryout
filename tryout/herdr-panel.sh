@@ -98,6 +98,7 @@ build_menu() {
     else
         add "checkout" "switch TYPO3 version" "checkout${site:+ --site ${site}}"
         add "patch" "apply a Gerrit change" "patch${site:+ --site ${site}}"
+        add "download" "update from its base branch" "download${site:+ ${site}}"
         add "reset" "reset Core + rebuild" "reset${site:+ ${site}}"
         add "exec" "run a command in it" "exec ${site}"
         # composer has no site: it always rewrites the PRIMARY overlay. Offering

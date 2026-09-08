@@ -153,10 +153,40 @@ ctr_status_body() {
 # download — Clone or update TYPO3 Core
 # ─────────────────────────────────────────────────────────────────────
 ctr_download() {
-    local reset=false
-    if [ "${1:-}" = "--reset" ] || [ "${1:-}" = "-r" ]; then
-        reset=true
+    local reset=false site="${PRIMARY_SITE}" a
+    for a in "$@"; do
+        case "${a}" in
+            --reset|-r) reset=true ;;
+            *)          [ -n "${a}" ] && site="${a}" ;;
+        esac
+    done
+
+    # Point at the named worktree, the way reset and patch do. Without this the
+    # command only ever updated the primary, whichever worktree you meant.
+    if ! site_is_primary "${site}"; then
+        if ! site_is_served "${site}"; then
+            error "No served site '${site}'"
+            error "  → ddev tryout worktree list"
+            return 1
+        fi
+        CORE_DIR="$(site_core_dir "${site}")"
+        # An attached worktree carries its own branch name; the base it tracks is
+        # what to update from. A detached one, or one made before tracking was
+        # recorded, has to have its base detected instead.
+        #
+        # `|| true` is load-bearing: rev-parse EXITS 128 when there is no
+        # upstream, and under `set -e` that killed the command before the
+        # fallback below could run — the failure a worktree created earlier hits
+        # every time.
+        BRANCH="$(git -C "${CORE_DIR}" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)"
+        BRANCH="${BRANCH#origin/}"
+        [ -n "${BRANCH}" ] || BRANCH="$(detect_detached_base_branch)"
     fi
+
+    # Every "→ ddev tryout download …" hint has to name the same site, or it
+    # points the user at the primary's Core instead of the one that failed.
+    local site_arg=""
+    site_is_primary "${site}" || site_arg=" ${site}"
 
     # First-time clone
     if [ ! -d "${CORE_DIR}" ]; then
@@ -176,11 +206,11 @@ ctr_download() {
 
     # Reset mode
     if [ "${reset}" = "true" ]; then
-        warn "Resetting TYPO3 Core to origin/${BRANCH}..."
+        warn "Resetting $(basename "${CORE_DIR}") to origin/${BRANCH}..."
         warn "All local changes and applied patches will be lost."
-        reset_core_to_main
-        success "TYPO3 Core reset to origin/${BRANCH}"
-        rebuild_typo3
+        reset_core_to_main "${site}"
+        success "Reset to origin/${BRANCH}"
+        rebuild_typo3 "${site}"
         return
     fi
 
@@ -190,26 +220,32 @@ ctr_download() {
 
     local current_branch
     current_branch=$(git -C "${CORE_DIR}" branch --show-current)
-    if [ "${current_branch}" != "${BRANCH}" ]; then
-        error "Not on ${BRANCH} branch (currently on: ${current_branch})"
-        error "  → Reset: ddev tryout download --reset"
+    # A worktree branch is named after the WORKTREE and tracks the base, so its
+    # name does not match BRANCH and must not be expected to. What matters is
+    # that there is a branch at all: a detached checkout has nothing to rebase.
+    if [ -z "${current_branch}" ]; then
+        error "Detached checkout — nothing to update from"
+        error "  → ddev tryout checkout <branch>${site_arg:+ --site ${site}}"
+        error "  → or start over: ddev tryout download${site_arg} --reset"
         exit 1
     fi
 
     if ! git -C "${CORE_DIR}" diff --quiet || ! git -C "${CORE_DIR}" diff --cached --quiet; then
         error "Working tree has uncommitted changes"
-        error "  → Reset: ddev tryout download --reset"
+        error "  → Reset: ddev tryout download${site_arg} --reset"
         exit 1
     fi
 
+    # Rebase, never merge: Gerrit wants one commit with a stable Change-Id, and a
+    # merge commit in the history is what it cannot take.
     if ! git -C "${CORE_DIR}" pull --rebase origin "${BRANCH}"; then
         error "Pull failed"
-        error "  → Reset: ddev tryout download --reset"
+        error "  → Reset: ddev tryout download${site_arg} --reset"
         exit 1
     fi
 
-    success "TYPO3 Core updated to latest origin/${BRANCH}"
-    rebuild_typo3
+    success "$(basename "${CORE_DIR}") updated to latest origin/${BRANCH}"
+    rebuild_typo3 "${site}"
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -493,11 +529,12 @@ ctr_worktree() {
 
     case "${sub}" in
         add)
-            local name="${1:-}" branch="" attach="false" serve="false" php=""
+            local name="${1:-}" branch="" attach="true" serve="false" php=""
             shift || true
             while [ $# -gt 0 ]; do
                 case "$1" in
-                    --branch)  attach="true" ;;
+                    --detach)  attach="false" ;;
+                    --branch)  ;;   # the default now; accepted, does nothing
                     --serve)   serve="true" ;;
                     --php)     php="${2:-}"; shift ;;
                     --php=*)   php="${1#--php=}" ;;

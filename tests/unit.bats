@@ -2265,7 +2265,7 @@ panel_defs() {
   "
   assert_success
   assert_line "PICKED=status"                 # first row, at FIRST_ROW
-  assert_line "PICKED=exec"                   # fifth row
+  assert_line "PICKED=reset"                  # fifth row
   assert_line --partial "AFTER_MISS=4 BEFORE=4"   # a click past the list moves nothing
 }
 
@@ -2873,6 +2873,156 @@ panel_menu() { # $1=worktree $2=approot
   fn=$(sed -n '/^render()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
   printf '%s' "${fn}" | grep -q 'worktree_state' \
     || fail "render must recompute the state, or the header goes stale"
+}
+
+@test "a new worktree gets a branch of its own, tracking the base" {
+  set -eu -o pipefail
+  # Named after the WORKTREE, not the base: git allows one worktree per branch,
+  # so a second checkout off main would fail outright. --track is what records
+  # the base — BRANCH reads `branch --show-current`, which returns the worktree's
+  # own name here, so without an upstream `origin/<name>` would be looked up and
+  # does not exist.
+  local fn
+  fn=$(sed -n '/^add_core_worktree()/,/^}/p' "${DIR}/tryout/functions.sh")
+
+  printf '%s' "${fn}" | grep -q 'worktree add -B "${name}" --track' \
+    || fail "the branch must be named after the worktree and track its base"
+  printf '%s' "${fn}" | grep -q 'attach="${3:-true}"' \
+    || fail "a branch is the default now; --detach opts out"
+  # Re-using a name would be silently reset by -B, losing what it pointed at.
+  printf '%s' "${fn}" | grep -q 'refs/heads/${name}' \
+    || fail "an existing branch of that name must be refused, not reset"
+
+  # --detach still reaches the detaching path.
+  printf '%s' "${fn}" | grep -q 'worktree add --detach' \
+    || fail "--detach must still be possible"
+  run grep -q -- '--detach)  attach="false"' "${DIR}/tryout/commands.sh"
+  assert_success
+}
+
+@test "download updates the worktree it is given, not always the primary" {
+  set -eu -o pipefail
+  # It took no site at all, so it only ever updated the primary — the one thing
+  # you cannot use it for when the work is in a worktree.
+  local fn
+  fn=$(sed -n '/^ctr_download()/,/^}/p' "${DIR}/tryout/commands.sh")
+
+  printf '%s' "${fn}" | grep -q 'CORE_DIR="$(site_core_dir "${site}")"' \
+    || fail "download must resolve the named site's checkout"
+  # The base comes from the recorded upstream; the branch name is the worktree's.
+  printf '%s' "${fn}" | grep -q 'rev-parse --abbrev-ref' \
+    || fail "the base must come from the tracked upstream"
+  # Rebase, never merge: Gerrit takes one commit with one Change-Id.
+  printf '%s' "${fn}" | grep -q 'pull --rebase' \
+    || fail "the update must rebase"
+  # A detached checkout has nothing to rebase, and must say so rather than fail
+  # obscurely on a branch that is not there.
+  printf '%s' "${fn}" | grep -q 'Detached checkout' \
+    || fail "a detached worktree must be told why it cannot update"
+}
+
+@test "download rebuilds the site it updated, not the primary" {
+  set -eu -o pipefail
+  # It resolved CORE_DIR for the named worktree but then called the two helpers
+  # bare, so both defaulted to the primary: `download jiiha` pulled jiiha's Core
+  # and ran composer install against the site whose vendor tree had not moved.
+  local fn
+  fn=$(sed -n '/^ctr_download()/,/^}/p' "${DIR}/tryout/commands.sh")
+
+  printf '%s' "${fn}" | grep -q 'reset_core_to_main "${site}"' \
+    || fail "the reset must drop the cache of the site it reset"
+  printf '%s' "${fn}" | grep -q 'rebuild_typo3 "${site}"' \
+    || fail "the rebuild must target the site that was updated"
+  printf '%s' "${fn}" | grep -qE '^\s*(reset_core_to_main|rebuild_typo3)\s*$' \
+    && fail "a bare call here silently rebuilds the primary"
+
+  # Every hint must name the same site, or following it hits the primary's Core.
+  printf '%s' "${fn}" | grep -q 'ddev tryout download --reset' \
+    && fail "a --reset hint without the site points at the wrong checkout"
+  printf '%s' "${fn}" | grep -q 'site_is_primary "${site}" || site_arg=' \
+    || fail "the hints need a site suffix built once"
+}
+
+@test "reset moves the branch it is on, never checks out the base" {
+  set -eu -o pipefail
+  # BRANCH is the BASE a worktree tracks, while the worktree carries a branch of
+  # its own name. Checking out the base here fails twice over: another worktree
+  # already holds it ("'main' is already used by worktree at …"), and creating it
+  # fails because the branch exists. `reset --hard` moves whatever is checked
+  # out — a branch or a detached HEAD — which is what was wanted all along.
+  local fn
+  fn=$(sed -n '/^reset_core_to_main()/,/^}/p' "${DIR}/tryout/functions.sh")
+
+  printf '%s' "${fn}" | grep -q 'reset --hard "origin/${BRANCH}"' \
+    || fail "reset must move the current branch to the base tip"
+  printf '%s' "${fn}" | grep -qE 'checkout (-b )?"\$\{BRANCH\}"' \
+    && fail "reset must not check out the base branch"
+
+  # Behaviour: a branch that is not the base survives the reset and lands on it.
+  run bash -c "
+    set -euo pipefail
+    d=\$(mktemp -d); u=\$(mktemp -d)
+    git init -q -b main \"\${u}\"; git -C \"\${u}\" commit -q --allow-empty -m base
+    git clone -q \"\${u}\" \"\${d}\" 2>/dev/null
+    git -C \"\${d}\" checkout -q -b feature
+    git -C \"\${d}\" commit -q --allow-empty -m mine
+    git -C \"\${d}\" reset --hard origin/main >/dev/null 2>&1
+    echo \"on=\$(git -C \"\${d}\" branch --show-current) at=\$(git -C \"\${d}\" log --oneline -1 --format=%s)\"
+    rm -rf \"\${d}\" \"\${u}\"
+  "
+  assert_success
+  assert_output "on=feature at=base"
+}
+
+@test "a worktree with no recorded upstream still updates" {
+  set -eu -o pipefail
+  # `rev-parse --abbrev-ref @{upstream}` EXITS 128 when a branch has no upstream,
+  # and the container runs under `set -e` — so reading it without guarding the
+  # failure killed the command outright. Every worktree created before tracking
+  # was recorded hits this, which is most of them on an existing project.
+  local fn
+  fn=$(sed -n '/^ctr_download()/,/^}/p' "${DIR}/tryout/commands.sh")
+  printf '%s' "${fn}" | grep -q "abbrev-ref '@{upstream}' 2>/dev/null || true" \
+    || fail "reading a missing upstream must not abort under set -e"
+  # And the prefix strip must not be a pipe: pipefail would resurrect the failure.
+  printf '%s' "${fn}" | grep -q 'abbrev-ref.*| *sed' \
+    && fail "piping rev-parse reintroduces its exit code under pipefail"
+
+  # Behaviour: a branch with no upstream leaves BRANCH empty and carries on.
+  run bash -c "
+    set -euo pipefail
+    d=\$(mktemp -d)
+    git init -q -b feature \"\${d}\" 2>/dev/null
+    git -C \"\${d}\" commit -q --allow-empty -m x
+    B=\"\$(git -C \"\${d}\" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)\"
+    B=\"\${B#origin/}\"
+    echo \"reached with BRANCH=[\${B}]\"
+    rm -rf \"\${d}\"
+  "
+  assert_success
+  assert_output --partial "reached with BRANCH=[]"
+}
+
+@test "the panel offers download where there is a site to update" {
+  set -eu -o pipefail
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-lonely" \
+           "${FAKEROOT}/typo3-core-live" "${FAKEROOT}/sites/live"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
+
+  run panel_menu live "${FAKEROOT}"
+  assert_success
+  assert_output --partial "download|download live"
+
+  # The primary names itself too — never the sentinel, which reset would choke on.
+  run panel_menu main "${FAKEROOT}"
+  assert_success
+  assert_output --partial "download|download main"
+
+  # A bare checkout has no site, so there is nothing to update.
+  run panel_menu lonely "${FAKEROOT}"
+  assert_success
+  refute_output --partial "ROW download|"
 }
 
 @test "exec is offered only where there is a site to run in" {

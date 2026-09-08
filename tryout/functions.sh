@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=9
+TRYOUT_VERSION=10
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -637,12 +637,12 @@ rebuild_typo3() {
 
 reset_core_to_main() {
     git -C "${CORE_DIR}" fetch origin
-    # A detached worktree has no local branch to check out; reset in place.
-    if git -C "${CORE_DIR}" symbolic-ref -q HEAD >/dev/null 2>&1 || \
-       git -C "${CORE_DIR}" show-ref -q --verify "refs/heads/${BRANCH}" 2>/dev/null; then
-        git -C "${CORE_DIR}" checkout "${BRANCH}" 2>/dev/null \
-            || git -C "${CORE_DIR}" checkout -b "${BRANCH}" "origin/${BRANCH}"
-    fi
+    # Whatever branch this worktree is on, stay on it and move it to the base's
+    # tip. It must NOT try to check out ${BRANCH}: that is the BASE a worktree
+    # tracks, and a worktree carries a branch of its own name — so checking out
+    # `main` here either collides with the worktree that holds it, or fails
+    # outright because the branch already exists. Only a detached checkout, which
+    # has no branch to move, resets in place.
     git -C "${CORE_DIR}" reset --hard "origin/${BRANCH}"
     git -C "${CORE_DIR}" clean -fd
     # ${1} names the site whose cache to drop; defaults to the primary's.
@@ -770,12 +770,23 @@ migrate_core_to_worktree_layout() {
     success "typo3-core -> $(basename "${target}")"
 }
 
-# Create a sibling worktree. Detached by default: git refuses one branch in two
-# worktrees, and the common case is several worktrees on the same tip carrying
-# different Gerrit patches. Pushes go to refs/for/<branch>, never from a local
-# branch, so a detached HEAD is the normal working state here.
+# Create a sibling worktree on a branch of its own, named after the worktree.
+#
+# Not named after the base: git allows one worktree per branch, so a second
+# checkout off main would fail with "'main' is already used by worktree at …".
+# The worktree's own name is unique by construction.
+#
+# --track records the base as the branch's upstream, which is the only place it
+# survives: BRANCH is read from `branch --show-current`, and that returns the
+# WORKTREE's name here, not the base — so `origin/<name>` does not exist and
+# anything that pulls or resets would fail without it. With the upstream set, a
+# bare `git rebase` finds the base on its own.
+#
+# --detach is still available for a throwaway checkout. Gerrit does not care
+# either way: pushes go to refs/for/<branch> from HEAD, never from a local
+# branch. A branch is for not losing work that has not been pushed yet.
 add_core_worktree() {
-    local name="$1" branch="${2:-${BRANCH}}" attach="${3:-false}" dir
+    local name="$1" branch="${2:-${BRANCH}}" attach="${3:-true}" dir
     validate_worktree_name "${name}" || return 1
     dir=$(core_worktree_dir "${name}")
 
@@ -809,7 +820,16 @@ add_core_worktree() {
 
     info "Creating worktree '${name}' at origin/${branch}..."
     if [ "${attach}" = "true" ]; then
-        git -C "${main_dir}" worktree add -B "${branch}" "${dir}" "origin/${branch}" || return 1
+        # A name already taken would be silently reset by -B, losing whatever it
+        # pointed at.
+        if git -C "${main_dir}" show-ref -q --verify "refs/heads/${name}"; then
+            error "A branch '${name}' already exists"
+            error "  → ddev tryout worktree add ${name}-2 ${branch}"
+            error "  → or: ddev tryout worktree use ${name}   (if it is already a worktree)"
+            return 1
+        fi
+        git -C "${main_dir}" worktree add -B "${name}" --track \
+            "${dir}" "origin/${branch}" || return 1
     else
         git -C "${main_dir}" worktree add --detach "${dir}" "origin/${branch}" || return 1
     fi

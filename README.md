@@ -664,7 +664,7 @@ changes.
 ```text
 typo3-core        -> typo3-core-v13   (symlink: the active Core)
 typo3-core-main/                      (the clone; owns the git object store)
-typo3-core-v13/                       (worktree, detached at origin/13.4)
+typo3-core-v13/                       (worktree, branch v13 tracking origin/13.4)
 ```
 
 Typical use: run a Gerrit patch against v13 while keeping main untouched.
@@ -676,10 +676,15 @@ ddev tryout patch 56947
 ddev tryout worktree use main        # back to main, patch stays on v13
 ```
 
-New worktrees are created with a **detached HEAD** by default. Git refuses to
-check out one branch in two worktrees, and detached is the normal state here
-anyway: patches are cherry-picked on top and pushed to `refs/for/<branch>`.
-Pass `--branch` if you want a real local branch.
+New worktrees get a **branch named after the worktree**, tracking the branch they
+were created from — `worktree add v13 13.4` makes a branch `v13` on top of
+`origin/13.4`. Not named after the base, because git allows one worktree per
+branch and a second checkout off `13.4` would be refused.
+
+The upstream is what `ddev tryout download <name>` rebases onto, so a worktree
+knows where to update from. Gerrit is unaffected either way: pushes go to
+`refs/for/<branch>` from `HEAD`, never from a local branch. Pass `--detach` for
+a throwaway checkout with no branch at all.
 
 Because `use` swaps the Core underneath Composer, it always runs
 `composer install` afterwards — without it `vendor/` would keep pointing at
