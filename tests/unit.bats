@@ -3175,7 +3175,7 @@ panel_menu() { # $1=worktree $2=approot
   assert_output --partial "https://example.ddev.site"
 }
 
-@test "worktree add is offered off-worktree, remove only on one" {
+@test "worktree add is offered where a worktree comes from, remove where it can go" {
   set -eu -o pipefail
   # They are opposites in scope. Creating a worktree is a project-level act and
   # the popup asks for everything it needs, so it belongs where nothing is scoped.
@@ -3192,14 +3192,31 @@ panel_menu() { # $1=worktree $2=approot
   assert_output --partial "ROW worktree add|worktree add"
   refute_output --partial "ROW worktree remove|"
 
-  # Every scoped shape offers remove, naming its own worktree — and never add,
-  # which would be a second way to do a thing this panel is not about.
+  # A scoped worktree offers remove, naming itself — and never add.
   local w
   for w in main live cold; do
     run panel_menu "${w}" "${FAKEROOT}"
     assert_success
     assert_output --partial "ROW worktree remove|worktree remove ${w}"
     refute_output --partial "ROW worktree add|"
+  done
+
+  # The ORIGIN clone is the exception, both ways round. It owns the shared object
+  # store, so remove_core_worktree refuses to drop it — a remove row there could
+  # only ever fail, which is the promise this menu exists not to make. And it is
+  # the clone every other worktree branches from, so it is where making one
+  # belongs. `git worktree add` writes a .git FILE; the origin keeps a directory.
+  mkdir -p "${FAKEROOT}/typo3-core-main/.git"
+  for w in main live cold; do
+    run panel_menu "${w}" "${FAKEROOT}"
+    assert_success
+    if [ "${w}" = "main" ]; then
+      assert_output --partial "ROW worktree add|worktree add"
+      refute_output --partial "ROW worktree remove|"
+    else
+      assert_output --partial "ROW worktree remove|worktree remove ${w}"
+      refute_output --partial "ROW worktree add|"
+    fi
   done
 
   # remove never carries the sentinel: cmd_worktree passes its argument through.
@@ -3217,6 +3234,34 @@ panel_menu() { # $1=worktree $2=approot
     && fail "add must not skip the popup: it asks for a name and a branch"
   printf '%s' "${menu}" | grep -q 'add "worktree add"' \
     || fail "the off-worktree panel must offer worktree add"
+}
+
+@test "the origin clone is told apart by its .git, not by its name" {
+  set -eu -o pipefail
+  # "main" is just the name this project happens to use; another may call the
+  # origin clone anything, and `worktree use` can point the primary at any of them.
+  # What actually distinguishes it is the object store: `git worktree add` writes a
+  # .git FILE pointing back at the main clone, which keeps a real .git DIRECTORY.
+  # One filesystem test, so render can re-ask on every draw.
+  mkdir -p "${FAKEROOT}/typo3-core-origin/.git" "${FAKEROOT}/typo3-core-derived"
+  : > "${FAKEROOT}/typo3-core-derived/.git"
+  ln -s typo3-core-derived "${FAKEROOT}/typo3-core"
+
+  probe() { # $1=worktree -> yes/no
+    TRYOUT_PANEL_WORKTREE="$1" TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
+      eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
+      trap - EXIT INT TERM
+      is_origin_checkout && echo yes || echo no
+    " 2>/dev/null
+  }
+
+  # The origin clone, even though it is NOT the primary here.
+  [ "$(probe origin)" = "yes" ] || fail "a .git directory means the origin clone"
+  # The primary, which is an ordinary worktree.
+  [ "$(probe derived)" = "no" ] || fail "a .git file means an added worktree"
+  # Nothing to test against.
+  [ "$(probe gone)" = "no" ] || fail "a checkout that is not there is not the origin"
+  [ "$(probe '')" = "no" ] || fail "no worktree is not the origin"
 }
 
 @test "the launch rows come last, in frontend then backend order" {

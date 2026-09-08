@@ -50,6 +50,15 @@ fi
 #   primary        it IS the project's site
 #   served         it has a URL and database of its own
 #   unserved       a checkout and nothing more, which most worktrees are
+# Is this the clone that owns the git object store — the origin repository — rather
+# than a worktree added beside it? `git worktree add` writes a .git FILE pointing
+# back at the main clone, which keeps a real .git DIRECTORY. One filesystem test,
+# cheap enough for the rebuild render does on every draw.
+is_origin_checkout() {
+    [ -n "${WORKTREE}" ] && [ -n "${APPROOT}" ] || return 1
+    [ -d "${APPROOT}/typo3-core-${WORKTREE}/.git" ]
+}
+
 worktree_state() {
     [ -n "${WORKTREE}" ] && [ -n "${APPROOT}" ] || { echo "unserved"; return 0; }
     local active=""
@@ -109,7 +118,11 @@ build_menu() {
     elif [ "${STATE}" = "unserved" ]; then
         add "worktree serve" "give it its own URL" "worktree serve ${WORKTREE}"
         add "worktree use" "make it the primary" "worktree use ${WORKTREE}"
-        add "worktree remove" "delete this checkout" "worktree remove ${WORKTREE}"
+        if is_origin_checkout; then
+            add "worktree add" "create a new worktree" "worktree add"
+        else
+            add "worktree remove" "delete this checkout" "worktree remove ${WORKTREE}"
+        fi
     else
         add "checkout" "switch TYPO3 version" "checkout${site:+ --site ${site}}"
         add "patch" "apply a Gerrit change" "patch${site:+ --site ${site}}"
@@ -123,10 +136,18 @@ build_menu() {
             && add "composer" "regenerate the overlay" "composer"
         [ "${STATE}" = "served" ] \
             && add "worktree use" "make it the primary" "worktree use ${WORKTREE}"
-        # Names its own worktree, like every other scoped row, so the popup only
-        # has to confirm. It always confirms here: a served worktree takes its
-        # site and database with it, which is exactly what cmd_worktree asks about.
-        add "worktree remove" "delete this checkout" "worktree remove ${WORKTREE}"
+        # The origin clone offers `add`: it owns the object store every other
+        # worktree branches from, so that is where making one belongs. It never
+        # offers `remove` — remove_core_worktree refuses to drop the checkout
+        # holding that store, so the row could only ever fail, which is the promise
+        # this menu exists not to make. Every other worktree is the other way
+        # round: remove names itself, so the popup has only to confirm, and it does
+        # confirm, because a served worktree takes its site and database with it.
+        if is_origin_checkout; then
+            add "worktree add" "create a new worktree" "worktree add"
+        else
+            add "worktree remove" "delete this checkout" "worktree remove ${WORKTREE}"
+        fi
         # Last, and the only rows that run right here with no popup: they raise
         # the browser and are done, so a popup would just sit in front of it.
         # Two rows rather than one with a flag — the panel has no way to ask.
