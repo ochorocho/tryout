@@ -2423,9 +2423,15 @@ panel_defs() {
   local menu direct
   menu=$(sed -n '/^build_menu()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
   direct=$(printf '%s\n' "${menu}" | grep -c 'add .* direct$' || true)
-  [ "${direct}" -eq 1 ] || fail "expected exactly one direct row, found ${direct}"
-  printf '%s' "${menu}" | grep -q 'add "launch" .* direct$' \
-    || fail "launch is the direct row"
+  [ "${direct}" -eq 2 ] || fail "expected exactly two direct rows, found ${direct}"
+  printf '%s' "${menu}" | grep -q 'add "launch frontend" .* direct$' \
+    || fail "launch frontend must run in the panel"
+  printf '%s' "${menu}" | grep -q 'add "launch backend" .* direct$' \
+    || fail "launch backend must run in the panel"
+  # Both are the same verb; nothing else may claim the direct path.
+  local other
+  other=$(printf '%s\n' "${menu}" | grep 'add .* direct$' | grep -cv 'add "launch ' || true)
+  [ "${other}" -eq 0 ] || fail "${other} row(s) other than launch tagged direct"
 }
 
 # --- the Claude / Terminal tabs ---------------------------------------------
@@ -3088,10 +3094,12 @@ panel_menu() { # $1=worktree $2=approot
   # The panel names its own worktree for launch, the way it does for reset.
   local menu
   menu=$(sed -n '/^build_menu()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  printf '%s' "${menu}" | grep -q 'add "launch" .*@primary' \
+  printf '%s' "${menu}" | grep -q 'add "launch .*@primary' \
     && fail "the panel must never pass the @primary sentinel"
-  printf '%s' "${menu}" | grep -q 'add "launch" .* "launch ${site}"' \
+  printf '%s' "${menu}" | grep -q 'add "launch frontend" .* "launch ${site}"' \
     || fail "the panel must launch its own worktree"
+  printf '%s' "${menu}" | grep -q 'add "launch backend" .* "launch ${site} --backend"' \
+    || fail "the backend row must add --backend to its own site"
 }
 
 @test "launch is host-only and never reaches the container" {
@@ -3122,6 +3130,29 @@ panel_menu() { # $1=worktree $2=approot
   "
   assert_success
   assert_output --partial "https://example.ddev.site"
+}
+
+@test "the launch rows come last, in frontend then backend order" {
+  set -eu -o pipefail
+  # They sit at the end deliberately: the rows above act on the checkout, these
+  # two only look at it. Anything appended after them would separate the pair.
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-live" \
+           "${FAKEROOT}/sites/live"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
+
+  local w out last2
+  # Both shapes that have a site: the served worktree and the primary, whose
+  # trailing rows differ (worktree use vs composer).
+  for w in live main; do
+    out="$(panel_menu "${w}" "${FAKEROOT}")"
+    [ -n "${out}" ] || fail "no menu for ${w}"
+    last2="$(printf '%s\n' "${out}" | grep '^ROW ' | tail -2)"
+    printf '%s\n' "${last2}" | head -1 | grep -q '^ROW launch frontend|' \
+      || fail "frontend is not second to last for ${w}: ${last2}"
+    printf '%s\n' "${last2}" | tail -1 | grep -q '^ROW launch backend|' \
+      || fail "backend is not last for ${w}: ${last2}"
+  done
 }
 
 @test "every panel row carries all four of its fields" {
@@ -3173,11 +3204,13 @@ panel_menu() { # $1=worktree $2=approot
 
   local out
   out="$(rows live)"
-  printf '%s\n' "${out}" | grep -qx 'launch=direct' \
-    || fail "launch lost its direct tag: ${out}"
+  printf '%s\n' "${out}" | grep -qx 'launch frontend=direct' \
+    || fail "launch frontend lost its direct tag: ${out}"
+  printf '%s\n' "${out}" | grep -qx 'launch backend=direct' \
+    || fail "launch backend lost its direct tag: ${out}"
   # And nothing else carries one, so a stale array cannot misroute a slow verb.
-  [ "$(printf '%s\n' "${out}" | grep -c '=direct$')" -eq 1 ] \
-    || fail "more than one row tagged direct: ${out}"
+  [ "$(printf '%s\n' "${out}" | grep -c '=direct$')" -eq 2 ] \
+    || fail "rows other than the two launches are tagged direct: ${out}"
   [ "$(printf '%s\n' "${out}" | grep -c '=$')" -ge 5 ] \
     || fail "rows that should be untagged are not: ${out}"
 }

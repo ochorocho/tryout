@@ -111,9 +111,6 @@ build_menu() {
         add "download" "update from its base branch" "download${site:+ ${site}}"
         add "reset" "reset Core + rebuild" "reset${site:+ ${site}}"
         add "exec" "run a command in it" "exec ${site}"
-        # Runs right here on the host, with no popup: it raises the browser and
-        # is done, so a popup would only leave a box in front of it saying so.
-        add "launch" "open its URL in the browser" "launch ${site}" direct
         # composer has no site: it always rewrites the PRIMARY overlay. Offering
         # it on a served worktree's panel would silently target the wrong Core —
         # exactly what this menu exists to prevent.
@@ -121,6 +118,11 @@ build_menu() {
             && add "composer" "regenerate the overlay" "composer"
         [ "${STATE}" = "served" ] \
             && add "worktree use" "make it the primary" "worktree use ${WORKTREE}"
+        # Last, and the only rows that run right here with no popup: they raise
+        # the browser and are done, so a popup would just sit in front of it.
+        # Two rows rather than one with a flag — the panel has no way to ask.
+        add "launch frontend" "open the site in the browser" "launch ${site}" direct
+        add "launch backend" "open /typo3/ in the browser" "launch ${site} --backend" direct
     fi
     # A list can shrink — unserving drops rows — and reading past its end would
     # abort the panel under set -u.

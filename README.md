@@ -762,6 +762,10 @@ A worktree that is not served has no URL, and `launch` says so rather than
 opening some other site's: give it one with `worktree serve`, or make it the
 primary with `worktree use`.
 
+In the herdr panel the two forms are the last two rows, **launch frontend** and
+**launch backend**. They are the only rows that run in the panel itself instead
+of a popup — they raise the browser, so a popup would only sit in front of it.
+
 ### Opening worktrees in herdr
 
 If you use [herdr](https://herdr.dev) — a terminal multiplexer built around coding
