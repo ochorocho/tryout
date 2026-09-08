@@ -605,6 +605,34 @@ cmd_worktree() {
 }
 
 # ─────────────────────────────────────────────────────────────────────
+# panel — Dock a clickable command panel in the current herdr tab
+# ─────────────────────────────────────────────────────────────────────
+cmd_panel() {
+    reject_args panel "$@" || return 1
+    herdr_available || return 1
+    # Inside herdr, and only there: the panel is a pane in the tab you are looking
+    # at, so there is nothing to dock it to from a plain shell.
+    if [ "${HERDR_ENV:-}" != "1" ]; then
+        error "The panel docks into the herdr tab you are in — run it from inside herdr."
+        error "  → ddev tryout herdr    opens your worktrees there"
+        return 1
+    fi
+    # Linking the plugin is optional and buys one thing: the popup. Without it the
+    # panel still runs every command, just in its own pane instead of a modal. Say
+    # so once, here, because nothing else would ever mention it.
+    if ! herdr plugin list 2>/dev/null | grep -q 'ddev-tryout'; then
+        info "Commands will run in the panel itself."
+        echo -e "  ${DIM}For a popup that prompts instead, register the plugin once:${NC}"
+        echo -e "  ${DIM}→ herdr plugin link ${PROJECT_ROOT}${NC}"
+        echo ""
+    fi
+
+    # The script does the work: it is also the plugin action's entry point, so the
+    # toggle behaves the same however it was reached.
+    bash "$(tryout_script herdr-panel-open.sh)"
+}
+
+# ─────────────────────────────────────────────────────────────────────
 # herdr — Open every Core worktree in its own herdr tab
 # ─────────────────────────────────────────────────────────────────────
 cmd_herdr() {
@@ -739,13 +767,13 @@ cmd_herdr_help() {
     echo -e "${BOLD}ddev tryout herdr${NC} — open Core worktrees in herdr"
     echo ""
     echo "  Creates one herdr workspace per Core worktree (labelled core-<name>),"
-    echo "  each holding a claude pane and a shell pane rooted at that worktree."
+    echo "  each with a Claude tab and a Terminal tab rooted at that worktree."
     echo ""
     echo -e "  ${BOLD}herdr${NC}                 Open every worktree"
     echo -e "  ${BOLD}herdr <name>${NC}          Open just that one"
     echo -e "  ${BOLD}herdr new [<name>]${NC}    Create a worktree and open it (prompts if bare)"
     echo ""
-    echo "  Flags: --no-agent    Two shells instead of claude + shell"
+    echo "  Flags: --no-agent    A plain shell instead of claude"
     echo "         --no-focus    Stay where you are (default: focus the first one)"
     echo "         --no-attach   Print the attach command instead of attaching"
     echo ""
@@ -818,6 +846,8 @@ cmd_help() {
     echo -e "  ${BOLD}worktree${NC}                  Manage side-by-side Core checkouts"
     echo -e "  ${BOLD}cs [setup|doctor]${NC}         Prepare this instance for Core contribution"
     echo -e "  ${BOLD}herdr [<name>|new]${NC}        Open Core worktrees as herdr workspaces"
+    echo -e "  ${BOLD}panel${NC}                     Dock a clickable command panel (inside herdr)"
+    echo -e "  ${DIM}                            herdr plugin link <project> adds prompting popups${NC}"
     echo -e "  ${BOLD}exec <site> <cmd>${NC}         Run a command in a site's PHP/root/database"
     echo -e "  ${BOLD}reset [<site>]${NC}            Reset Core to current branch + rebuild"
     echo -e "  ${BOLD}delete [<site>]${NC}           Wipe DB + fileadmin, fresh setup (--all for every site)"
@@ -846,6 +876,7 @@ case "${ACTION}" in
     patch)    cmd_patch "$@" ;;
     worktree) cmd_worktree "$@" ;;
     cs)       cmd_cs "$@" ;;
+    panel)    cmd_panel "$@" ;;
     herdr)    cmd_herdr "$@" ;;
     exec)     cmd_exec "$@" ;;
     reset)    cmd_reset "$@" ;;

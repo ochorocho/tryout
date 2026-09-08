@@ -117,6 +117,18 @@ post_install_actions:
     fi
 
   - |
+    #ddev-description:Install the herdr plugin manifest
+    # herdr reads herdr-plugin.toml from the directory it is pointed at, and the
+    # paths inside it are relative to that directory — so the manifest belongs at
+    # the project root, not under .ddev/. Registering the plugin stays the user's
+    # call: `herdr plugin link <project>` when they want the panel.
+    if [ ! -f ../herdr-plugin.toml ] || grep -q '#ddev-generated' ../herdr-plugin.toml; then
+      cp tryout/herdr-plugin.toml ../herdr-plugin.toml
+    else
+      echo "Skipping herdr-plugin.toml — it has been modified."
+    fi
+
+  - |
     #ddev-description:Record the payload version
     # Lets `ddev tryout status` notice that a project is running an older copy
     # than the source it was installed from — the command and its tab-completion
@@ -132,6 +144,13 @@ post_install_actions:
     printf '        \033[36mddev tryout cs\033[0m      to prepare for Gerrit contribution\n\n'
 
 removal_actions:
+  - |
+    #ddev-description:Remove the herdr plugin manifest
+    # Only ours: a hand-edited manifest (marker gone) is the user's file now.
+    if [ -f ../herdr-plugin.toml ] && grep -q '#ddev-generated' ../herdr-plugin.toml; then
+      rm -f ../herdr-plugin.toml
+    fi
+
   - |
     #ddev-description:Remove the Composer overlay
     if [ -f ../composer.tryout.json ] && grep -q '#ddev-generated' ../composer.tryout.json; then

@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=4
+TRYOUT_VERSION=7
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -1144,6 +1144,54 @@ herdr_workspace_id() {
         | head -1
 }
 
+# The tab holding a plain shell, beside the agent's own. herdr labels the first
+# tab "1", which says nothing about what is in it.
+TERMINAL_TAB_LABEL="Terminal"
+
+# Give a workspace its Terminal tab unless it already has one. Idempotent, because
+# both routes call it: a freshly opened workspace, and the reconcile pass over
+# workspaces opened before this existed.
+# Name a workspace's first tab for what it holds. herdr calls it "1", which says
+# nothing; an agent pane in it earns "Claude", anything else is a plain "Shell".
+# Only ever renames the default "1", so a name the user chose is left alone.
+ensure_first_tab_label() {
+    local ws="$1" first agent
+    [ -n "${ws}" ] || return 0
+
+    first=$(herdr_cli tab list --workspace "${ws}" 2>/dev/null \
+        | jq -r '.result.tabs[0]? | select(.label == "1") | .tab_id // empty' 2>/dev/null)
+    [ -n "${first}" ] || return 0
+
+    # An agent anywhere in the workspace means the first tab is the one running it:
+    # the Terminal tab is created without one.
+    agent=$(herdr_cli pane list 2>/dev/null \
+        | jq -r --arg w "${ws}" \
+            '[.result.panes[]? | select(.workspace_id == $w and .agent != null)] | length' 2>/dev/null)
+    if [ "${agent:-0}" = "0" ]; then
+        herdr_cli tab rename "${first}" "Shell" >/dev/null 2>&1 || return 1
+    else
+        herdr_cli tab rename "${first}" "Claude" >/dev/null 2>&1 || return 1
+    fi
+    return 0
+}
+
+ensure_terminal_tab() {
+    local ws="$1" dir="$2" has
+    [ -n "${ws}" ] || return 0
+
+    has=$(herdr_cli tab list --workspace "${ws}" 2>/dev/null \
+        | jq -r --arg l "${TERMINAL_TAB_LABEL}" \
+            '[.result.tabs[]? | select(.label == $l)] | length' 2>/dev/null)
+    [ "${has:-0}" = "0" ] || return 0
+
+    # --no-focus: the agent is what the user came for, so opening a workspace must
+    # not land them in the shell.
+    herdr_cli tab create --workspace "${ws}" --cwd "${dir}" \
+        --label "${TERMINAL_TAB_LABEL}" --no-focus >/dev/null 2>&1 \
+        || return 1
+    return 0
+}
+
 # Workspaces this command manages whose worktree is no longer on disk, one per
 # line as "<workspace_id>\t<label>\t<name>".
 #
@@ -1236,6 +1284,12 @@ sync_herdr_workspaces() {
                     echo -e "  ${GREEN}✓${NC} adopted $(herdr_workspace_label "${name}") ${DIM}(was '${label}')${NC}"
                 fi
             fi
+            # Workspaces opened before the Terminal tab existed get one here: the
+            # open loop skips anything already open, so this is the only route that
+            # reaches them. ensure_terminal_tab is a no-op when one is present.
+            ensure_terminal_tab "${id}" "${real}" \
+                || warn "Could not add a Terminal tab to ${label}"
+            ensure_first_tab_label "${id}" || true
         fi
     done < <(herdr_cli workspace list 2>/dev/null \
         | jq -r '.result.workspaces[]? | [.workspace_id, .label] | @tsv' 2>/dev/null)
@@ -1300,12 +1354,13 @@ list_foreign_core_worktrees() {
           done
 }
 
-# One workspace per worktree: the root pane runs the agent, a right split gives a
-# shell. Both are rooted at the worktree. `workspace create` makes its first tab and
-# root pane too, so one call covers the whole topology. Focus stays where the caller
-# was unless asked.
+# One workspace per worktree, in two tabs: the first runs the agent, a second one
+# labelled Terminal holds a plain shell. Both are rooted at the worktree. A tab
+# rather than a split, so the shell costs the agent no width. Focus stays where the
+# caller was unless asked.
 open_worktree_in_herdr() {
     local name="$1" use_agent="${2:-true}" focus="${3:-false}" dir ws_json root_pane agent
+    local first_tab tab_label="Shell"
     # Every caller validates first, but the name becomes a path and a herdr label —
     # so check here too rather than trusting each new call site to remember.
     validate_worktree_name "${name}" || return 1
@@ -1350,14 +1405,13 @@ open_worktree_in_herdr() {
     fi
 
     root_pane=$(printf '%s' "${ws_json}" | jq -r '.result.root_pane.pane_id // empty')
+    # The reply carries the first tab beside the root pane, so naming it costs no
+    # extra round trip.
+    first_tab=$(printf '%s' "${ws_json}" | jq -r '.result.tab.tab_id // empty')
     if [ -z "${root_pane}" ]; then
         error "herdr did not report a pane for '${name}'"
         return 1
     fi
-
-    # Split right: these panes are wide, and there is only ever one split per tab.
-    herdr_cli pane split "${root_pane}" --direction right --cwd "${dir}" --no-focus \
-        >/dev/null 2>&1 || warn "Could not add a shell pane for '${name}'"
 
     if [ "${use_agent}" = "true" ]; then
         agent="$(herdr_agent_name "${name}")"
@@ -1378,20 +1432,33 @@ open_worktree_in_herdr() {
             sleep 1
         done
 
+        # The tab is named for what is actually in it, so the three outcomes below
+        # decide it: only a running agent earns "Claude".
         if [ "${rc}" -eq 0 ]; then
-            success "'${name}' — claude '${agent}' + shell"
+            tab_label="Claude"
+            success "'${name}' — claude '${agent}'"
         elif printf '%s' "${start_err}" | grep -q 'agent_not_ready'; then
             # Claude launched but is waiting on its own UI — on a worktree it has
             # not seen before that is the folder-trust prompt. It is running and
             # named, so this is a normal first run, not a failure.
-            success "'${name}' — claude '${agent}' + shell"
+            tab_label="Claude"
+            success "'${name}' — claude '${agent}'"
             info "  ${DIM}'${agent}' is waiting for input (folder trust?) — open core-${name}${NC}"
         else
             warn "Could not start claude in '${name}' — left as a shell"
         fi
     else
-        success "'${name}' — two shells"
+        success "'${name}' — shell"
     fi
+
+    # Naming the tab and adding the shell are conveniences: a workspace that opened
+    # but could not be labelled is still perfectly usable, so neither failure ends
+    # the run — several worktrees may still be waiting behind this one.
+    [ -n "${first_tab}" ] \
+        && herdr_cli tab rename "${first_tab}" "${tab_label}" >/dev/null 2>&1
+    ensure_terminal_tab "$(herdr_workspace_id "${name}")" "${dir}" \
+        || warn "Could not add a Terminal tab for '${name}'"
+    return 0
 }
 
 # True when the installed payload is not the one this code came from. Runs on the

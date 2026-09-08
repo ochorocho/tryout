@@ -1699,7 +1699,7 @@ LINES
   [ -n "${ctr_verbs}" ]
   for verb in ${host_verbs}; do
     case "${verb}" in
-      herdr|help) continue ;;    # host by nature: the terminal, and static text
+      herdr|panel|help) continue ;;  # host by nature: herdr panes, and static text
     esac
     printf '%s\n' "${ctr_verbs}" | grep -qx "${verb}" || fail "container dispatcher lacks '${verb}'"
   done
@@ -2210,6 +2210,303 @@ YAML
 # installed before a change keeps the old command AND the old completion script.
 # Completion then still works but offers the older feature set, which is
 # indistinguishable from "autocomplete is broken".
+
+# --- the herdr command panel ------------------------------------------------
+# The panel is a bash TUI in a herdr pane. Its risky parts are the ones a parse
+# check cannot see: mouse-sequence decoding, and leaving the terminal as it was.
+
+# Load the panel's definitions without running its input loop, which would block.
+panel_defs() {
+  sed '/^mouse_on$/,$d' "${DIR}/tryout/herdr-panel.sh"
+}
+
+@test "the panel's input loop starts at a bare mouse_on, which the tests cut at" {
+  set -eu -o pipefail
+  # Four tests below load the panel's definitions by deleting everything from the
+  # `mouse_on` that starts the input loop — without it they would block on read.
+  # Rename that line and they stop testing anything while still passing, so pin it.
+  run grep -cx 'mouse_on' "${DIR}/tryout/herdr-panel.sh"
+  assert_success
+  assert_output "1"
+  # And what remains above it must still define the pieces those tests drive.
+  run bash -c "sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh' | grep -c '^handle_escape()'"
+  assert_output "1"
+}
+
+@test "a click maps to the command on that row, and misses are ignored" {
+  set -eu -o pipefail
+  # Rows are absolute screen rows; FIRST_ROW is where the list starts. Getting this
+  # off by one would run the wrong command, which is worse than doing nothing.
+  run /bin/bash -c "
+    eval \"\$(${BATS_TEST_FILENAME%/*}/../tryout/../tryout/herdr-panel.sh >/dev/null 2>&1; true)\" || true
+    eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
+    run_selected() { echo \"PICKED=\${LABELS[\${SEL}]}\"; }
+    handle_escape '[<0;5;3m'
+    handle_escape '[<0;5;7m'
+    before=\${SEL}
+    handle_escape '[<0;5;99m'
+    echo \"AFTER_MISS=\${SEL} BEFORE=\${before}\"
+  "
+  assert_success
+  assert_line "PICKED=status"                 # first row
+  assert_line "PICKED=worktree use"           # fifth row
+  assert_line --partial "AFTER_MISS=4 BEFORE=4"   # a click past the list moves nothing
+}
+
+@test "the panel acts on release and ignores a press, so a drag does not fire" {
+  set -eu -o pipefail
+  run /bin/bash -c "
+    eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
+    run_selected() { echo 'RAN'; }
+    handle_escape '[<0;5;5M'   # press
+    echo 'AFTER_PRESS'
+    handle_escape '[<0;5;5m'   # release
+  "
+  assert_success
+  # The press must not have run anything; only the release does.
+  assert_equal "${lines[0]}" "AFTER_PRESS"
+  assert_line "RAN"
+}
+
+@test "the wheel scrolls the selection instead of running a command" {
+  set -eu -o pipefail
+  run /bin/bash -c "
+    eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
+    run_selected() { echo 'RAN'; }
+    handle_escape '[<65;5;5M'   # wheel down
+    handle_escape '[<65;5;5M'
+    handle_escape '[<64;5;5M'   # wheel up
+    echo \"SEL=\${SEL}\"
+  "
+  assert_success
+  assert_output --partial "SEL=1"
+  refute_output --partial "RAN"
+}
+
+@test "a malformed mouse sequence is ignored, not mis-dispatched" {
+  set -eu -o pipefail
+  run /bin/bash -c "
+    eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
+    run_selected() { echo 'RAN'; }
+    handle_escape '[<garbage'
+    handle_escape '[<0;5m'
+    handle_escape ''
+    echo \"SEL=\${SEL}\"
+  "
+  assert_success
+  assert_output --partial "SEL=0"
+  refute_output --partial "RAN"
+}
+
+@test "the panel always restores mouse mode and the cursor" {
+  set -eu -o pipefail
+  # An abandoned mouse mode leaves the user's pane spraying escape codes into
+  # whatever they type next, so the restore must survive any exit path.
+  run grep -qE '^trap cleanup EXIT INT TERM' "${DIR}/tryout/herdr-panel.sh"
+  assert_success
+  # Disable sequences, and the cursor back on.
+  run grep -q '1006l' "${DIR}/tryout/herdr-panel.sh"; assert_success
+  run grep -q '1000l' "${DIR}/tryout/herdr-panel.sh"; assert_success
+  run grep -q '25h'   "${DIR}/tryout/herdr-panel.sh"; assert_success
+}
+
+@test "the panel never depends on right-click, which herdr keeps for itself" {
+  set -eu -o pipefail
+  # herdr intercepts right-click for its own pane menu unless the user sets
+  # right_click_passthrough_modifier, so a right-click handler would be dead code
+  # for almost everyone. Button 2 is right; only 0 (left) and 64/65 (wheel) are ours.
+  run grep -nE '"2"\)|btn.*=.*2[^0-9]' "${DIR}/tryout/herdr-panel.sh"
+  assert_failure
+}
+
+@test "the panel and its popup are wired to the same verb list" {
+  set -eu -o pipefail
+  # The popup runs whatever the panel hands it, so a verb the panel offers must be
+  # one `ddev tryout` actually dispatches — a typo here is a dead row.
+  local verbs host_case
+  # Read the list as text: sourcing the script would install its cleanup trap,
+  # whose escape codes then land in the captured output as a bogus entry.
+  verbs=$(sed -n '/^LABELS=(/,/^)/p' "${DIR}/tryout/herdr-panel.sh" \
+    | sed -n 's/^[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p')
+  host_case=$(sed -n '/^case "${ACTION}" in/,/^esac/p' "${DIR}/commands/host/tryout")
+  local v
+  while IFS= read -r v; do
+    [ -n "${v}" ] || continue
+    printf '%s\n' "${host_case}" | grep -qE "^    ${v%% *}[)|]" \
+      || fail "panel offers '${v}' but the command does not dispatch '${v%% *}'"
+  done <<< "${verbs}"
+}
+
+@test "the panel docks against the calling pane, never the UI-focused one" {
+  set -eu -o pipefail
+  # This is the bug that made the panel vanish: splitting from whichever pane held
+  # UI focus put it in another client's workspace entirely. herdr's own guidance —
+  # "omitting a target may use the UI-focused pane, which can belong to the user or
+  # another client" — is why the target must come from HERDR_PANE_ID, which DDEV
+  # passes through to a host command.
+  run grep -nE 'focused *== *true|focused_pane' "${DIR}/tryout/herdr-panel-open.sh"
+  assert_failure
+  run grep -q 'HERDR_PANE_ID' "${DIR}/tryout/herdr-panel-open.sh"
+  assert_success
+
+  # `--current` is meaningless here too: a DDEV host command is not itself a pane,
+  # so herdr would fall back to the focused one and reintroduce the same bug.
+  run grep -n 'pane \(split\|focus\).*--current' "${DIR}/tryout/herdr-panel-open.sh"
+  assert_failure
+}
+
+@test "the panel refuses outside herdr instead of splitting nothing" {
+  set -eu -o pipefail
+  run grep -q 'HERDR_ENV' "${DIR}/tryout/herdr-panel-open.sh"
+  assert_success
+  # And the host verb says so too, rather than handing the user a herdr error.
+  local branch
+  branch=$(sed -n '/^cmd_panel()/,/^}/p' "${DIR}/commands/host/tryout")
+  printf '%s' "${branch}" | grep -q 'HERDR_ENV' \
+    || fail "cmd_panel must refuse outside herdr"
+}
+
+@test "the popup resolves the project from the CWD, not from its own path" {
+  set -eu -o pipefail
+  # A plugin action is registered per machine, so $0 points at whichever checkout
+  # installed it. Only the pane's directory says which project the user is in.
+  run grep -q 'resolve_approot' "${DIR}/tryout/herdr-panel-run.sh"
+  assert_success
+  run bash -c "cd /tmp && bash '${DIR}/tryout/herdr-panel-run.sh' status </dev/null 2>&1"
+  assert_output --partial "No DDEV project here"
+}
+
+@test "every panel command runs in the popup, without spawning a pane" {
+  set -eu -o pipefail
+  # checkout/reset/patch once got a pane of their own, to keep a multi-minute
+  # rebuild out of a session-modal popup. It left a stray pane behind after every
+  # run — the clutter the panel exists to avoid — so they run in the popup like
+  # everything else. The long verbs stream their own [1/4] progress, so it shows a
+  # live log rather than a frozen box.
+  run grep -nE 'is_slow|hand_off' "${DIR}/tryout/herdr-panel-run.sh"
+  assert_failure
+  # The popup must never split anything: one command, one popup, nothing left over.
+  run grep -n 'pane split' "${DIR}/tryout/herdr-panel-run.sh"
+  assert_failure
+}
+
+# --- the Claude / Terminal tabs ---------------------------------------------
+# herdr labels a workspace's first tab "1", which says nothing about what is in
+# it. Each worktree gets that tab named for its contents plus a Terminal tab.
+
+# A herdr stub that answers tab list and pane list as well as workspace list, so
+# the tab helpers can be driven without a running herdr.
+fake_herdr_tabs() {
+  mkdir -p "${FAKEROOT}/bin"
+  printf '%s' "${1:-}" > "${FAKEROOT}/tabs.json"
+  printf '%s' "${2:-}" > "${FAKEROOT}/panes.json"
+  cat > "${FAKEROOT}/bin/herdr" <<FAKE
+#!/usr/bin/env bash
+[ "\$1" = "--session" ] && shift 2
+if [ "\$1" = "tab" ] && [ "\$2" = "list" ]; then cat "${FAKEROOT}/tabs.json"; exit 0; fi
+if [ "\$1" = "pane" ] && [ "\$2" = "list" ]; then cat "${FAKEROOT}/panes.json"; exit 0; fi
+echo "CALL: \$*" >> "${FAKEROOT}/calls.log"
+FAKE
+  chmod +x "${FAKEROOT}/bin/herdr"
+  : > "${FAKEROOT}/calls.log"
+}
+
+run_with_fake_herdr() {
+  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
+    export DDEV_APPROOT='${FAKEROOT}'
+    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
+    $1
+  "
+}
+
+@test "a workspace without a Terminal tab gets exactly one" {
+  set -eu -o pipefail
+  fake_herdr_tabs '{"result":{"tabs":[{"tab_id":"w1:t1","label":"1"}]}}'
+  run_with_fake_herdr 'ensure_terminal_tab w1 /tmp/wt'
+  assert_success
+
+  run cat "${FAKEROOT}/calls.log"
+  assert_output --partial "tab create --workspace w1"
+  assert_output --partial "--label Terminal"
+  # --no-focus: the agent is what the user came for; opening must not land them
+  # in the shell instead.
+  assert_output --partial "--no-focus"
+}
+
+@test "a workspace that already has a Terminal tab gets no second one" {
+  set -eu -o pipefail
+  # This is what makes the backfill safe to run on every bare `ddev tryout herdr`.
+  fake_herdr_tabs '{"result":{"tabs":[
+    {"tab_id":"w1:t1","label":"Claude"},
+    {"tab_id":"w1:t2","label":"Terminal"}
+  ]}}'
+  run_with_fake_herdr 'ensure_terminal_tab w1 /tmp/wt'
+  assert_success
+
+  run cat "${FAKEROOT}/calls.log"
+  refute_output --partial "tab create"
+}
+
+@test "the first tab is named Claude only when an agent is actually in it" {
+  set -eu -o pipefail
+  # Naming a tab for an agent that is not running is worse than leaving it "1".
+  fake_herdr_tabs \
+    '{"result":{"tabs":[{"tab_id":"w1:t1","label":"1"}]}}' \
+    '{"result":{"panes":[{"pane_id":"w1:p1","workspace_id":"w1","agent":"claude"}]}}'
+  run_with_fake_herdr 'ensure_first_tab_label w1'
+  assert_success
+  run cat "${FAKEROOT}/calls.log"
+  assert_line "CALL: tab rename w1:t1 Claude"
+
+  # No agent anywhere in the workspace: it is a shell, and says so.
+  fake_herdr_tabs \
+    '{"result":{"tabs":[{"tab_id":"w1:t1","label":"1"}]}}' \
+    '{"result":{"panes":[{"pane_id":"w1:p1","workspace_id":"w1","agent":null}]}}'
+  run_with_fake_herdr 'ensure_first_tab_label w1'
+  assert_success
+  run cat "${FAKEROOT}/calls.log"
+  assert_line "CALL: tab rename w1:t1 Shell"
+}
+
+@test "a tab the user named themselves is never renamed" {
+  set -eu -o pipefail
+  # Only herdr's default "1" is ours to replace. Anything else was chosen.
+  fake_herdr_tabs \
+    '{"result":{"tabs":[{"tab_id":"w1:t1","label":"my notes"}]}}' \
+    '{"result":{"panes":[{"pane_id":"w1:p1","workspace_id":"w1","agent":"claude"}]}}'
+  run_with_fake_herdr 'ensure_first_tab_label w1'
+  assert_success
+  run cat "${FAKEROOT}/calls.log"
+  refute_output --partial "tab rename"
+}
+
+@test "the tab helpers do nothing without a workspace id" {
+  set -eu -o pipefail
+  # herdr_workspace_id returns empty for a workspace that is not open; neither
+  # helper may then act on whatever herdr considers current.
+  fake_herdr_tabs '{"result":{"tabs":[]}}' '{"result":{"panes":[]}}'
+  run_with_fake_herdr 'ensure_terminal_tab "" /tmp/wt; ensure_first_tab_label ""'
+  assert_success
+  run cat "${FAKEROOT}/calls.log"
+  refute_output --partial "tab create"
+  refute_output --partial "tab rename"
+}
+
+@test "opening a worktree names its tab from the agent it actually started" {
+  set -eu -o pipefail
+  # The three agent-start outcomes decide the name, so the label cannot drift from
+  # what the success/warn lines report.
+  local fn
+  fn=$(sed -n '/^open_worktree_in_herdr()/,/^}/p' "${DIR}/tryout/functions.sh")
+
+  # Default is Shell; only a started agent promotes it to Claude.
+  printf '%s' "${fn}" | grep -q 'tab_label="Shell"' \
+    || fail "the tab must default to Shell"
+  [ "$(printf '%s' "${fn}" | grep -c 'tab_label="Claude"')" -eq 2 ] \
+    || fail "both agent-running branches must name the tab Claude"
+  printf '%s' "${fn}" | grep -q 'ensure_terminal_tab' \
+    || fail "opening a worktree must add its Terminal tab"
+}
 
 @test "the payload carries a version, and install records it" {
   set -eu -o pipefail

@@ -746,7 +746,7 @@ agents — one command lays out every Core worktree:
 ```bash
 ddev tryout herdr              # every worktree
 ddev tryout herdr v13          # just that one
-ddev tryout herdr --no-agent   # two shells instead of claude + shell
+ddev tryout herdr --no-agent   # a plain shell instead of claude
 ```
 
 Each worktree becomes its own herdr workspace, labelled `core-<name>` so it is

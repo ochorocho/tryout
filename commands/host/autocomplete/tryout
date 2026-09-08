@@ -270,13 +270,14 @@ case "${VERB}" in
         c worktree "Manage side-by-side Core checkouts"
         c cs       "Prepare this instance for Core contribution"
         c herdr    "Open Core worktrees as herdr workspaces"
+        c panel    "Dock a clickable command panel (inside herdr)"
         c exec     "Run a command in a site's PHP/root/database"
         c reset    "Reset Core to current branch + rebuild"
         c delete   "Wipe DB + fileadmin, fresh setup"
         c help     "Show help"
         ;;
 
-    status | composer | help)
+    status | composer | panel | help)
         hint "${VERB} takes no arguments"
         ;;
 
@@ -350,7 +351,7 @@ case "${VERB}" in
                 c new          "create a worktree and open it"
                 worktrees all
             fi
-            flag --no-agent  "two shells instead of claude + shell"
+            flag --no-agent  "a plain shell instead of claude"
             flag --no-focus  "stay where you are"
             flag --no-attach "print the attach command instead of attaching"
         else
@@ -364,7 +365,7 @@ case "${VERB}" in
                     fi
                     ;;
                 *)
-                    flag --no-agent  "two shells instead of claude + shell"
+                    flag --no-agent  "a plain shell instead of claude"
                     flag --no-focus  "stay where you are"
                     flag --no-attach "print the attach command instead of attaching"
                     ;;
