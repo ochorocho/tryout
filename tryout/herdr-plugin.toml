@@ -25,9 +25,11 @@ title = "tryout"
 placement = "split"
 command = ["bash", ".ddev/tryout/herdr-panel.sh"]
 
-# One command, prompted for and run — every verb, however long it takes, so nothing
-# is left behind in the layout. Session-modal, so it can own the screen while gum
-# asks; the verb arrives as TRYOUT_PANEL_VERB because a pane takes no arguments.
+# One command, prompted for and run — however long it takes, so nothing is left
+# behind in the layout. Session-modal, so it can own the screen while gum asks;
+# the verb arrives as TRYOUT_PANEL_VERB because a pane takes no arguments.
+# Not every row comes here: one that is fast, silent and needs no terminal runs
+# in the panel itself, where a modal box would only be in the way.
 [[panes]]
 id = "run"
 title = "tryout"

@@ -2400,18 +2400,32 @@ panel_defs() {
   assert_output --partial "No DDEV project here"
 }
 
-@test "every panel command runs in the popup, without spawning a pane" {
+@test "the popup never spawns a pane, and only launch skips the popup" {
   set -eu -o pipefail
   # checkout/reset/patch once got a pane of their own, to keep a multi-minute
   # rebuild out of a session-modal popup. It left a stray pane behind after every
-  # run — the clutter the panel exists to avoid — so they run in the popup like
-  # everything else. The long verbs stream their own [1/4] progress, so it shows a
-  # live log rather than a frozen box.
+  # run — the clutter the panel exists to avoid — so they run in the popup, which
+  # streams their [1/4] progress as a live log rather than a frozen box.
   run grep -nE 'is_slow|hand_off' "${DIR}/tryout/herdr-panel-run.sh"
   assert_failure
   # The popup must never split anything: one command, one popup, nothing left over.
   run grep -n 'pane split' "${DIR}/tryout/herdr-panel-run.sh"
   assert_failure
+  # Nor may the panel itself.
+  run grep -n 'pane split' "${DIR}/tryout/herdr-panel.sh"
+  assert_failure
+
+  # The exception runs the other way: launch skips the popup entirely and runs in
+  # the panel. It raises the browser, so a popup only puts a box in front of it.
+  # Nothing else may claim that — a verb that prompts, takes minutes, or prints a
+  # screenful needs the popup's room and its TTY. status is the near miss: fast
+  # and read-only, but a screenful in a ~25-column strip.
+  local menu direct
+  menu=$(sed -n '/^build_menu()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
+  direct=$(printf '%s\n' "${menu}" | grep -c 'add .* direct$' || true)
+  [ "${direct}" -eq 1 ] || fail "expected exactly one direct row, found ${direct}"
+  printf '%s' "${menu}" | grep -q 'add "launch" .* direct$' \
+    || fail "launch is the direct row"
 }
 
 # --- the Claude / Terminal tabs ---------------------------------------------
@@ -3108,6 +3122,147 @@ panel_menu() { # $1=worktree $2=approot
   "
   assert_success
   assert_output --partial "https://example.ddev.site"
+}
+
+@test "every panel row carries all four of its fields" {
+  set -eu -o pipefail
+  # Four parallel arrays and no associative ones, so a row that fell out of step
+  # would read another row's arguments — a command run on the wrong worktree,
+  # which is the whole class of bug this menu exists to prevent.
+  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-cold" \
+           "${FAKEROOT}/typo3-core-live" "${FAKEROOT}/sites/live"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
+
+  counts() { # $1=worktree — every menu shape, since each builds a different list
+    TRYOUT_PANEL_WORKTREE="$1" TRYOUT_PANEL_APPROOT="${FAKEROOT}" \
+    /bin/bash -c "
+      eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
+      trap - EXIT INT TERM
+      # TWICE: the inline path rebuilds the menu after every run, and an array
+      # the rebuild forgets to reset keeps growing while the others do not.
+      build_menu; build_menu
+      echo \"\${#LABELS[@]} \${#HINTS[@]} \${#ARGS[@]} \${#DIRECT[@]}\"
+    " 2>/dev/null
+  }
+
+  local w n
+  for w in main live cold ""; do
+    n="$(counts "${w}")"
+    [ -n "${n}" ] || fail "menu for '${w:-<none>}' produced nothing"
+    # All four equal, whatever the length.
+    printf '%s\n' "${n}" | grep -qE '^([0-9]+) \1 \1 \1$' \
+      || fail "arrays out of step for '${w:-<none>}': ${n}"
+  done
+
+  # Equal lengths are not enough: a DIRECT that recorded nothing, or one left
+  # stale from an earlier build, keeps every count identical while sending the
+  # wrong row down the wrong path. So check the VALUES line up with the labels,
+  # and that a second build_menu — which the inline path does run — is clean.
+  rows() { # $1=worktree -> "<label> <direct>" per row, twice-built
+    TRYOUT_PANEL_WORKTREE="$1" TRYOUT_PANEL_APPROOT="${FAKEROOT}" \
+    /bin/bash -c "
+      eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
+      trap - EXIT INT TERM
+      build_menu; build_menu
+      i=0; while [ \$i -lt \${#LABELS[@]} ]; do
+        printf '%s=%s\n' \"\${LABELS[\$i]}\" \"\${DIRECT[\$i]}\"; i=\$((i+1))
+      done
+    " 2>/dev/null
+  }
+
+  local out
+  out="$(rows live)"
+  printf '%s\n' "${out}" | grep -qx 'launch=direct' \
+    || fail "launch lost its direct tag: ${out}"
+  # And nothing else carries one, so a stale array cannot misroute a slow verb.
+  [ "$(printf '%s\n' "${out}" | grep -c '=direct$')" -eq 1 ] \
+    || fail "more than one row tagged direct: ${out}"
+  [ "$(printf '%s\n' "${out}" | grep -c '=$')" -ge 5 ] \
+    || fail "rows that should be untagged are not: ${out}"
+}
+
+@test "launch runs from the panel without a popup, and a failure is still seen" {
+  set -eu -o pipefail
+  local fn rd
+  fn=$(sed -n '/^run_selected()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
+
+  # The direct branch must come BEFORE the marker file is minted, or every Enter
+  # on such a row leaves one in TMPDIR that nothing ever collects.
+  local d_line m_line
+  d_line=$(printf '%s\n' "${fn}" | grep -n 'DIRECT\[' | head -1 | cut -d: -f1)
+  m_line=$(printf '%s\n' "${fn}" | grep -n 'local marker=' | head -1 | cut -d: -f1)
+  [ -n "${d_line}" ] || fail "run_selected never consults DIRECT"
+  [ -n "${m_line}" ] || fail "no marker line to order against"
+  [ "${d_line}" -lt "${m_line}" ] || fail "the direct branch must precede the marker"
+
+  rd=$(sed -n '/^run_direct()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
+  [ -n "${rd}" ] || fail "no run_direct"
+  # Success is silent — the pane is a narrow strip and the browser already said
+  # it — but stderr is kept, or a failed launch is indistinguishable from a
+  # successful one. The order is the whole trick; see the behavioural test below.
+  printf '%s' "${rd}" | grep -q '2>&1 >/dev/null' \
+    || fail "run_direct must keep stderr and drop stdout, in that order"
+  # It must not take the pane over: no clear, no mouse handover. That dance is
+  # the inline fallback's, and copying it would restore what this removes.
+  printf '%s' "${rd}" | grep -q '2J' \
+    && fail "the direct path must never clear the pane"
+  printf '%s' "${rd}" | grep -q 'mouse_off' \
+    && fail "the direct path must not hand the terminal over"
+  # A bad approot must not read as success: `cd … && cmd` short-circuits to rc 0
+  # with no output, which would make every run quietly do nothing.
+  printf '%s' "${rd}" | grep -q 'if \[ ! -d "${root}" \]' \
+    || fail "run_direct must fail a missing project instead of short-circuiting"
+  # And the message reaches the user through render, not a printf the next draw
+  # would wipe before it could be read.
+  printf '%s' "${rd}" | grep -q 'NOTICE="\$(printf' \
+    || fail "run_direct must report the captured error through NOTICE"
+  local rn
+  rn=$(sed -n '/^render()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
+  printf '%s' "${rn}" | grep -q 'NOTICE=""' \
+    || fail "render must clear the notice, so it shows exactly once"
+}
+
+@test "the panel's direct path swallows success output and keeps the error" {
+  set -eu -o pipefail
+  # `2>&1 >/dev/null` is the classic thing to write backwards, and reversed it
+  # drops both streams — a silent-failure bug no grep of the source would catch.
+  # So run the REAL run_direct against a stub ddev, rather than a copy of its
+  # redirection, which would pass however the shipped one is written.
+  mkdir -p "${FAKEROOT}/typo3-core-main"
+  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+
+  drive() { # $1=stub body -> "NOTICE=[…]"
+    TRYOUT_PANEL_WORKTREE=main TRYOUT_PANEL_APPROOT="${FAKEROOT}" \
+    /bin/bash -c "
+      eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
+      trap - EXIT INT TERM
+      ddev() { $1 }
+      NOTICE=''
+      run_direct 'launch main'
+      echo \"NOTICE=[\${NOTICE}]\"
+    " 2>/dev/null
+  }
+
+  # Success says nothing: the browser coming forward is the report.
+  run drive "echo 'Opened https://x.ddev.site'; return 0;"
+  assert_success
+  assert_output "NOTICE=[]"
+
+  # Failure keeps stderr, drops the stdout noise, and shows the first real line.
+  run drive "echo 'stdout noise'; echo '' >&2; echo \"No served site 'x'\" >&2; return 1;"
+  assert_success
+  assert_output "NOTICE=[No served site 'x']"
+  refute_output --partial "stdout noise"
+
+  # And a long error is cut to what the strip can hold, rather than wrapping over
+  # the menu it is reporting about.
+  run drive "echo \"Worktree 'x' is not served — it has no URL and cannot be opened\" >&2; return 1;"
+  assert_success
+  local n
+  n="${output#NOTICE=[}"; n="${n%]}"
+  [ "${#n}" -le 24 ] || fail "notice is ${#n} chars; the pane is a ~25-column strip"
+  [ "${#n}" -gt 0 ]  || fail "a long error must still say something"
 }
 
 @test "the panel offers download where there is a site to update" {

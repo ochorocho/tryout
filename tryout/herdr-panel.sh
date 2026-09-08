@@ -16,7 +16,7 @@
 
 set -uo pipefail
 
-BOLD='\033[1m'; DIM='\033[2m'; CYAN='\033[0;36m'; NC='\033[0m'
+BOLD='\033[1m'; DIM='\033[2m'; CYAN='\033[0;36m'; RED='\033[0;31m'; NC='\033[0m'
 # The selected row. Explicit white-on-black, never reverse video: ESC[7m swaps
 # whatever the terminal's CURRENT colours are, which in a dark theme can come out
 # near-invisible — the selection was there, you just could not see it.
@@ -64,16 +64,26 @@ worktree_state() {
     fi
 }
 
-# Three parallel arrays, because bash 3.2 has no associative ones: what the row
-# says, what it means, and the arguments it runs.
-LABELS=(); HINTS=(); ARGS=()
-add() { LABELS+=("$1"); HINTS+=("$2"); ARGS+=("$3"); }
+# Four parallel arrays, because bash 3.2 has no associative ones: what the row
+# says, what it means, the arguments it runs, and whether it may run right here.
+LABELS=(); HINTS=(); ARGS=(); DIRECT=()
+# $4 "direct": fast, silent on success, needs no terminal — for such a verb the
+# popup is a modal box in front of what it just did. The default is the popup,
+# which is right for anything that prompts, takes minutes, or prints more than a
+# line. Adding a second direct row means re-arguing that case; a test counts them.
+add() { LABELS+=("$1"); HINTS+=("$2"); ARGS+=("$3"); DIRECT+=("${4:-}"); }
+
+# A one-shot message under the menu. It cannot simply be printed: render clears
+# the pane at the top of every draw and the loop redraws BEFORE it blocks on a
+# key, so anything printed here is wiped before it can be read. render shows this
+# and clears it, so it survives exactly until the next keystroke.
+NOTICE=""
 
 # The menu is built from the state, so a row never promises something that cannot
 # work here: checkout/reset/patch need a site, and on an unserved worktree there is
 # none — they would fail, or worse, silently act on the primary instead.
 build_menu() {
-    LABELS=(); HINTS=(); ARGS=()
+    LABELS=(); HINTS=(); ARGS=(); DIRECT=()
     STATE="$(worktree_state)"
 
     # Always this panel's OWN worktree, the primary included. A bare command with
@@ -101,8 +111,9 @@ build_menu() {
         add "download" "update from its base branch" "download${site:+ ${site}}"
         add "reset" "reset Core + rebuild" "reset${site:+ ${site}}"
         add "exec" "run a command in it" "exec ${site}"
-        # The popup runs on the host, so this reaches a real browser.
-        add "launch" "open its URL in the browser" "launch ${site}"
+        # Runs right here on the host, with no popup: it raises the browser and
+        # is done, so a popup would only leave a box in front of it saying so.
+        add "launch" "open its URL in the browser" "launch ${site}" direct
         # composer has no site: it always rewrites the PRIMARY overlay. Offering
         # it on a served worktree's panel would silently target the wrong Core —
         # exactly what this menu exists to prevent.
@@ -177,6 +188,13 @@ render() {
         i=$(( i + 1 ))
     done
     printf "\n  ${DIM}%s${NC}\n" "${HINTS[${SEL}]}"
+    # What a direct row had to say, shown once. Cleared here rather than by a
+    # timer or a keypress: the next draw is the next keystroke, which is exactly
+    # how long a one-line failure wants to stay up.
+    if [ -n "${NOTICE}" ]; then
+        printf "\n  ${RED}✗${NC} %s\n" "${NOTICE}"
+        NOTICE=""
+    fi
     printf "\n  ${DIM}↑↓ or click · enter runs · esc closes${NC}"
 }
 
@@ -204,15 +222,57 @@ popup_started() {
     return 1
 }
 
+# A row that runs right here: no popup, no screen clear, nothing to dismiss.
+run_direct() {
+    local verb="$1" err rc
+    # Test the directory rather than leaning on `cd … && ddev`: that short-circuits
+    # to rc 0 with no output, so a bad APPROOT would make every run quietly do
+    # nothing at all — success and silence being indistinguishable here.
+    local root="${APPROOT:-${PWD}}"
+    if [ ! -d "${root}" ]; then
+        NOTICE="no project here"
+        return 0
+    fi
+    # stdout goes nowhere. On success it is one line — "Opened https://…" — that
+    # the browser coming to the front already said better, and this pane is a
+    # ~25-column strip with no room for it. stderr is kept, because a failure that
+    # vanished would be the worst outcome of running without a popup.
+    #
+    # `2>&1 >/dev/null` in THAT order: reversed, both streams are dropped and every
+    # failure is silent. ${verb} is unquoted on purpose — "launch benni" is two
+    # words — as herdr-panel-run.sh runs it. The cd stays inside the substitution's
+    # subshell, so the panel's own cwd never moves.
+    # shellcheck disable=SC2086
+    err="$(cd "${root}" && ddev tryout ${verb} 2>&1 >/dev/null)"
+    rc=$?
+    [ "${rc}" -eq 0 ] && return 0
+
+    # No `command -v ddev` guard: a missing ddev lands here as the shell's own
+    # "command not found" with rc 127, which is a better message than a bespoke one.
+    NOTICE="$(printf '%s' "${err}" | grep -v '^[[:space:]]*$' | head -1 | cut -c1-24)"
+    return 0
+}
+
 run_selected() {
+    # The arguments, not the label: a row reads "reset" but runs "reset benni".
+    local verb="${ARGS[${SEL}]}"
+
+    # Some rows want no popup at all. Tested BEFORE the marker below, or every
+    # Enter on such a row leaves a marker file in TMPDIR that nothing collects.
+    # There is deliberately no fallback to the popup when it fails: a popup would
+    # do nothing better, and it is the box in front of the browser that this
+    # exists to avoid.
+    if [ -n "${DIRECT[${SEL}]}" ]; then
+        run_direct "${verb}"
+        return 0
+    fi
+
     local popup_err=""
     # A marker unique to this panel and this run: the popup touches it to prove it
     # really started, since nothing observable from here otherwise distinguishes
     # our popup from a sibling workspace's.
     local marker="${TMPDIR:-/tmp}/tryout-panel-started.$$.${SEL}"
     rm -f "${marker}" 2>/dev/null || true
-    # The arguments, not the label: a row reads "reset" but runs "reset benni".
-    local verb="${ARGS[${SEL}]}"
     # Why the popup did or did not appear is invisible from inside the pane, so
     # leave a trace. TRYOUT_PANEL_DEBUG is off unless someone asks for it.
     [ -n "${TRYOUT_PANEL_DEBUG:-}" ] && \
