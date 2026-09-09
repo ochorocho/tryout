@@ -124,8 +124,6 @@ printf "\n  ${BOLD}ddev tryout %s${NC}\n\n" "${VERB}"
 ddev tryout ${VERB}
 rc=$?
 
-[ "${rc}" -eq 0 ] || printf "\n${RED}✗${NC} exited ${rc}\n"
-
 # A verb that changes which worktrees exist leaves the herdr session out of step:
 # `worktree remove` and `unserve` strand a workspace whose checkout is gone, and
 # `add` without --herdr leaves a worktree with none. A bare `ddev tryout herdr`
@@ -141,9 +139,29 @@ case "${rc}:${VERB}" in
     0:worktree\ *|0:checkout*)
         printf "\n  ${DIM}reloading workspaces…${NC}\n"
         ddev tryout herdr >/dev/null 2>&1 || true
-        wake_panel
         ;;
 esac
 
+# Done, and nothing went wrong: close the popup rather than making the user
+# dismiss a report of a success. ANY verb can change what the panel shows — serve
+# and unserve change its rows, checkout and patch its branch line — so the panel
+# is woken whatever ran, not just for the verbs that need the reconcile above.
+#
+# The exception is a verb whose OUTPUT is the point. `status` renders a screenful
+# of project state and `exec` shows whatever was typed; closing those the instant
+# they succeed would flash the answer past unread. They changed nothing, so the
+# panel is woken anyway and only the pause is kept.
+#
+# A failure always keeps the popup: its output is the only place the error is
+# written, and closing over it would leave a panel that looks unchanged.
+if [ "${rc}" -eq 0 ]; then
+    wake_panel
+    case "${VERB}" in
+        status*|exec*) ;;
+        *)             exit 0 ;;
+    esac
+fi
+
+[ "${rc}" -eq 0 ] || printf "\n${RED}✗${NC} exited ${rc}\n"
 pause
 exit "${rc}"

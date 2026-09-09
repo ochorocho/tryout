@@ -3445,9 +3445,63 @@ panel_menu() { # $1=worktree $2=approot
   printf '%s' "${run}" | grep -q 'workspace focus' \
     && fail "the popup must leave the focus where the user put it"
 
-  # Instead it wakes the panel, so the rows it just invalidated are redrawn.
-  printf '%s' "${fn}" | grep -q 'wake_panel' \
+  # The panel is woken for ANY success, not only these verbs — serve and unserve
+  # change its rows, checkout and patch its branch line — so that lives outside
+  # this case block now.
+  # The CALL, not the definition — `wake_panel` names itself either way.
+  local run
+  run=$(cat "${DIR}/tryout/herdr-panel-run.sh" | grep -v '^[[:space:]]*#' \
+        | grep -v '^wake_panel()')
+  printf '%s' "${run}" | grep -qE '^\s+wake_panel$' \
     || fail "the panel that ran the command must be told to redraw"
+}
+
+@test "the popup closes itself on success and stays open on failure" {
+  set -eu -o pipefail
+  # Clicking a row and then having to dismiss a report of a success is friction —
+  # and a popup nobody dismisses BLOCKS the next one: herdr answers `ui_busy: a
+  # popup pane is already open`. Verified live, with one stuck on a confirmation
+  # prompt for four minutes.
+  local run
+  run=$(cat "${DIR}/tryout/herdr-panel-run.sh" | grep -v '^[[:space:]]*#')
+
+  # Success: wake the panel, then leave.
+  printf '%s' "${run}" | grep -q 'if \[ "${rc}" -eq 0 \]; then'     || fail "success must be handled apart from failure"
+  printf '%s' "${run}" | grep -q 'exit 0'     || fail "a successful command must close its own popup"
+
+  # Except where the OUTPUT is the point: status renders a screenful and exec
+  # shows whatever was typed. Closing those on success flashes the answer past.
+  printf '%s' "${run}" | grep -q 'status\*|exec\*'     || fail "the read-only verbs must keep their output on screen"
+
+  # Failure always holds, with the error and the pause — the popup is the only
+  # place it is written.
+  printf '%s' "${run}" | grep -q 'exited ${rc}'     || fail "a failure must say so"
+  printf '%s' "${run}" | grep -q '^pause$'     || fail "a failure must wait rather than vanish"
+
+  # Behaviour: the branch each rc takes.
+  run bash -c '
+    rc=0; VERB="worktree serve x"
+    if [ "${rc}" -eq 0 ]; then
+      case "${VERB}" in status*|exec*) ;; *) echo "CLOSES"; exit 0 ;; esac
+    fi
+    echo "PAUSES"'
+  assert_output "CLOSES"
+
+  run bash -c '
+    rc=0; VERB="status"
+    if [ "${rc}" -eq 0 ]; then
+      case "${VERB}" in status*|exec*) ;; *) echo "CLOSES"; exit 0 ;; esac
+    fi
+    echo "PAUSES"'
+  assert_output "PAUSES"
+
+  run bash -c '
+    rc=1; VERB="worktree serve x"
+    if [ "${rc}" -eq 0 ]; then
+      case "${VERB}" in status*|exec*) ;; *) echo "CLOSES"; exit 0 ;; esac
+    fi
+    echo "PAUSES"'
+  assert_output "PAUSES"
 }
 
 @test "the popup wakes its panel with a key the panel ignores" {
