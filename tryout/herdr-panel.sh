@@ -384,7 +384,8 @@ run_selected() {
        && popup_err="$(herdr_cli plugin pane open --plugin ddev-tryout \
             --entrypoint run --cwd "${APPROOT:-${PWD}}" \
             --env "TRYOUT_PANEL_VERB=${verb}" \
-            --env "TRYOUT_PANEL_STARTED=${marker}" 2>&1)" \
+            --env "TRYOUT_PANEL_STARTED=${marker}" \
+            --env "TRYOUT_PANEL_PANE=${HERDR_PANE_ID:-}" 2>&1)" \
        && printf '%s' "${popup_err}" | grep -q '"type":"ok"' \
        && popup_started "${marker}"; then
         [ -n "${TRYOUT_PANEL_DEBUG:-}" ] && \
@@ -473,11 +474,13 @@ refresh_git_info
 mouse_on
 
 while :; do
+    # Before the draw, not after: a popup launched earlier has had time to finish,
+    # and refilling here means the very next repaint shows its result. After
+    # `render` the values would be a draw behind — right in the variables, wrong on
+    # screen until something else provoked another draw.
+    if [ "${GIT_STALE}" -eq 1 ]; then refresh_after_command; fi
     render
     IFS= read -rsn1 key || break
-    # A popup launched on the previous keystroke has had time to finish by now, so
-    # this is the first moment its result can be read back.
-    if [ "${GIT_STALE}" -eq 1 ]; then refresh_after_command; fi
     case "${key}" in
         $'\033') handle_escape "$(read_escape_tail)" || break ;;
         ""|$'\n') run_selected ;;

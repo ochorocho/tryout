@@ -3341,7 +3341,7 @@ panel_menu() { # $1=worktree $2=approot
   assert_output --partial "ROW worktree serve|worktree serve cold"
 }
 
-@test "a worktree verb reloads the workspaces and focuses the origin clone" {
+@test "a worktree verb reloads the workspaces and wakes the panel that ran it" {
   set -eu -o pipefail
   # `worktree remove` and `unserve` strand a workspace whose checkout is gone, and
   # the popup is the only place that knows when the command actually finished — the
@@ -3360,25 +3360,79 @@ panel_menu() { # $1=worktree $2=approot
     || fail "a failed command must not trigger a reload"
   printf '%s' "${fn}" | grep -q 'ddev tryout herdr' \
     || fail "the reload is the reconcile pass"
-  printf '%s' "${fn}" | grep -q 'herdr_focus_main' \
-    || fail "focus must land somewhere that still exists"
 
-  # The origin clone is the one workspace that is always there — remove_core_worktree
-  # refuses to drop the checkout owning the object store — and it is found by its
-  # .git DIRECTORY, since `git worktree add` writes a .git FILE.
-  local fm
-  fm=$(sed -n '/^herdr_focus_main()/,/^}/p' "${DIR}/tryout/herdr-panel-run.sh" \
-       | grep -v '^[[:space:]]*#')
-  [ -n "${fm}" ] || fail "no herdr_focus_main"
-  printf '%s' "${fm}" | grep -q '\-d "${d}.git"' \
-    || fail "the origin clone is the one with a .git directory"
-  printf '%s' "${fm}" | grep -q 'workspace focus' \
-    || fail "it must actually focus the workspace"
-  # It runs where herdr and jq may not be, so it must not blow up without them.
-  printf '%s' "${fm}" | grep -q 'command -v jq' \
-    || fail "a missing jq must be survivable"
+  # It must NOT move the focus. An earlier version jumped to the origin clone on
+  # the theory that the popup's own workspace might have just been removed; that
+  # yanks the user somewhere they did not ask to go, which is worse than the case
+  # it guarded against.
+  local run
+  run=$(cat "${DIR}/tryout/herdr-panel-run.sh")
+  printf '%s' "${run}" | grep -q 'workspace focus' \
+    && fail "the popup must leave the focus where the user put it"
+
+  # Instead it wakes the panel, so the rows it just invalidated are redrawn.
+  printf '%s' "${fn}" | grep -q 'wake_panel' \
+    || fail "the panel that ran the command must be told to redraw"
 }
 
+@test "the popup wakes its panel with a key the panel ignores" {
+  set -eu -o pipefail
+  # The panel blocks in `read` with no timeout, so one byte is what makes it
+  # redraw — and render rebuilds the whole menu, so one byte is all it needs.
+  # But the byte must fall THROUGH the loop's case: q quits, Enter runs the
+  # selected row, ESC closes, j/k move the selection. Any of those would do
+  # something the user never asked for.
+  local fn key
+  fn=$(sed -n '/^wake_panel()/,/^}/p' "${DIR}/tryout/herdr-panel-run.sh" \
+       | grep -v '^[[:space:]]*#')
+  [ -n "${fn}" ] || fail "no wake_panel"
+
+  printf '%s' "${fn}" | grep -q 'pane send-keys' \
+    || fail "waking the panel means sending it a key"
+  key=$(printf '%s\n' "${fn}" | sed -n 's/.*send-keys[^ ]* "\${TRYOUT_PANEL_PANE}" \([a-z]*\).*/\1/p')
+  [ -n "${key}" ] || fail "could not read the key it sends"
+  case "${key}" in
+    q|j|k|enter|escape|esc) fail "'${key}' is handled by the panel loop and would act" ;;
+  esac
+  # And that key really is unhandled: the loop's case must not mention it.
+  local loop
+  loop=$(sed -n '/^while :; do/,/^done$/p' "${DIR}/tryout/herdr-panel.sh")
+  printf '%s' "${loop}" | grep -qE "^\s+${key}\)" \
+    && fail "the panel's case handles '${key}'"
+
+  # No pane means the runner was called positionally, with no panel behind it —
+  # and `send-keys` with an empty pane id is an error, not a no-op. Pin the GUARD,
+  # not just the variable: it appears in the send-keys line either way.
+  printf '%s' "${fn}" | grep -q '\[ -n "\${TRYOUT_PANEL_PANE:-}" \] || return' \
+    || fail "wake_panel must no-op when there is no panel to wake"
+  # It runs where herdr may not be.
+  printf '%s' "${fn}" | grep -q 'command -v herdr' \
+    || fail "a missing herdr must be survivable"
+
+  # And the panel actually tells the popup which pane that is. herdr sets
+  # HERDR_PANE_ID in every pane it runs, so the panel already knows its own.
+  local sel
+  sel=$(sed -n '/^run_selected()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
+  printf '%s' "${sel}" | grep -q 'TRYOUT_PANEL_PANE=${HERDR_PANE_ID' \
+    || fail "the popup must be told which pane to wake"
+}
+
+@test "a woken panel repaints its branch line in the same draw" {
+  set -eu -o pipefail
+  # The git cache is refilled on the keystroke after a popup — including the one
+  # the popup sends itself. If that refill happens AFTER render, the repaint shows
+  # the old branch and patch count and needs a second key to catch up, which for a
+  # key the user did not press means it simply stays wrong.
+  local loop refill draw
+  loop=$(sed -n '/^while :; do/,/^done$/p' "${DIR}/tryout/herdr-panel.sh" \
+         | grep -v '^[[:space:]]*#')
+  refill=$(printf '%s\n' "${loop}" | grep -n 'refresh_after_command' | head -1 | cut -d: -f1)
+  draw=$(printf '%s\n' "${loop}" | grep -n '^\s*render$' | head -1 | cut -d: -f1)
+  [ -n "${refill}" ] || fail "the loop never refills the git cache"
+  [ -n "${draw}" ] || fail "the loop never draws"
+  [ "${refill}" -lt "${draw}" ] \
+    || fail "the refill must precede the draw, or the repaint is one key behind"
+}
 @test "a worktree made from the panel opens as a workspace" {
   set -eu -o pipefail
   # The panel lives IN herdr, so a worktree created from it that did not appear

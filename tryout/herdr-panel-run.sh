@@ -91,26 +91,24 @@ herdr_session() {
     printf 'tryout'
 }
 
-# Focus the origin clone's workspace: after removing or unserving the worktree this
-# popup belongs to, that workspace may be the one that just disappeared, and herdr
-# would be left showing whatever it fell back to. The origin clone is the one
-# workspace that is always there — it owns the object store and cannot be removed.
-# Found by its .git DIRECTORY, since `git worktree add` writes a .git FILE.
-herdr_focus_main() {
+# Nudge the panel that launched this popup into redrawing.
+#
+# The panel blocks in `read` with no timeout, and its popup path returns the moment
+# the popup STARTS — so after a command that changed what the worktree is, it sits
+# there showing the world as it was, until the user happens to press a key. One
+# keystroke is all it needs: render rebuilds the whole menu, so a single byte
+# repaints the rows, the state line and the branch line together.
+#
+# `space` deliberately: the panel's loop handles q, j, k, Enter and ESC — quit,
+# move, run, close — and lets everything else fall through to a clean redraw.
+#
+# No pane means this was not opened by a panel (the runner takes a verb positionally
+# too), so there is nothing to wake.
+wake_panel() {
+    [ -n "${TRYOUT_PANEL_PANE:-}" ] || return 0
     command -v herdr >/dev/null 2>&1 || return 0
-    command -v jq >/dev/null 2>&1 || return 0
-    local d name ws
-    for d in "${APPROOT}"/typo3-core-*/; do
-        [ -d "${d}.git" ] || continue
-        name="$(basename "${d%/}")"; name="${name#typo3-core-}"
-        ws="$(herdr --session "$(herdr_session)" workspace list 2>/dev/null \
-              | jq -r --arg l "core-${name}" \
-                  'first(.result.workspaces[]? | select(.label == $l) | .workspace_id) // empty' \
-                  2>/dev/null)"
-        [ -n "${ws}" ] || continue
-        herdr --session "$(herdr_session)" workspace focus "${ws}" >/dev/null 2>&1 || true
-        return 0
-    done
+    herdr --session "$(herdr_session)" pane send-keys "${TRYOUT_PANEL_PANE}" space \
+        >/dev/null 2>&1 || true
     return 0
 }
 
@@ -140,9 +138,7 @@ case "${rc}:${VERB}" in
     0:worktree\ *)
         printf "\n  ${DIM}reloading workspaces…${NC}\n"
         ddev tryout herdr >/dev/null 2>&1 || true
-        # Back to the origin clone: after removing or unserving the worktree this
-        # popup was opened from, its own workspace may be the one that just went.
-        herdr_focus_main
+        wake_panel
         ;;
 esac
 
