@@ -1032,6 +1032,30 @@ rename_core_worktree() {
 }
 
 # Emit "name<TAB>head<TAB>branch<TAB>dirty<TAB>active" per worktree.
+# Same rows as list_core_worktrees, minus the dirty column — and minus the two
+# `git diff` calls per worktree that produce it. A TYPO3 Core checkout is ~20k
+# tracked files, so on a Mutagen project that check costs seconds per worktree
+# cold; anything that does not PRINT the answer must not pay for it.
+#
+# Deliberately a separate function rather than a flag: the caller's choice is
+# visible at the call site, and the field list differs, so a positional reader
+# cannot silently shift a column.
+list_core_worktrees_fast() {
+    local active dir name head branch
+    active=$(active_worktree_name)
+    for dir in "${CORE_WORKTREE_PREFIX}"*; do
+        [ -d "${dir}" ] || continue
+        name="${dir#"${CORE_WORKTREE_PREFIX}"}"
+        head=$(git -C "${dir}" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+        branch=$(git -C "${dir}" branch --show-current 2>/dev/null || true)
+        [ -z "${branch}" ] && branch="(detached)"
+        printf '%s\t%s\t%s\t%s\n' "${name}" "${head}" "${branch}" \
+            "$([ "${name}" = "${active}" ] && echo active || echo "")"
+    done
+}
+
+# With the dirty column, and the per-worktree cost that comes with it. For
+# `worktree list`, which prints it — see list_core_worktrees_fast for the rest.
 list_core_worktrees() {
     local active dir name head branch dirty
     active=$(active_worktree_name)

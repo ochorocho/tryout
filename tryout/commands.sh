@@ -53,11 +53,17 @@ ctr_status_body() {
 
     # Worktrees (only meaningful once migrated to the symlink layout)
     if core_is_symlinked; then
-        local active wt_count
+        local active wt_count wt_rows
         active=$(active_worktree_name)
-        wt_count=$(list_core_worktrees | wc -l | tr -d ' ')
+        # ONCE, into a variable: the count and the loop want the same rows, and
+        # asking twice doubled the cost. And the _fast form, because this prints
+        # the name, the branch and the head — never the dirty flag, which is what
+        # the other one spends two `git diff` calls per worktree computing.
+        wt_rows="$(list_core_worktrees_fast)"
+        wt_count=$(printf '%s\n' "${wt_rows}" | grep -c . | tr -d ' ')
         echo -e "${TEXT}  Worktree:  ${OK} ${active} ${DIM}(${wt_count} total)${NC}"
-        list_core_worktrees | while IFS=$'\t' read -r name head branch dirty is_active; do
+        printf '%s\n' "${wt_rows}" | while IFS=$'\t' read -r name head branch is_active; do
+            [ -n "${name}" ] || continue
             [ -n "${is_active}" ] && continue
             echo -e "${TEXT}             ${DIM}${name} — ${branch} (${head})${NC}"
         done

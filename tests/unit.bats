@@ -4170,6 +4170,95 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
     || fail "checkout moves the branch, so it must refresh too"
 }
 
+@test "nothing pays for a dirty check it does not print" {
+  set -eu -o pipefail
+  # list_core_worktrees runs two `git diff` calls per worktree. A TYPO3 Core
+  # checkout is ~20k tracked files, so on a Mutagen project that is ~3.8s per
+  # worktree cold — 24s over eight, and the whole of the "reloading workspaces…"
+  # pause after a panel command. The reconcile threw the answer away with
+  # `cut -f1`; status read it into a variable and never printed it.
+  local herdr_fn status_fn
+  herdr_fn=$(sed -n '/^cmd_herdr()/,/^}/p' "${DIR}/commands/host/tryout" \
+             | grep -v '^[[:space:]]*#')
+  status_fn=$(sed -n '/^ctr_status_body()/,/^}/p' "${DIR}/tryout/commands.sh" \
+              | grep -v '^[[:space:]]*#')
+
+  # The reconcile wants names, so it asks for names.
+  printf '%s' "${herdr_fn}" | grep -q 'list_core_worktrees' \
+    && fail "the reconcile must not run a dirty check for names it discards"
+  printf '%s' "${herdr_fn}" | grep -q 'core_worktree_names' \
+    || fail "the reconcile must use the cheap helper"
+
+  # status prints name, branch and head — never the dirty flag.
+  printf '%s' "${status_fn}" | grep -qE '\blist_core_worktrees\b' \
+    && fail "status must not pay for a column it does not show"
+  printf '%s' "${status_fn}" | grep -q 'list_core_worktrees_fast' \
+    || fail "status must use the cheap lister"
+
+  # And it asks once: the count and the loop want the same rows.
+  local calls
+  calls=$(printf '%s\n' "${status_fn}" | grep -c 'list_core_worktrees_fast' || true)
+  [ "${calls}" -eq 1 ] \
+    || fail "status calls its lister ${calls} times; once is enough"
+}
+
+@test "worktree list keeps the STATE column it is asked for" {
+  set -eu -o pipefail
+  # It is the one caller that PRINTS dirtiness, it is run by hand, and --plain is
+  # a documented contract (NAME HEAD BRANCH STATE PHP DB URL) that
+  # tests/e2e/login.spec.ts parses. It keeps the expensive lister.
+  local fn
+  fn=$(sed -n '/^ctr_worktree()/,/^}/p' "${DIR}/tryout/commands.sh" \
+       | grep -v '^[[:space:]]*#')
+  printf '%s' "${fn}" | grep -qE '\blist_core_worktrees\b' \
+    || fail "worktree list needs the dirty column"
+  # The PRINTED field, not just the name: `${dirty}` also appears in the `read`
+  # that unpacks the row, so a grep for it passes even when the column is gone.
+  printf '%s' "${fn}" | grep -qE 'printf.*\$\{dirty\}|"\$\{branch\}" "\$\{dirty\}"' \
+    || fail "the STATE column must still be printed"
+}
+
+@test "the two worktree listers agree on their shared fields" {
+  set -eu -o pipefail
+  # Same rows, one column fewer — so a caller reading positionally cannot have a
+  # field shift under it. Both must resolve the active worktree the same way too,
+  # since both mark it in the last field.
+  command -v git >/dev/null || skip "git not available"
+  local root="${FAKEROOT}/listers"
+  mkdir -p "${root}"
+  local w
+  for w in alpha beta; do
+    git init -q -b "br-${w}" "${root}/typo3-core-${w}"
+    git -C "${root}/typo3-core-${w}" commit -q --allow-empty -m x
+  done
+  ln -s typo3-core-alpha "${root}/typo3-core"
+
+  emit() { # $1=function
+    helper_eval "
+      PROJECT_ROOT='${root}'
+      CORE_DIR='${root}/typo3-core'
+      CORE_WORKTREE_PREFIX='${root}/typo3-core-'
+      $1
+    " 2>/dev/null
+  }
+
+  local slow fast
+  slow="$(emit list_core_worktrees)"
+  fast="$(emit list_core_worktrees_fast)"
+  [ -n "${slow}" ] || fail "no rows from list_core_worktrees"
+  [ -n "${fast}" ] || fail "no rows from list_core_worktrees_fast"
+
+  # Same worktrees, same order.
+  [ "$(printf '%s\n' "${slow}" | cut -f1)" = "$(printf '%s\n' "${fast}" | cut -f1)" ] \
+    || fail "the two listers disagree on which worktrees exist"
+  # name, head, branch identical; the fast one simply stops there.
+  [ "$(printf '%s\n' "${slow}" | cut -f1,2,3)" = "$(printf '%s\n' "${fast}" | cut -f1,2,3)" ] \
+    || fail "the shared fields must match"
+  # The active marker is the LAST field in both — 5th vs 4th.
+  [ "$(printf '%s\n' "${slow}" | cut -f5)" = "$(printf '%s\n' "${fast}" | cut -f4)" ] \
+    || fail "both must mark the active worktree in their last field"
+}
+
 @test "a pane labelled tryout counts as a panel only if it runs one" {
   set -eu -o pipefail
   # `pane process-info` answers for ANY live pane, a bare shell included, so it can

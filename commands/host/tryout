@@ -796,7 +796,12 @@ cmd_herdr() {
         validate_worktree_name "${only}" || return 1
         names="${only}"
     else
-        names=$(list_core_worktrees | cut -f1)
+        # Names only, and `core_worktree_names` is the helper that costs nothing:
+        # list_core_worktrees runs two `git diff` calls per worktree for a dirty
+        # column this discards with `cut -f1`. On a Mutagen project that is ~3.8s
+        # per Core checkout cold — 24s over eight worktrees, and the whole of the
+        # "reloading workspaces…" pause after a panel command.
+        names=$(core_worktree_names)
     fi
 
     if [ -z "${names}" ]; then
