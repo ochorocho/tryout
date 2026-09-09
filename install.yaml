@@ -175,7 +175,8 @@ removal_actions:
 
   - |
     #ddev-description:Remove generated worktree config and vhosts
-    rm -f config.worktrees.yaml apache/tryout-site-*.conf nginx_full/tryout-site-*.conf
+    rm -f config.worktrees.yaml apache/tryout-site-*.conf nginx_full/tryout-site-*.conf \
+          nginx_full/tryout-server-names-hash.conf
 
   - |
     #ddev-description:Remove the patch list if it is still empty
