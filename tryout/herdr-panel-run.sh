@@ -138,7 +138,10 @@ case "${rc}:${VERB}" in
     # Cheaper than a bespoke path, and it is the same pass either verb needs.
     0:worktree\ *|0:checkout*)
         printf "\n  ${DIM}reloading workspaces…${NC}\n"
-        ddev tryout herdr >/dev/null 2>&1 || true
+        # --no-focus: this is a background reconcile, not the user asking to be
+        # taken somewhere. Without it every panel command lands you on the FIRST
+        # worktree alphabetically, whichever space you were actually working in.
+        ddev tryout herdr --no-focus >/dev/null 2>&1 || true
         ;;
 esac
 

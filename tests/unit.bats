@@ -3435,6 +3435,13 @@ panel_menu() { # $1=worktree $2=approot
     || fail "a failed command must not trigger a reload"
   printf '%s' "${fn}" | grep -q 'ddev tryout herdr' \
     || fail "the reload is the reconcile pass"
+  # --no-focus, because this is a background reconcile and not the user asking to
+  # be taken anywhere. `cmd_herdr` focuses the FIRST worktree alphabetically by
+  # default, so without it every panel command threw you out of the space you were
+  # working in. herdr moves focus by itself when the focused workspace closes, so
+  # the "unless it was removed" case needs nothing here.
+  printf '%s' "${fn}" | grep -q 'ddev tryout herdr --no-focus' \
+    || fail "the reconcile must not steal focus from the space you are in"
 
   # It must NOT move the focus. An earlier version jumped to the origin clone on
   # the theory that the popup's own workspace might have just been removed; that
