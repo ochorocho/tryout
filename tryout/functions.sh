@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=19
+TRYOUT_VERSION=20
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -698,6 +698,14 @@ validate_worktree_name() {
         error "  → ddev tryout worktree add <name> [<branch>]"
         return 1
     fi
+    # A leading hyphen is what a mis-parsed flag looks like — `worktree add
+    # --herdr` once reached here as a NAME and passed. It is also unusable as a
+    # directory, a git branch and a herdr label, so it is never a real name.
+    case "${name}" in
+        -*) error "Invalid worktree name '${name}' (cannot start with '-')"
+            error "  → ddev tryout worktree add <name> [<branch>]"
+            return 1 ;;
+    esac
     if ! echo "${name}" | grep -Eq '^[A-Za-z0-9._-]+$'; then
         error "Invalid worktree name '${name}' (allowed: letters, digits, . _ -)"
         return 1
@@ -1222,6 +1230,30 @@ herdr_worktree_is_open() {
 # bare worktree name would be ambiguous there.
 herdr_workspace_label() { echo "core-${1}"; }
 
+# Show a worktree's branch under its space in the herdr sidebar.
+#
+# herdr's OWN `branch` row is computed server-side from the workspace's repo_root,
+# which for a linked worktree points at the origin clone — so it renders only for
+# the one checkout that owns the repo, and the value is not on the API's worktree
+# struct to correct. A custom token is the way in: it is addressed as $wt_branch
+# and renders wherever the sidebar config names it. See the README for the row.
+#
+# "detached" rather than nothing when there is no branch: an empty token makes the
+# row vanish, and half the worktrees in a typical project are detached.
+set_workspace_branch_token() {
+    local ws="${1:-}" name="${2:-}" dir b
+    [ -n "${ws}" ] && [ -n "${name}" ] || return 0
+    dir="$(core_worktree_dir "${name}")"
+    [ -d "${dir}" ] || return 0
+
+    b="$(git -C "${dir}" symbolic-ref --short -q HEAD 2>/dev/null)" || b=""
+    [ -n "${b}" ] || b="detached"
+
+    herdr_cli workspace report-metadata "${ws}" --source tryout \
+        --token "wt_branch=${b}" >/dev/null 2>&1 || true
+    return 0
+}
+
 # Workspace id for a worktree's workspace, empty when it is not open.
 # Does this workspace already run an agent anywhere in it?
 herdr_workspace_has_agent() {
@@ -1568,6 +1600,7 @@ sync_herdr_workspaces() {
             ensure_first_tab_label "${id}" || true
             # The panel rides along: it lives in the Terminal tab, so it can only
             # be docked once that tab exists.
+            set_workspace_branch_token "${id}" "${name}"
             ensure_panel_pane "${id}" "${real}" "${name}" \
                 || warn "Could not add the tryout panel to ${label}"
         fi
@@ -1724,6 +1757,7 @@ open_worktree_in_herdr() {
             ensure_terminal_tab "${open_ws}" "${dir}" || true
             # After the agent, so the tab is named for what is now in it.
             ensure_first_tab_label "${open_ws}" || true
+            set_workspace_branch_token "${open_ws}" "${name}"
             ensure_panel_pane "${open_ws}" "${dir}" "${name}" || true
         fi
         info "'${name}' is already open — skipping"
@@ -1780,6 +1814,7 @@ open_worktree_in_herdr() {
     local ws_id; ws_id="$(herdr_workspace_id "${name}")"
     ensure_terminal_tab "${ws_id}" "${dir}" \
         || warn "Could not add a Terminal tab for '${name}'"
+    set_workspace_branch_token "${ws_id}" "${name}"
     ensure_panel_pane "${ws_id}" "${dir}" "${name}" \
         || warn "Could not add the tryout panel for '${name}'"
     return 0
@@ -2116,6 +2151,26 @@ setup_site_typo3() {
         return 0
     fi
 
+    # No settings.php, but the database may still hold the install: unserve keeps
+    # it unless --drop-db was asked for. Put the saved settings back and skip the
+    # setup, so an unserve/serve round trip keeps the content and the logins.
+    if site_database_has_tables "${name}"; then
+        local saved; saved="$(site_saved_settings "${name}")"
+        if [ -f "${saved}" ]; then
+            mkdir -p "$(site_dir "${name}")/config/system"
+            if cp "${saved}" "$(site_dir "${name}")/config/system/settings.php"; then
+                success "Site '${name}' restored — existing database kept"
+                return 0
+            fi
+        fi
+        # Tables but nothing to restore: a site unserved before this existed, or a
+        # database from somewhere else. TYPO3's own setup refuses this, so say why
+        # before it does rather than leaving the user with its bare error.
+        warn "Database $(site_database "${name}") already holds an install, and there is"
+        warn "no saved settings.php for '${name}' to go with it."
+        warn "  → ddev tryout worktree unserve ${name} --drop-db   then serve again"
+    fi
+
     driver="mysqli"
     db_is_postgres && driver="postgres"
     server_type="other"
@@ -2369,10 +2424,41 @@ serve_worktree() {
 }
 
 # Remove the site but keep the worktree and its git state.
+# Where a site's settings.php is kept while the site itself is gone. Beside the
+# site dir, never inside it: unserve does `rm -rf` on that directory.
+site_saved_settings() { echo "${SITES_DIR}/.${1}.settings.php"; }
+
+# Does this site's database already hold a TYPO3 install?
+site_database_has_tables() {
+    local db count
+    db=$(site_database "$1")
+    if db_is_postgres; then
+        count=$(db_root_sql "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" 2>/dev/null | tr -dc '0-9')
+    else
+        count=$(db_root_sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${db}';" 2>/dev/null | tr -dc '0-9')
+    fi
+    [ -n "${count}" ] && [ "${count}" -gt 0 ] 2>/dev/null
+}
+
 unserve_worktree() {
     local name="$1" keep_db="${2:-true}" db
     validate_worktree_name "${name}" || return 1
     site_is_served "${name}" || { error "Site '${name}' is not served"; return 1; }
+
+    # The database outlives the site unless --drop-db was asked for, so keep the
+    # settings.php that goes with it — otherwise `serve` runs a fresh TYPO3 setup
+    # against a populated database and TYPO3 refuses ("contains already N tables").
+    # It holds no credentials: those are in additional.php, which serve symlinks.
+    local saved settings
+    saved="$(site_saved_settings "${name}")"
+    settings="$(site_dir "${name}")/config/system/settings.php"
+    if [ "${keep_db}" = "true" ] && [ -f "${settings}" ]; then
+        mkdir -p "$(dirname "${saved}")"
+        cp "${settings}" "${saved}" 2>/dev/null || true
+    else
+        # Dropping the database makes the old settings meaningless.
+        rm -f "${saved}" 2>/dev/null || true
+    fi
 
     rm -f "$(site_vhost_file "${name}")"
     rm -rf "$(site_dir "${name}")"

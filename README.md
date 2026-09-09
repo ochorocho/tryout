@@ -791,6 +791,20 @@ A fresh project with only the plain `typo3-core/` clone and no worktrees yet get
 one workspace for it, named after its branch (`core-main`). That is the name the
 checkout keeps when a later `worktree add` moves it to the worktree layout.
 
+**To see each worktree's branch in the sidebar**, add this to
+`~/.config/herdr/config.toml`:
+
+```toml
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace"], ["branch", "$wt_branch", "git_status"]]
+```
+
+herdr's own `branch` row is computed from a workspace's *repository* root, which
+for a linked worktree is the origin clone — so without this only the main checkout
+shows a branch. The add-on reports `$wt_branch` per workspace instead, refreshed
+whenever it opens or reconciles them and after a `worktree`/`checkout` run from the
+panel. A detached checkout reads `detached` rather than going blank.
+
 Worktrees already open are skipped, so it is safe to re-run, and the first Core
 workspace is focused when it is done (`--focus` is the default; `--no-focus` stays put). On the first run in
 a worktree Claude asks you to trust the folder — the command says so rather than

@@ -135,7 +135,10 @@ rc=$?
 # Only for those verbs: it walks every workspace, which is wasted work after a
 # patch or a launch, and only on success, since a failed command changed nothing.
 case "${rc}:${VERB}" in
-    0:worktree\ *)
+    # checkout moves the branch, so the sidebar token for this worktree is now
+    # wrong; the reconcile pass re-reports it for every workspace along the way.
+    # Cheaper than a bespoke path, and it is the same pass either verb needs.
+    0:worktree\ *|0:checkout*)
         printf "\n  ${DIM}reloading workspaces…${NC}\n"
         ddev tryout herdr >/dev/null 2>&1 || true
         wake_panel

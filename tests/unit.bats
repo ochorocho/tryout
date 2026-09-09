@@ -3995,6 +3995,127 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
     || fail "the panel must be excluded: it lives in the project root"
 }
 
+@test "worktree add takes its name from the loop, never from a flag" {
+  set -eu -o pipefail
+  # The panel runs `worktree add --herdr`. Reading $1 as the name BEFORE stripping
+  # flags made the name the literal string "--herdr" — non-empty, so the prompt
+  # below never fired, and it was delegated as the worktree name. Verified live:
+  # the container received `worktree add --herdr 13.4` and git failed on it.
+  local body
+  body=$(sed -n '/^cmd_worktree()/,/^}/p' "${DIR}/commands/host/tryout" \
+         | sed -n '/^        add)/,/^            ;;/p' | grep -v '^[[:space:]]*#')
+  [ -n "${body}" ] || fail "no worktree add branch"
+
+  printf '%s' "${body}" | grep -q 'local name="${1:-}"' \
+    && fail "the name must not be read before the flags are stripped"
+  printf '%s' "${body}" | grep -q 'if \[ -z "${name}" \]; then name="$1"' \
+    || fail "the first non-flag word is the name, the second the branch"
+  # An unknown flag is an error, not a worktree called "-x".
+  printf '%s' "${body}" | grep -q -- '-\*)' \
+    || fail "unknown flags must be rejected"
+  # And the prompt is still reachable for a bare invocation.
+  printf '%s' "${body}" | grep -q 'ask_text' \
+    || fail "a missing name must still be asked for"
+}
+
+@test "a worktree name can never start with a hyphen" {
+  set -eu -o pipefail
+  # It becomes a directory, a git branch and a herdr label — none of which take a
+  # leading hyphen — and it is exactly what a mis-parsed flag looks like. The old
+  # regex ^[A-Za-z0-9._-]+$ accepted "--herdr" quite happily.
+  local n
+  for n in --herdr -x - --serve; do
+    run helper_eval "validate_worktree_name '${n}'"
+    assert_failure
+  done
+  # Real names still pass.
+  for n in bugfix-12345 v13.4 main my_tree a; do
+    run helper_eval "validate_worktree_name '${n}'"
+    assert_success
+  done
+}
+
+@test "re-serving a worktree keeps the database it still has" {
+  set -eu -o pipefail
+  # unserve deletes the site but KEEPS the database unless --drop-db was asked
+  # for, and the only "already set up" signal was settings.php — which went with
+  # the site. So serve ran a fresh `typo3 setup` against a populated database and
+  # TYPO3 refused: "The selected database contains already 146 tables." --force
+  # does not help; the table check happens first, at database selection.
+  local fn un
+  fn=$(sed -n '/^setup_site_typo3()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#')
+  un=$(sed -n '/^unserve_worktree()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#')
+
+  # The database is the second signal, since it can outlive the site.
+  printf '%s' "${fn}" | grep -q 'site_database_has_tables' \
+    || fail "a populated database means the site is already set up"
+  # And the saved settings go back, rather than the setup running.
+  printf '%s' "${fn}" | grep -q 'site_saved_settings' \
+    || fail "the preserved settings.php must be restored"
+
+  # unserve preserves it only when the database survives — dropping the database
+  # makes the old settings meaningless.
+  printf '%s' "${un}" | grep -q 'site_saved_settings' \
+    || fail "unserve must preserve settings.php"
+  printf '%s' "${un}" | grep -q 'keep_db.*= "true"' \
+    || fail "preserve only when the database is kept"
+
+  # It is kept OUTSIDE the site dir, which unserve rm -rf's.
+  local path
+  path=$(sed -n '/^site_saved_settings()/,/^}/p' "${DIR}/tryout/functions.sh")
+  printf '%s' "${path}" | grep -q 'SITES_DIR}/\.' \
+    || fail "the saved copy must not live inside the directory unserve deletes"
+
+  # Behaviour: the table count is read from the site's OWN database.
+  local q
+  q=$(sed -n '/^site_database_has_tables()/,/^}/p' "${DIR}/tryout/functions.sh")
+  printf '%s' "${q}" | grep -q 'site_database' \
+    || fail "the count must be for this site's database"
+  printf '%s' "${q}" | grep -q 'db_is_postgres' \
+    || fail "postgres counts its tables differently"
+}
+
+@test "every workspace reports its own branch to the sidebar" {
+  set -eu -o pipefail
+  # herdr's own `branch` row is computed from the workspace's repo_root, which for
+  # a linked worktree points at the ORIGIN CLONE — so it rendered only for the one
+  # checkout owning the repo, and that value is not on the API's worktree struct to
+  # correct. A custom token is the way in.
+  local fn
+  fn=$(sed -n '/^set_workspace_branch_token()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#')
+  [ -n "${fn}" ] || fail "no set_workspace_branch_token"
+
+  printf '%s' "${fn}" | grep -q 'workspace report-metadata' \
+    || fail "the token is reported through report-metadata"
+  printf '%s' "${fn}" | grep -q 'wt_branch=' \
+    || fail "a CUSTOM token: --token branch= does not feed herdr's built-in row"
+  # The branch comes from the worktree, not from wherever the command runs.
+  printf '%s' "${fn}" | grep -q 'core_worktree_dir' \
+    || fail "the branch must be read from that worktree's checkout"
+  # An empty token makes the row vanish, and half a project's worktrees are
+  # typically detached — so they say so instead.
+  printf '%s' "${fn}" | grep -q 'b="detached"' \
+    || fail "a detached checkout must still report something"
+
+  # Set wherever the add-on already knows both the workspace and the worktree.
+  local callers
+  callers=$(grep -c 'set_workspace_branch_token "' "${DIR}/tryout/functions.sh" || true)
+  [ "${callers}" -ge 3 ] \
+    || fail "expected it on every open and reconcile path, found ${callers}"
+
+  # And refreshed after the verbs that move a branch.
+  local run
+  # Comments stripped and the PATTERN pinned: "checkout" also appears in the
+  # comment explaining why it is there, so a bare grep passes without the arm.
+  run=$(sed -n '/^case "${rc}:${VERB}" in/,/^esac$/p' "${DIR}/tryout/herdr-panel-run.sh" \
+        | grep -v '^[[:space:]]*#')
+  printf '%s' "${run}" | grep -q '0:checkout' \
+    || fail "checkout moves the branch, so it must refresh too"
+}
+
 @test "a pane labelled tryout counts as a panel only if it runs one" {
   set -eu -o pipefail
   # `pane process-info` answers for ANY live pane, a bare shell included, so it can

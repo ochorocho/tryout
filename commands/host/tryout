@@ -380,8 +380,11 @@ cmd_worktree() {
     case "${sub}" in
         add)
             require_core
-            local name="${1:-}" branch="" in_herdr="false" flags=()
-            shift || true
+            # The name is taken IN the loop, not from $1 before it: `worktree add
+            # --herdr` (what the panel runs) otherwise made the name the literal
+            # string "--herdr", which is non-empty, so the prompt below never
+            # fired and the flag was delegated as the worktree name.
+            local name="" branch="" in_herdr="false" flags=()
             # --herdr is answered here; everything else is the container's.
             while [ $# -gt 0 ]; do
                 case "$1" in
@@ -392,7 +395,10 @@ cmd_worktree() {
                     --detach|--serve) flags+=("$1") ;;
                     --php)     flags+=("--php=${2:-}"); shift ;;
                     --php=*)   flags+=("$1") ;;
-                    *)         branch="$1" ;;
+                    -*)        error "Unknown option: $1"
+                               error "  → ddev tryout worktree help"
+                               return 1 ;;
+                    *)         if [ -z "${name}" ]; then name="$1"; else branch="$1"; fi ;;
                 esac
                 shift
             done
