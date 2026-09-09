@@ -84,12 +84,20 @@ find_panel_pane() {
         | .pane_id' 2>/dev/null | head -n1
 }
 
+# Is that pane RUNNING THE PANEL, not merely alive? `pane process-info` answers for
+# any live pane, a shell included, so it cannot tell a panel from the prompt left
+# behind when one is closed with q or esc — and treating that as open makes this
+# command focus a bare shell instead of docking a panel. The terminal title carries
+# the running command, which is what tells them apart. Same test as
+# panel_pane_is_running in functions.sh; both routes must agree on "alive".
 pane_is_alive() {
-    local id="$1" info
-    # --pane, not a positional: `pane process-info <id>` is rejected outright.
-    info=$(herdr_cli pane process-info --pane "${id}" 2>/dev/null) || return 1
-    [ -n "${info}" ] || return 1
-    printf '%s' "${info}" | jq -e '.result != null' >/dev/null 2>&1
+    local id="$1"
+    [ -n "${id}" ] || return 1
+    herdr_cli pane list 2>/dev/null \
+        | jq -e --arg p "${id}" \
+            '[.result.panes[]? | select(.pane_id == $p)
+              | (.terminal_title // "") | test("herdr-panel")] | any' \
+            >/dev/null 2>&1
 }
 
 # The pane this command was invoked from. NEVER the UI-focused one: herdr's own

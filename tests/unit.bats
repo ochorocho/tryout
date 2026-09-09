@@ -3995,6 +3995,91 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
     || fail "the panel must be excluded: it lives in the project root"
 }
 
+@test "a pane labelled tryout counts as a panel only if it runs one" {
+  set -eu -o pipefail
+  # `pane process-info` answers for ANY live pane, a bare shell included, so it can
+  # only spot a pane whose process is GONE — never one running the wrong thing.
+  # Closing a panel with q or esc drops it back to its shell and leaves the label,
+  # and that read as healthy: seven of eight panels sat like that while every
+  # `ddev tryout herdr` reported success and every test in this file passed.
+  # The terminal title carries the running command, which is what tells them apart.
+  fake_herdr_tabs '{"result":{"tabs":[]}}' '{"result":{"panes":[
+    {"pane_id":"w1:p3","label":"tryout",
+     "terminal_title":"bash /p/.ddev/tryout/herdr-panel.sh"},
+    {"pane_id":"w2:p3","label":"tryout",
+     "terminal_title":"jochen@laptop"},
+    {"pane_id":"w3:p3","label":"tryout"}]}}'
+
+  run_with_fake_herdr 'panel_pane_is_running w1:p3 && echo yes || echo no'
+  assert_success
+  assert_output "yes"
+
+  # A shell wearing the label is NOT a panel — the whole point.
+  run_with_fake_herdr 'panel_pane_is_running w2:p3 && echo yes || echo no'
+  assert_success
+  assert_output "no"
+
+  # No title at all is not a panel either, and must not error.
+  run_with_fake_herdr 'panel_pane_is_running w3:p3 && echo yes || echo no'
+  assert_success
+  assert_output "no"
+
+  # Neither is a pane that is not there.
+  run_with_fake_herdr 'panel_pane_is_running gone:p9 && echo yes || echo no'
+  assert_success
+  assert_output "no"
+}
+
+@test "both panel routes agree on what alive means" {
+  set -eu -o pipefail
+  # ensure_panel_pane decides whether to replace a panel; herdr-panel-open.sh
+  # decides whether one is already open and only needs focusing. With the weak
+  # test, the second focused a bare shell instead of docking a panel.
+  local fn open
+  fn=$(sed -n '/^ensure_panel_pane()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#')
+  open=$(sed -n '/^pane_is_alive()/,/^}/p' "${DIR}/tryout/herdr-panel-open.sh" \
+         | grep -v '^[[:space:]]*#')
+
+  printf '%s' "${fn}" | grep -q 'panel_pane_is_running' \
+    || fail "ensure_panel_pane must check the pane runs the panel"
+  printf '%s' "${open}" | grep -q 'herdr-panel' \
+    || fail "the toggle must check the same thing"
+
+  # Neither may fall back to "any live process".
+  local f
+  for f in tryout/functions.sh tryout/herdr-panel-open.sh; do
+    run grep -n 'result != null' "${DIR}/${f}"
+    assert_failure
+  done
+}
+
+@test "the panel script is retried until it is actually running" {
+  set -eu -o pipefail
+  # `pane run` types into the pane's shell, and `pane split` answers before that
+  # shell has reached its prompt — so a first attempt can be typed into nothing.
+  # herdr answering ok proves only that it delivered the keystrokes. This is the
+  # same race start_agent_in_pane already retries for, and it is how panes end up
+  # labelled but bare.
+  local fn
+  fn=$(sed -n '/^ensure_panel_pane()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#')
+
+  printf '%s' "${fn}" | grep -q 'pane run' \
+    || fail "the panel has to be started somehow"
+  # Fired once and forgotten is what left the panes bare.
+  printf '%s' "${fn}" | grep -q 'pane run .* || return 1' \
+    && fail "one attempt is not enough: the keystrokes can be lost"
+  # It must confirm, not assume.
+  printf '%s' "${fn}" | grep -q 'panel_pane_is_running "${new}"' \
+    || fail "the start must be confirmed before it is believed"
+  # And give up rather than spin forever: a panel that never starts must not hang
+  # `ddev tryout herdr` for the worktrees queued behind it. Pin the BOUND, not the
+  # word "attempt", which survives in the increment.
+  printf '%s' "${fn}" | grep -qE '\[ "\$\{attempt\}" -ge [0-9]+ \] && break' \
+    || fail "the retry must be bounded"
+}
+
 @test "the panel pane is docked once, beside the agent" {
   set -eu -o pipefail
   # It sits next to the agent, not in the Terminal tab: the panel drives the

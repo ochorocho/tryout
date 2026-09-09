@@ -1330,6 +1330,26 @@ core_worktree_state() {
 # Dock the panel in a workspace's Terminal tab, unless it is already there.
 # Deliberately that tab and not the agent's: the panel would take width from
 # claude in every workspace, which is the clutter it exists to avoid.
+# Is this pane actually running the panel, or is it a shell wearing its label?
+#
+# `pane process-info` answers for ANY live pane, a bare shell included, so it can
+# only spot a pane whose process is GONE — never one running the wrong thing. A
+# panel closed with q or esc drops back to its shell and keeps the label, and that
+# read as healthy: seven of eight panels sat like that with every re-run of
+# `ddev tryout herdr` reporting success.
+#
+# The terminal title is what tells them apart. herdr reports the running command
+# there, so a live panel's title names the script and a shell's is a prompt.
+panel_pane_is_running() {
+    local id="${1:-}"
+    [ -n "${id}" ] || return 1
+    herdr_cli pane list 2>/dev/null \
+        | jq -e --arg p "${id}" \
+            '[.result.panes[]? | select(.pane_id == $p)
+              | (.terminal_title // "") | test("herdr-panel")] | any' \
+            >/dev/null 2>&1
+}
+
 ensure_panel_pane() {
     local ws="$1" dir="$2" name="$3" has tab_pane
     [ -n "${ws}" ] || return 0
@@ -1354,8 +1374,7 @@ ensure_panel_pane() {
             '.result.panes[]? | select(.workspace_id == $w and .label == $l) | .pane_id' \
             2>/dev/null | head -1)
     if [ -n "${existing}" ]; then
-        if herdr_cli pane process-info --pane "${existing}" 2>/dev/null \
-            | jq -e '.result != null' >/dev/null 2>&1; then
+        if panel_pane_is_running "${existing}"; then
             # Alive. A panel docked before this one sits in the Terminal tab, so
             # move it rather than close and redock: closing would kill a running
             # panel and flash the pane for nothing.
@@ -1371,9 +1390,10 @@ ensure_panel_pane() {
             fi
             return 0
         fi
-        # A label alone is not proof the panel is running: it survives a herdr
-        # server restart while the process behind it does not. Replace such a
-        # corpse, or the pane stays blank for good and no re-run can recover it.
+        # Not running the panel: a corpse from a herdr server restart, or a shell
+        # left behind by q/esc. Either way the label lies, so close it and let the
+        # code below dock a real one. A panel closed on purpose therefore comes
+        # back on the next run — to be rid of it, close the pane, not the panel.
         herdr_cli pane close "${existing}" >/dev/null 2>&1 || true
     fi
 
@@ -1400,8 +1420,22 @@ ensure_panel_pane() {
     [ -n "${new}" ] || return 1
 
     herdr_cli pane rename "${new}" "${PANEL_PANE_LABEL}" >/dev/null 2>&1 || true
-    herdr_cli pane run "${new}" bash "${script}" >/dev/null 2>&1 || return 1
-    return 0
+
+    # `pane run` types the command into the pane's shell, and `pane split` answers
+    # before that shell has reached its prompt — so a first attempt can be typed
+    # into nothing and lost, leaving a pane that is labelled but bare. Same race
+    # start_agent_in_pane retries for. herdr answering ok proves only that it
+    # delivered the keystrokes, so confirm the panel is really up before believing
+    # it, and say so if it never comes.
+    local attempt=0
+    while :; do
+        herdr_cli pane run "${new}" bash "${script}" >/dev/null 2>&1 || true
+        panel_pane_is_running "${new}" && return 0
+        attempt=$((attempt + 1))
+        [ "${attempt}" -ge 5 ] && break
+        sleep 1
+    done
+    return 1
 }
 
 # The Terminal tab of a workspace, empty when it has none yet.
