@@ -16,11 +16,27 @@
 
 set -uo pipefail
 
-BOLD='\033[1m'; DIM='\033[2m'; CYAN='\033[0;36m'; RED='\033[0;31m'; NC='\033[0m'
+# Every colour here names its own FOREGROUND. A bare attribute (ESC[1m bold,
+# ESC[2m dim) only modifies the colour the pane already had, so on a pane whose
+# default foreground is dark the whole panel drew dark-on-dark and looked blank.
+BOLD='\033[1;97m'; CYAN='\033[0;36m'; RED='\033[0;31m'; NC='\033[0m'
+# Dim carries its OWN foreground for the same reason ROW below does: bare ESC[2m
+# dims whatever colour the pane already had, so on a pane with a dark default the
+# secondary lines — state, branch, hint, footer — came out invisible rather than
+# quiet. 37 (white) dimmed is the grey this wants; 2m alone is a guess about the
+# terminal.
+DIM='\033[2;37m'
 # The selected row. Explicit white-on-black, never reverse video: ESC[7m swaps
 # whatever the terminal's CURRENT colours are, which in a dark theme can come out
 # near-invisible — the selection was there, you just could not see it.
 SEL_ON='\033[97;40m'
+# An UNSELECTED row, and the reason it needs a colour of its own: printing it bare
+# leaves it at whatever foreground the pane happens to carry, and SEL_ON pins the
+# background to black (40) for the selected row. A pane whose default foreground is
+# dark therefore drew every other row black on black — the rows were there, the
+# menu just looked empty apart from the highlight. Say white explicitly, so the
+# panel never depends on a colour it did not set.
+ROW='\033[97m'
 
 # Where this panel is and what it drives. The pane's creator knows all three and
 # hands them over, because this runs outside DDEV and cannot source functions.sh:
@@ -255,7 +271,7 @@ render() {
         if [ "${i}" -eq "${SEL}" ]; then
             printf "  ${SEL_ON} %-18s ${NC}\n" "${LABELS[${i}]}"
         else
-            printf "   %-18s \n" "${LABELS[${i}]}"
+            printf "   ${ROW}%-18s${NC} \n" "${LABELS[${i}]}"
         fi
         i=$(( i + 1 ))
     done

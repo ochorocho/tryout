@@ -5126,3 +5126,32 @@ FAKE
   printf '%s' "${fn}" | grep -qE 'read .*-t +[0-9]+' \
     || fail "the drain needs a timeout, or it blocks the panel forever"
 }
+
+@test "every panel colour names its own foreground" {
+  set -eu -o pipefail
+  # A bare attribute — ESC[1m bold, ESC[2m dim — only MODIFIES the colour the pane
+  # already carries, and an unselected row printed with no escape at all keeps
+  # whatever foreground was there. SEL_ON pins the selected row's background to
+  # black, so on a pane whose default foreground is dark the entire menu drew
+  # black on black: the rows were present, the panel just looked empty apart from
+  # the one highlighted row. Nothing here may depend on a colour it did not set.
+  local script="${DIR}/tryout/herdr-panel.sh"
+  # Colour codes contain semicolons, so the value has to be pulled out whole:
+  # take everything between the quotes after NAME=. Several share a line.
+  local bad="" name val
+  for name in BOLD DIM CYAN RED SEL_ON ROW; do
+    val=$(sed -n "s/.*${name}='\\([^']*\\)'.*/\\1/p" "${script}" | head -1)
+    [ -n "${val}" ] || fail "${name} is missing from the palette"
+    # An explicit foreground: a 30-37 / 90-97 SGR code, or a 256-colour 38;5;N.
+    printf '%s' "${val}" | grep -qE '(^|\[|;)(3[0-7]|9[0-7])(m|;)|38;5;[0-9]+' \
+      || bad="${bad} ${name}"
+  done
+  [ -z "${bad}" ] \
+    || fail "these set an attribute but no foreground, so they inherit:${bad}"
+
+  # And the unselected row must actually be painted, not printed bare.
+  local fn
+  fn=$(sed -n '/^render()/,/^}/p' "${script}")
+  printf '%s' "${fn}" | grep -qE 'printf "   \$\{ROW\}' \
+    || fail "an unselected row printed bare inherits the pane's foreground"
+}
