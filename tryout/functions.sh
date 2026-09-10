@@ -1169,9 +1169,32 @@ rename_core_worktree() {
 # Deliberately a separate function rather than a flag: the caller's choice is
 # visible at the call site, and the field list differs, so a positional reader
 # cannot silently shift a column.
+# Emit one row for the ROOT checkout, which is the primary and does not live under
+# worktrees/ — so neither lister's glob can see it. Shared by both so they cannot
+# drift.
+emit_root_worktree_row() {
+    local active="$1" dirty="${2:-}" name head branch
+    name=$(plain_core_name)
+    [ -n "${name}" ] || return 0
+    # A worktrees/<name> of the same name would be listed by the glob as well.
+    [ -d "$(core_worktree_dir "${name}")" ] && return 0
+    head=$(git -C "${CORE_DIR}" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    branch=$(git -C "${CORE_DIR}" branch --show-current 2>/dev/null || true)
+    [ -z "${branch}" ] && branch="(detached)"
+    if [ -n "${dirty}" ]; then
+        printf '%s\t%s\t%s\t%s\t%s\n' "${name}" "${head}" "${branch}" \
+            "$(core_worktree_is_dirty "${CORE_DIR}" && echo dirty || echo clean)" \
+            "$([ "${name}" = "${active}" ] && echo active || echo "")"
+    else
+        printf '%s\t%s\t%s\t%s\n' "${name}" "${head}" "${branch}" \
+            "$([ "${name}" = "${active}" ] && echo active || echo "")"
+    fi
+}
+
 list_core_worktrees_fast() {
     local active dir name head branch
     active=$(active_worktree_name)
+    emit_root_worktree_row "${active}"
     for dir in "${CORE_WORKTREE_PREFIX}"*; do
         [ -d "${dir}" ] || continue
         name="${dir#"${CORE_WORKTREE_PREFIX}"}"
@@ -1188,6 +1211,7 @@ list_core_worktrees_fast() {
 list_core_worktrees() {
     local active dir name head branch dirty
     active=$(active_worktree_name)
+    emit_root_worktree_row "${active}" withdirty
     for dir in "${CORE_WORKTREE_PREFIX}"*; do
         [ -d "${dir}" ] || continue
         name="${dir#"${CORE_WORKTREE_PREFIX}"}"

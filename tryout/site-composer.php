@@ -30,9 +30,13 @@ if ($sitePhp !== '' && !preg_match('/^\d+\.\d+$/', $sitePhp)) {
 
 $root = getenv('DDEV_APPROOT') ?: '/var/www/html';
 
+// The primary overlay lives in Build/, not at the project root: the root is the
+// TYPO3 Core clone and its composer.json is Core's own typo3/cms manifest.
+$instance = $root . '/Build';
+
 // The tryout overlay, not the project's own composer.json — see sync-composer.php.
 $composerName = getenv('TRYOUT_COMPOSER_FILE') ?: 'composer.tryout.json';
-$rootComposer = $root . '/' . $composerName;
+$rootComposer = $instance . '/' . $composerName;
 
 if (!file_exists($rootComposer)) {
     fwrite(STDERR, "site-composer: $rootComposer not found\n");

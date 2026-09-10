@@ -1403,12 +1403,14 @@ FAKE
   refute_output --partial "v13"
 }
 
-@test "ask_worktree explains when there is nothing to choose from" {
+@test "ask_worktree always has at least the root checkout to offer" {
   set -eu -o pipefail
+  # There is no "no worktrees yet" state any more: the project root IS a checkout,
+  # so the list is never empty. With no terminal the picker still fails — that is
+  # ui_choose's contract — but it does so without claiming there is nothing there.
   run helper_eval 'ask_worktree "which?" all </dev/null'
   assert_failure
-  assert_output --partial "No worktree to choose from"
-  assert_output --partial "worktree add"
+  refute_output --partial "No worktree to choose from"
 }
 
 @test "ask_branch puts main first and legacy refs last" {

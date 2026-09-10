@@ -14,7 +14,7 @@ assert_file_exist "${TESTDIR}/.ddev/config.tryout-patches.yaml"
 for f in functions.sh commands.sh tryout-container.sh post-start.sh \
          sync-composer.php site-composer.php \
          tryout-php-fpm.sh resolve-patch-ref.sh resolve-gerrit-account.sh \
-         gitmessage.txt composer.tryout.json additional.php gitignore \
+         gitmessage.txt composer.tryout.json additional.php \
          patches.yaml; do
   assert_file_exist "${TESTDIR}/.ddev/tryout/${f}"
 done
@@ -23,8 +23,8 @@ done
 assert_file_not_exist "${TESTDIR}/.ddev/tryout/install.yaml"
 
 # --- Files copied out to the project root by post_install_actions ---------------
-assert_file_exist "${TESTDIR}/composer.tryout.json"
-assert_file_exist "${TESTDIR}/config/system/additional.php"
+assert_file_exist "${TESTDIR}/Build/composer.tryout.json"
+assert_file_exist "${TESTDIR}/Build/config/system/additional.php"
 assert_dir_exist "${TESTDIR}/packages"
 
 # --- Scripts are executable (post_install_actions chmod) ------------------------
@@ -52,9 +52,9 @@ run grep -q '#ddev-generated' "${TESTDIR}/.ddev/config.tryout.yaml"
 assert_success
 run grep -q '#ddev-generated' "${TESTDIR}/.ddev/tryout/functions.sh"
 assert_success
-run grep -q 'ddev-generated' "${TESTDIR}/composer.tryout.json"
+run grep -q 'ddev-generated' "${TESTDIR}/Build/composer.tryout.json"
 assert_success
-run grep -q 'ddev-generated' "${TESTDIR}/config/system/additional.php"
+run grep -q 'ddev-generated' "${TESTDIR}/Build/config/system/additional.php"
 assert_success
 
 # The patch list is the user's copy: created once from tryout/patches.yaml with

@@ -144,9 +144,9 @@ JSON
   assert_success
 
   # The user's file is pulled in by composer-merge-plugin, not copied into ours.
-  run grep -q '"include"' "${TESTDIR}/composer.tryout.json"
+  run grep -q '"include"' "${TESTDIR}/Build/composer.tryout.json"
   assert_success
-  run grep -q 'psr/log' "${TESTDIR}/composer.tryout.json"
+  run grep -q 'psr/log' "${TESTDIR}/Build/composer.tryout.json"
   assert_failure
   rm -f "${TESTDIR}/composer.json.orig"
 }
@@ -161,13 +161,13 @@ JSON
   # Stand in for what `ddev tryout composer` generates plus a package the user
   # added themselves. A plain sed keeps this independent of a container.
   sed -i.bak 's#"require": {#"require": {\n        "acme/thing": "^1.0",#' \
-    "${TESTDIR}/composer.tryout.json"
-  run grep -q 'acme/thing' "${TESTDIR}/composer.tryout.json"
+    "${TESTDIR}/Build/composer.tryout.json"
+  run grep -q 'acme/thing' "${TESTDIR}/Build/composer.tryout.json"
   assert_success
 
   run ddev add-on get "${DIR}"
   assert_success
-  run grep -q 'acme/thing' "${TESTDIR}/composer.tryout.json"
+  run grep -q 'acme/thing' "${TESTDIR}/Build/composer.tryout.json"
   assert_success
 }
 
@@ -175,11 +175,11 @@ JSON
   set -eu -o pipefail
   run ddev add-on get "${DIR}"
   assert_success
-  run grep -q 'typo3/sysext/\*' "${TESTDIR}/composer.tryout.json"
+  run grep -q 'typo3/sysext/\*' "${TESTDIR}/Build/composer.tryout.json"
   assert_success
-  run grep -q 'packages/\*' "${TESTDIR}/composer.tryout.json"
+  run grep -q 'packages/\*' "${TESTDIR}/Build/composer.tryout.json"
   assert_success
-  run grep -q 'wikimedia/composer-merge-plugin' "${TESTDIR}/composer.tryout.json"
+  run grep -q 'wikimedia/composer-merge-plugin' "${TESTDIR}/Build/composer.tryout.json"
   assert_success
 }
 
@@ -187,48 +187,44 @@ JSON
 # Files outside .ddev/ — the guarded stage-then-copy contract
 # ─────────────────────────────────────────────────────────────────────
 
-@test "a foreign .gitignore is appended to, not replaced" {
+@test "the project's own .gitignore is never touched" {
   set -eu -o pipefail
+  # The project root is the TYPO3 Core clone, so .gitignore there is CORE'S — a
+  # tracked file. Writing to it would put the add-on's paths into every Gerrit
+  # patch, which is the whole reason the excludes live elsewhere.
   printf 'node_modules/\n*.log\n' > "${TESTDIR}/.gitignore"
+  local before
+  before="$(cat "${TESTDIR}/.gitignore")"
 
   run ddev add-on get "${DIR}"
   assert_success
 
-  # The user's entries survive...
-  run grep -qxF 'node_modules/' "${TESTDIR}/.gitignore"
-  assert_success
-  # ...and what tryout must ignore was added.
-  run grep -qxF '/composer.tryout.json' "${TESTDIR}/.gitignore"
-  assert_success
-  run grep -qxF '' "${TESTDIR}/.gitignore"
-  assert_success
-  # It is the user's file, so it must not be claimed with a marker.
+  run cat "${TESTDIR}/.gitignore"
+  assert_output "${before}"
   run grep -q '#ddev-generated' "${TESTDIR}/.gitignore"
   assert_failure
 }
 
-@test "appending to a foreign .gitignore does not duplicate on reinstall" {
+@test "generated paths are excluded through .git/info/exclude" {
   set -eu -o pipefail
-  printf 'node_modules/\n' > "${TESTDIR}/.gitignore"
-  run ddev add-on get "${DIR}"
-  assert_success
+  # info/exclude is local to the clone and never committed, so none of this can
+  # reach a patch. It also lives in the shared .git, which is what makes one write
+  # cover every worktree.
+  git -C "${TESTDIR}" init -q
   run ddev add-on get "${DIR}"
   assert_success
 
-  run bash -c "grep -cxF '/composer.tryout.json' '${TESTDIR}/.gitignore'"
+  assert_file_exist "${TESTDIR}/.git/info/exclude"
+  local e
+  for e in /.ddev/ /worktrees/ /sites/ /Build/vendor/ /Build/composer.tryout.json; do
+    run grep -qxF "${e}" "${TESTDIR}/.git/info/exclude"
+    assert_success
+  done
+  # And it stays a single entry across a reinstall.
+  run ddev add-on get "${DIR}"
+  assert_success
+  run bash -c "grep -cxF '/worktrees/' '${TESTDIR}/.git/info/exclude'"
   assert_output "1"
-}
-
-@test "a greenfield project gets the full self-ignoring .gitignore" {
-  set -eu -o pipefail
-  run ddev add-on get "${DIR}"
-  assert_success
-  assert_file_exist "${TESTDIR}/.gitignore"
-  run grep -q '#ddev-generated' "${TESTDIR}/.gitignore"
-  assert_success
-  # It ignores itself, so dropping tryout into a checkout leaves git status clean.
-  run grep -qxF '.gitignore' "${TESTDIR}/.gitignore"
-  assert_success
 }
 
 @test "reinstall does not clobber a file the user took ownership of" {
@@ -339,7 +335,7 @@ JSON
   assert_file_not_exist "${TESTDIR}/.ddev/config.tryout-patches.yaml"
   assert_file_not_exist "${TESTDIR}/.ddev/web-build/Dockerfile.tryout"
   assert_file_not_exist "${TESTDIR}/.ddev/tryout/.version"
-  assert_file_not_exist "${TESTDIR}/composer.tryout.json"
+  assert_file_not_exist "${TESTDIR}/Build/composer.tryout.json"
   assert_file_not_exist "${TESTDIR}/composer.tryout.lock"
   assert_file_not_exist "${TESTDIR}/config/system/additional.php"
   assert_file_not_exist "${TESTDIR}/.gitignore"
@@ -357,12 +353,12 @@ JSON
   run ddev add-on get "${DIR}"
   assert_success
 
-  sed -i.bak '/ddev-generated/d' "${TESTDIR}/composer.tryout.json"
+  sed -i.bak '/ddev-generated/d' "${TESTDIR}/Build/composer.tryout.json"
   sed -i.bak 's/#ddev-generated/#user-owned/' "${TESTDIR}/config/system/additional.php"
 
   run ddev add-on remove tryout
   assert_success
-  assert_file_exist "${TESTDIR}/composer.tryout.json"
+  assert_file_exist "${TESTDIR}/Build/composer.tryout.json"
   assert_file_exist "${TESTDIR}/config/system/additional.php"
 }
 
