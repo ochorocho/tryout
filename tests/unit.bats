@@ -4872,3 +4872,194 @@ FAKE
   printf '%s\n' "${body}" | grep -q 'detect_detached_base_branch' \
     || fail "a served site's base branch is never detected"
 }
+
+@test "a reload only replaces a restart when the hostname set is unchanged" {
+  set -eu -o pipefail
+  # DDEV derives the Traefik routing rule, $VIRTUAL_HOST and the certificate SANs
+  # from additional_hostnames. All three go stale exactly when the served set
+  # changes — and none of them can be refreshed from inside the container. So the
+  # gate is the hostname set, and nothing else.
+  local root="${FAKEROOT}/reloadgate"
+  mkdir -p "${root}/sites/keep" "${root}/sites/gone"
+  printf 'php=8.3\n' > "${root}/sites/keep/.tryout-site"
+  printf 'php=8.3\n' > "${root}/sites/gone/.tryout-site"
+
+  snap() {
+    helper_eval "
+      PROJECT_ROOT='${root}'
+      SITES_DIR='${root}/sites'
+      DDEV_SITENAME='proj'
+      served_hostname_set
+    " 2>/dev/null
+  }
+
+  local before after
+  before="$(snap)"
+  # Re-serving an existing site changes nothing about the set: same path taken.
+  after="$(snap)"
+  [ "${before}" = "${after}" ] || fail "an unchanged set must compare equal"
+
+  # Removing one changes it, so the restart stays required.
+  rm -f "${root}/sites/gone/.tryout-site"
+  after="$(snap)"
+  [ "${before}" != "${after}" ] || fail "dropping a site must change the set"
+
+  # And it is order-independent: the comparison is on a sorted set, not on the
+  # order the directories happen to be read in.
+  printf '%s\n' "${before}" | sort -c \
+    || fail "the snapshot must be sorted, or two equal sets can compare different"
+}
+
+@test "the vhost sync clears our stale copies but never DDEV's own" {
+  set -eu -o pipefail
+  # sites-enabled is a COPY made by DDEV's /start.sh, not a mount. unserve removes
+  # a vhost from nginx_full/, and without clearing the copy the dead site keeps
+  # serving. The clear must be scoped: DDEV's nginx-site.conf lives in the same
+  # directory, and taking it out would break every site in the project.
+  local fn
+  fn=$(sed -n '/^sync_and_reload_webserver()/,/^}/p' "${DIR}/tryout/functions.sh")
+
+  printf '%s' "${fn}" | grep -q 'rm -f "${dst}"/tryout-site-\*\.conf' \
+    || fail "stale per-site vhosts must be cleared, or unserve leaves them serving"
+  printf '%s' "${fn}" | grep -q 'tryout-server-names-hash.conf' \
+    || fail "the hash config is ours too and must be cleared with the vhosts"
+
+  # Never a blanket wipe of the directory: that is DDEV's, not ours.
+  printf '%s' "${fn}" | grep -qE 'rm -rf "\$\{dst\}"( |$)' \
+    && fail "the enabled dir holds DDEV's own config; only our prefix may be removed"
+
+  # Every removal is scoped to a tryout- prefix.
+  local bad
+  bad=$(printf '%s' "${fn}" | grep -E '^\s*rm ' | grep -v 'tryout-' || true)
+  [ -z "${bad}" ] || fail "unscoped removal in the sync: ${bad}"
+}
+
+@test "the config is validated before the running webserver is reloaded" {
+  set -eu -o pipefail
+  # An invalid config makes nginx refuse to START, taking down every site in the
+  # project — the server_names_hash_bucket_size trap. Validating first means a bad
+  # generated vhost leaves the running config untouched, which is strictly safer
+  # than the restart this replaces: that one only finds out once it is already down.
+  local fn
+  fn=$(sed -n '/^sync_and_reload_webserver()/,/^}/p' "${DIR}/tryout/functions.sh")
+
+  local check_line reload_line
+  check_line=$(printf '%s' "${fn}" | grep -n 'webserver_config_is_valid' | head -1 | cut -d: -f1)
+  # grep -w and a tail: the function's OWN name contains reload_webserver, and
+  # matching line 1 would make the ordering check pass no matter what.
+  reload_line=$(printf '%s' "${fn}" | grep -n '^[[:space:]]*reload_webserver' | head -1 | cut -d: -f1)
+  [ -n "${check_line}" ] || fail "the config must be validated before a reload"
+  [ -n "${reload_line}" ] || fail "the sync must actually reload"
+  [ "${check_line}" -lt "${reload_line}" ] \
+    || fail "validation must come BEFORE the reload, or a bad config still lands"
+
+  # And a failed check must abort rather than carry on.
+  printf '%s' "${fn}" | grep -q 'webserver_config_is_valid || return 1' \
+    || fail "a config that would not load must stop the reload"
+}
+
+@test "the reload keeps the webserver up instead of restarting the container" {
+  set -eu -o pipefail
+  # nginx is a supervisord program in the web image and there is no /run/nginx.pid,
+  # so HUP goes through supervisorctl. The point of the whole change is not
+  # bouncing the container, so a restart verb here would defeat it.
+  local fn
+  fn=$(sed -n '/^reload_webserver()/,/^}/p' "${DIR}/tryout/functions.sh")
+
+  printf '%s' "${fn}" | grep -q 'supervisorctl signal HUP nginx' \
+    || fail "nginx reloads by HUP through supervisord"
+  printf '%s' "${fn}" | grep -q 'apachectl -k graceful' \
+    || fail "the apache branch must reload too; apache-fpm is the default type"
+
+  printf '%s' "${fn}" | grep -qE 'supervisorctl (restart|stop|start)' \
+    && fail "restarting the process drops connections the reload exists to keep"
+  :
+}
+
+@test "nothing container-side calls ddev to apply a config change" {
+  set -eu -o pipefail
+  # ddev is only a stub inside the web image. The reload path runs there, so it
+  # must use the container's own tools.
+  local block
+  block=$(sed -n '/^# --- Applying a config change without ddev restart ---/,/^# Create the site.s database/p' \
+          "${DIR}/tryout/functions.sh" | grep -v '^[[:space:]]*#')
+  [ -n "${block}" ] || fail "could not locate the reload block"
+  printf '%s' "${block}" | grep -qE '(^|[^-[:alnum:]])ddev ' \
+    && fail "the reload path must not shell out to ddev"
+  :
+}
+
+@test "both webserver types are handled wherever the reload branches" {
+  set -eu -o pipefail
+  # site_vhost_file already defaults to apache-fpm, so a branch that only knew
+  # nginx would silently do nothing on an apache project — the site would look
+  # served and never answer.
+  local f
+  for f in site_conf_source_dir site_conf_enabled_dir webserver_config_is_valid reload_webserver; do
+    local fn
+    fn=$(sed -n "/^${f}()/,/^}/p" "${DIR}/tryout/functions.sh")
+    [ -n "${fn}" ] || fail "${f} is missing"
+    printf '%s' "${fn}" | grep -q 'nginx\*)' \
+      || fail "${f} must branch on the nginx case"
+    printf '%s' "${fn}" | grep -q '\*)' \
+      || fail "${f} needs an apache fallback, which is the default webserver type"
+  done
+}
+
+@test "serve reloads in place, unserve still asks for the restart it needs" {
+  set -eu -o pipefail
+  # Removing a site always shrinks the hostname set, so unserve can never take the
+  # fast path — but it must still drop the vhost, or the site keeps answering on a
+  # hostname with nothing behind it.
+  local fn
+  fn=$(sed -n '/^serve_worktree()/,/^}/p' "${DIR}/tryout/functions.sh")
+  printf '%s' "${fn}" | grep -q 'hosts_before="\$(served_hostname_set)"' \
+    || fail "serve must snapshot the hostname set before it writes the marker"
+  printf '%s' "${fn}" | grep -q 'apply_site_config "\${hosts_before}"' \
+    || fail "serve must decide its path from that snapshot"
+
+  # The snapshot has to be taken before the marker is written, or the site being
+  # served is already in it and the set always looks unchanged.
+  local snap_line marker_line
+  snap_line=$(printf '%s' "${fn}" | grep -n 'served_hostname_set' | head -1 | cut -d: -f1)
+  marker_line=$(printf '%s' "${fn}" | grep -n "printf 'php=" | head -1 | cut -d: -f1)
+  [ -n "${marker_line}" ] || fail "serve no longer writes the .tryout-site marker?"
+  [ "${snap_line}" -lt "${marker_line}" ] \
+    || fail "snapshot after the marker would always compare equal"
+
+  # The restart advice must survive on the path that still needs it.
+  fn=$(sed -n '/^unserve_worktree()/,/^}/p' "${DIR}/tryout/functions.sh")
+  printf '%s' "${fn}" | grep -q "ddev restart" \
+    || fail "unserve still needs a restart to release the hostname"
+  printf '%s' "${fn}" | grep -q 'sync_and_reload_webserver' \
+    || fail "unserve must drop the vhost now, or the dead site keeps serving"
+}
+
+@test "the vhosts are copied back by name, never by globbing the source" {
+  set -eu -o pipefail
+  # On a Mutagen project the host's deletion of a vhost has not necessarily
+  # reached /mnt/ddev_config by the time unserve calls the sync. A glob over the
+  # source would then faithfully copy back the file that was just removed, and the
+  # unserved site would keep answering on a hostname with nothing behind it —
+  # observed on a real project before this was fixed. served_site_names reads the
+  # markers, which ARE the definition of served and are right in the container
+  # whatever the file sync has caught up on.
+  local fn
+  fn=$(sed -n '/^sync_and_reload_webserver()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#')
+
+  printf '%s' "${fn}" | grep -q 'for name in \$(served_site_names)' \
+    || fail "the copy must be driven by the served set, not by the source directory"
+
+  # The glob is the bug: cp "${src}"/*.conf would restore a just-deleted vhost.
+  printf '%s' "${fn}" | grep -qE 'cp "\$\{src\}"/\*' \
+    && fail "globbing the source re-copies vhosts that unserve just removed"
+
+  # Every copy names a single file.
+  local copies
+  copies=$(printf '%s' "${fn}" | grep -E '^\s*cp ' || true)
+  [ -n "${copies}" ] || fail "the sync must copy something"
+  printf '%s' "${copies}" | grep -q '\*' \
+    && fail "a wildcard copy defeats the point: ${copies}"
+  :
+}

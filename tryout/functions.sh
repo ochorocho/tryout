@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=21
+TRYOUT_VERSION=22
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -2127,6 +2127,125 @@ server_names_hash_bucket_size ${size};
 HASH_EOF
 }
 
+# --- Applying a config change without ddev restart ---
+
+# Snapshot of the served hostnames, newline-separated and sorted. The gate for
+# the fast path: DDEV derives the Traefik routing rule, $VIRTUAL_HOST and the
+# certificate SANs from additional_hostnames, so all three go stale exactly when
+# this set changes — and only then is a restart unavoidable.
+served_hostname_set() {
+    local name
+    for name in $(served_site_names); do
+        site_hostname_short "${name}"
+    done | sort
+}
+
+# Where the webserver reads its vhosts from, and how it is reloaded. DDEV's
+# /start.sh copies /mnt/ddev_config/{nginx_full,apache} into these at container
+# start — a COPY, not a mount, which is why a freshly written vhost is visible in
+# the container yet not in effect.
+site_conf_source_dir() {
+    case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
+        nginx*) echo "/mnt/ddev_config/nginx_full" ;;
+        *)      echo "/mnt/ddev_config/apache" ;;
+    esac
+}
+
+site_conf_enabled_dir() {
+    case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
+        nginx*) echo "/etc/nginx/sites-enabled" ;;
+        *)      echo "/etc/apache2/sites-enabled" ;;
+    esac
+}
+
+# Validate the webserver config as it would be loaded. Errors are the caller's to
+# report, so stderr is captured rather than shown.
+webserver_config_is_valid() {
+    case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
+        nginx*) nginx -t >/dev/null 2>&1 ;;
+        *)      apachectl configtest >/dev/null 2>&1 ;;
+    esac
+}
+
+# Reload in place, keeping the master process. nginx is a supervisord program in
+# the web image, so HUP through supervisorctl reaches it without a pid file (there
+# is none at /run/nginx.pid) and without restarting the container.
+reload_webserver() {
+    case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
+        nginx*) supervisorctl signal HUP nginx >/dev/null 2>&1 ;;
+        *)      apachectl -k graceful >/dev/null 2>&1 ;;
+    esac
+}
+
+# Copy the generated vhosts into the running webserver and reload it, so a change
+# takes effect without `ddev restart`. Container-side only.
+#
+# Returns non-zero without touching the running config if the result would not
+# load — the caller then falls back to advising a restart. That ordering matters:
+# an invalid config makes nginx refuse to START, which takes down every site in
+# the project, not just the one being changed (this is the
+# server_names_hash_bucket_size trap). Validating first makes this strictly safer
+# than the restart it replaces, which only discovers the problem once the
+# container is already down.
+sync_and_reload_webserver() {
+    local src dst
+    src="$(site_conf_source_dir)"
+    dst="$(site_conf_enabled_dir)"
+
+    [ -d "${src}" ] || return 1
+    [ -d "${dst}" ] || return 1
+
+    # Clear our own stale copies first: unserve removes a vhost from the source,
+    # and a plain cp would leave the old one serving. Scoped to the tryout-site-
+    # prefix — DDEV's own nginx-site.conf lives in the same directory.
+    rm -f "${dst}"/tryout-site-*.conf 2>/dev/null || true
+    rm -f "${dst}"/tryout-server-names-hash.conf 2>/dev/null || true
+
+    # Copy back per served site, by name — never a glob over the source. On a
+    # Mutagen project the host's deletion of a vhost has not necessarily reached
+    # /mnt/ddev_config by the time unserve calls this, so a glob would faithfully
+    # restore the file that was just removed and the dead site would keep serving.
+    # served_site_names reads the markers, which are the actual definition of
+    # "served" and are correct in here regardless of what the sync has caught up on.
+    local name f
+    for name in $(served_site_names); do
+        f="${src}/tryout-site-${name}.conf"
+        [ -f "${f}" ] || continue
+        cp "${f}" "${dst}/" 2>/dev/null || true
+    done
+    if [ -f "${src}/tryout-server-names-hash.conf" ]; then
+        cp "${src}/tryout-server-names-hash.conf" "${dst}/" 2>/dev/null || true
+    fi
+
+    # DDEV's own config is copied at container start and never removed above, so
+    # it needs no restoring here.
+
+    webserver_config_is_valid || return 1
+    reload_webserver || return 1
+}
+
+# Apply the site config that has just been written. Prints its own outcome, since
+# what the user must do next differs per path.
+#
+#   hostname set changed → a restart is unavoidable: DDEV owns the Traefik routing
+#                          rule and the certificate, both keyed on
+#                          additional_hostnames, and neither can be refreshed from
+#                          in here.
+#   hostname set same    → reload the webserver in place.
+#
+# `before` is the hostname set captured before the change was written.
+apply_site_config() {
+    local before="$1" after
+    after="$(served_hostname_set)"
+
+    if [ "${before}" != "${after}" ]; then
+        return 1
+    fi
+
+    in_container || return 1
+    sync_and_reload_webserver || return 1
+}
+
 # Create the site's database and grant the DDEV db user access.
 ensure_site_database() {
     local db
@@ -2383,9 +2502,14 @@ generate_site_composer() {
 
 # Make a worktree into a live site: own tree, composer.json, DB, vhost and daemon.
 serve_worktree() {
-    local name="$1" php="${2:-}" dir
+    local name="$1" php="${2:-}" dir hosts_before
     validate_worktree_name "${name}" || return 1
     site_is_primary "${name}" && { error "'${name}' is reserved"; return 1; }
+
+    # Captured before the .tryout-site marker exists, so it reflects what DDEV
+    # last registered. Re-serving an already-served site leaves it unchanged,
+    # which is what lets the reload replace the restart.
+    hosts_before="$(served_hostname_set)"
 
     if [ ! -d "$(core_worktree_dir "${name}")" ]; then
         error "No worktree '${name}'"
@@ -2443,7 +2567,11 @@ serve_worktree() {
 
     trap - RETURN    # got to the end: the marker stands
     success "Site '${name}' prepared — PHP ${php}, db $(site_database "${name}")"
-    warn "Run 'ddev restart' to register $(site_hostname "${name}") and issue its certificate."
+    if apply_site_config "${hosts_before}"; then
+        success "Applied without a restart."
+    else
+        warn "Run 'ddev restart' to register $(site_hostname "${name}") and issue its certificate."
+    fi
     echo -e "  ${DIM}then: https://$(site_hostname "${name}")/typo3/  (admin / Password.1)${NC}"
 }
 
@@ -2499,7 +2627,15 @@ unserve_worktree() {
     fi
 
     success "Site '${name}' removed (worktree kept)"
-    warn "Run 'ddev restart' to release its hostname."
+    # Removing a site always shrinks the hostname set, so the restart is
+    # unavoidable — DDEV owns the routing rule and the certificate. Still drop the
+    # vhost from the running webserver, or the site keeps answering on a hostname
+    # that no longer has anything behind it.
+    if in_container && sync_and_reload_webserver; then
+        info "Stopped serving it now; the hostname is released on the next restart."
+    else
+        warn "Run 'ddev restart' to release its hostname."
+    fi
 }
 
 # --- Gerrit patch functions ---

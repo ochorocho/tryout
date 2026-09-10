@@ -718,6 +718,17 @@ socket, its own vhost, its own `sites/<name>/` tree with its own `vendor/`, and
 its own database. Roughly 175 MB per extra site — the Core object store stays
 shared.
 
+The `ddev restart` is only needed when the set of hostnames changes — DDEV owns
+the routing rule and the TLS certificate, and both are keyed on it. **Re-serving a
+site that already exists applies immediately**, with no restart: the webserver is
+reloaded in place, and the other sites keep serving throughout. So changing a
+served site's PHP version, for instance, costs a reload rather than a full
+container rebuild:
+
+```bash
+ddev tryout worktree serve v13 --php 8.3   # applied without a restart
+```
+
 #### Stopping a site
 
 ```bash
