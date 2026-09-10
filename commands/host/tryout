@@ -482,26 +482,36 @@ cmd_worktree() {
             shift || true
             [ -n "${name}" ] || name="$(ask_worktree "Remove which worktree?" nonprimary)" \
                 || { explain_missing "ddev tryout worktree remove <name> [--force]"; return 1; }
-            # Ask only where something is lost. A plain remove is already guarded
-            # by git's refusal to drop a dirty tree; --force switches that off,
-            # and a served worktree takes its database with it.
-            local wt_force="false" a
-            for a in "$@"; do [ "${a}" = "--force" ] && wt_force="true"; done
-            if [ "${wt_force}" = "true" ] || site_is_served "${name}"; then
-                local what="worktree '${name}'"
+            # ALWAYS ask. This deletes the checkout's directory outright, and a
+            # Core worktree is ~20k files that took minutes to check out — git's
+            # own refusal to drop a dirty tree is no longer the backstop, because
+            # the removal below deliberately takes the directory with it.
+            # --yes skips the question for a caller that has already asked (the
+            # herdr popup), which would otherwise prompt in a pane nobody watches.
+            local wt_force="false" wt_yes="false" a wt_args=()
+            for a in "$@"; do
+                case "${a}" in
+                    --force)  wt_force="true"; wt_args+=("${a}") ;;
+                    --yes|-y) wt_yes="true" ;;
+                    *)        wt_args+=("${a}") ;;
+                esac
+            done
+            if [ "${wt_yes}" != "true" ]; then
+                local what="worktree '${name}' and its directory"
                 core_worktree_is_dirty "$(core_worktree_dir "${name}")" \
-                    && what="${what} and its uncommitted changes"
+                    && what="${what}, including uncommitted changes"
                 site_is_served "${name}" && what="${what}, plus its site and database"
+                warn "$(core_worktree_dir "${name}")"
                 local rc=0
                 ui_confirm "Remove ${what}?" || rc=$?
                 case "${rc}" in
                     1) info "Aborted."; return ;;
                     2) error "Refusing to remove without confirmation — nothing to ask on."
-                       error "  → run it in a terminal, or remove it without --force"
+                       error "  → run it in a terminal, or pass --yes"
                        return 1 ;;
                 esac
             fi
-            delegate worktree remove "${name}" "$@"
+            delegate worktree remove "${name}" ${wt_args[@]+"${wt_args[@]}"}
             ;;
 
         serve)
@@ -675,7 +685,7 @@ cmd_worktree() {
             echo -e "  ${BOLD}use <name>${NC}              Point the PRIMARY site at <name>, then rebuild"
             echo -e "  ${BOLD}serve <name>${NC}            Give <name> its own URL, PHP version and database"
             echo -e "  ${BOLD}unserve <name>${NC}          Drop the site, keep the worktree"
-            echo -e "  ${BOLD}remove <name>${NC}           Remove a worktree (not the primary)"
+            echo -e "  ${BOLD}remove <name>${NC}           Delete a worktree and its directory (asks first)"
             echo -e "  ${BOLD}adopt [<path> [<name>]]${NC} Move stray checkouts in (bare: pick from a list)"
             echo -e "  ${BOLD}rename <old> <new>${NC}      Rename a checkout (the branch is untouched)"
             echo ""
@@ -684,7 +694,8 @@ cmd_worktree() {
             echo "         --herdr     (add: open it as a herdr workspace)"
             echo "         --php 8.2   (add/serve: run this site on another PHP version)"
             echo "         --force     (use: switch despite uncommitted changes)"
-            echo "                     (remove: discard uncommitted changes)"
+            echo "                     (remove: also drop an unmerged branch)"
+            echo "         --yes       (remove: skip the confirmation)"
             echo "         --drop-db   (unserve: also drop the site's database)"
             echo "         --no-restart (add --serve/serve/unserve/rename: skip the restart)"
             echo ""
@@ -692,8 +703,11 @@ cmd_worktree() {
             echo "    use    — one site at the project URL, switch which Core it serves"
             echo "    serve  — every worktree live at once on <name>.<project>.ddev.site"
             echo ""
-            echo "  Adding or removing a served site needs 'ddev restart' so DDEV"
-            echo "  registers the hostname and issues its TLS certificate."
+            echo "  Adding or removing a served site restarts DDEV automatically, so"
+            echo "  it can register the hostname and issue its TLS certificate."
+            echo "  Re-serving one that already exists (a --php change, say) applies"
+            echo "  right away with no restart. --no-restart skips it — useful when"
+            echo "  serving several worktrees, then restarting once at the end."
             echo ""
             echo "  All worktrees share one git object store, so ddev tryout cs hooks and"
             echo "  Gerrit config are set up once and apply to every one of them."

@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=25
+TRYOUT_VERSION=26
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -893,6 +893,20 @@ add_core_worktree() {
         # pointed at.
         if git -C "${main_dir}" show-ref -q --verify "refs/heads/${name}"; then
             error "A branch '${name}' already exists"
+            # Say WHICH case this is, but change nothing: a command that failed
+            # must not quietly delete a ref on the way out. A branch left over
+            # from a removed worktree looks like nothing at all — the folder is
+            # gone — so the bare message sends people hunting for a directory that
+            # is not there. Name the one command that clears it.
+            if [ ! -d "${dir}" ]; then
+                error "  (its worktree is gone; the branch outlived it)"
+                if git -C "${main_dir}" merge-base --is-ancestor \
+                     "refs/heads/${name}" "origin/${branch}" 2>/dev/null; then
+                    error "  → nothing unmerged on it: git -C ${main_dir} branch -d ${name}"
+                else
+                    error "  → it has unmerged commits: git -C ${main_dir} branch -D ${name}"
+                fi
+            fi
             error "  → ddev tryout worktree add ${name}-2 ${branch}"
             error "  → or: ddev tryout worktree use ${name}   (if it is already a worktree)"
             return 1
@@ -967,15 +981,55 @@ remove_core_worktree() {
         return 1
     fi
 
-    local args=("worktree" "remove")
+    # --force twice, deliberately. A Core checkout always carries untracked and
+    # ignored files — vendor/, var/, Build/ — and plain `git worktree remove`
+    # refuses outright on any of them ("contains modified or untracked files"),
+    # leaving the directory behind after saying it removed the worktree. The user
+    # has already been asked on the host, and the question named the directory, so
+    # the answer must actually take it. A second --force also drops a worktree
+    # whose branch is not merged.
+    local args=("worktree" "remove" "--force")
     [ "${force}" = "true" ] && args+=("--force")
     if ! git -C "${CORE_DIR}" "${args[@]}" "${dir}"; then
         error "Failed to remove worktree '${name}'"
-        error "  → Uncommitted changes? Retry with --force"
+        error "  → git -C ${CORE_DIR} worktree remove --force ${dir}"
         return 1
     fi
     git -C "${CORE_DIR}" worktree prune 2>/dev/null || true
-    success "Removed worktree '${name}'"
+
+    # git leaves the directory when anything in it was not its own to delete — a
+    # root-owned file a container wrote, say. The worktree is deregistered by now,
+    # so what is left is a plain directory nothing refers to: take it, or the next
+    # `worktree add <same name>` fails on a path that already exists.
+    if [ -d "${dir}" ]; then
+        rm -rf "${dir}" 2>/dev/null || true
+        [ -d "${dir}" ] && warn "Could not delete ${dir} — remove it by hand"
+    fi
+
+    # The branch outlives the worktree, and add_core_worktree refuses a name whose
+    # branch already exists — so leaving it behind blocks re-creating a worktree of
+    # the same name, with an error about a branch the user never thinks about
+    # ("A branch 'jochen' already exists" after the folder is plainly gone).
+    #
+    # `git branch -d`, never -D unless asked: git itself refuses to delete a branch
+    # holding work that is not merged, which is precisely the check that keeps an
+    # unpushed commit from disappearing with the checkout. So a spent branch goes
+    # quietly, and one with work on it stays and says why.
+    local main_dir_b
+    main_dir_b=$(main_core_worktree_dir)
+    [ -z "${main_dir_b}" ] && main_dir_b="${CORE_DIR}"
+    if git -C "${main_dir_b}" show-ref -q --verify "refs/heads/${name}"; then
+        local del="-d"
+        [ "${force}" = "true" ] && del="-D"
+        if git -C "${main_dir_b}" branch "${del}" "${name}" >/dev/null 2>&1; then
+            success "Removed worktree '${name}', its directory and its branch"
+            return 0
+        fi
+        warn "Branch '${name}' kept — it has commits that are not merged"
+        echo -e "  ${DIM}→ ddev tryout worktree remove ${name} --force   (delete it too)${NC}"
+        echo -e "  ${DIM}→ or: git -C ${main_dir_b} branch -D ${name}${NC}"
+    fi
+    success "Removed worktree '${name}' and its directory"
 }
 
 # Give a worktree a different directory name. The BRANCH is never touched: a name

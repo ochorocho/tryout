@@ -1254,12 +1254,13 @@ FAKE
   assert_failure
 }
 
-@test "worktree remove asks only where something is irreversibly lost" {
+@test "worktree remove always asks, because it deletes the directory" {
   set -eu -o pipefail
 
-  # --force switches off git's dirty-tree refusal, and a served worktree takes
-  # its database with it. Those two ask; a plain remove stays a single keystroke,
-  # because git already refuses it when there is anything to lose.
+  # It deletes the checkout's directory outright — ~20k files that took minutes to
+  # check out. git's refusal to drop a dirty tree is no longer the backstop, since
+  # the removal deliberately forces past it, so the question is the only guard
+  # left and it must be asked every time.
   local branch
   branch="$(awk '/^        remove\|rm\)/{f=1} f{print} f&&/^            ;;/{exit}' \
     "${DIR}/commands/host/tryout")"
@@ -1267,15 +1268,51 @@ FAKE
   printf '%s' "${branch}" | grep -q 'ui_confirm' \
     || fail "worktree remove must confirm before an irreversible removal"
 
-  # Grepping for the words alone would pass even with the gate rewritten to
-  # `if false`. Pin the condition itself: both irreversible cases must be in it.
+  # Grepping for the words alone would pass with the gate rewritten to `if false`.
+  # Pin the condition: the ONLY thing that may skip it is an explicit --yes.
   local gate
   gate="$(printf '%s' "${branch}" | grep -n 'ui_confirm' | head -1 | cut -d: -f1)"
   gate="$(printf '%s' "${branch}" | sed -n "1,${gate}p" | grep -E '^\s*if .*; then$' | tail -1)"
-  printf '%s' "${gate}" | grep -q 'wt_force' \
-    || fail "the confirmation must be gated on --force, got: ${gate}"
-  printf '%s' "${gate}" | grep -q 'site_is_served' \
-    || fail "a served worktree loses its database, so it must confirm too, got: ${gate}"
+  printf '%s' "${gate}" | grep -q 'wt_yes' \
+    || fail "only an explicit --yes may skip the question, got: ${gate}"
+  printf '%s' "${gate}" | grep -qE 'wt_force|site_is_served' \
+    && fail "the question is unconditional now, not gated on what is lost: ${gate}"
+
+  # And --yes is the host's own word: delegating it would fail the container's
+  # argument parser.
+  printf '%s' "${branch}" | grep -q -- '--yes|-y) wt_yes="true"' \
+    || fail "--yes must be consumed on the host"
+  printf '%s' "${branch}" | grep -q 'delegate worktree remove "${name}" ${wt_args' \
+    || fail "the delegated arguments must be the filtered ones, not \"\$@\""
+}
+
+@test "removing a worktree really takes its directory" {
+  set -eu -o pipefail
+  # A Core checkout always carries untracked and ignored files — vendor/, var/,
+  # Build/ — and a plain `git worktree remove` refuses on any of them ("contains
+  # modified or untracked files"), leaving the directory behind after reporting
+  # success. The user was already asked, and the question named the directory, so
+  # the answer has to actually take it.
+  local fn
+  fn=$(sed -n '/^remove_core_worktree()/,/^}/p' "${DIR}/tryout/functions.sh")
+
+  printf '%s' "${fn}" | grep -q 'local args=("worktree" "remove" "--force")' \
+    || fail "without --force git leaves the directory whenever anything is untracked"
+
+  # And a sweep afterwards, for what git would not delete itself.
+  printf '%s' "${fn}" | grep -q 'rm -rf "${dir}"' \
+    || fail "a directory git declined to remove must still go"
+  # Scoped to the worktree's own path, never a bare or derived one.
+  local bad
+  bad=$(printf '%s' "${fn}" | grep -E '^\s*rm -rf' | grep -v '"\${dir}"' || true)
+  [ -z "${bad}" ] || fail "unscoped removal: ${bad}"
+
+  # It must be deregistered before the sweep, or rm -rf races git's own bookkeeping.
+  local git_line rm_line
+  git_line=$(printf '%s' "${fn}" | grep -n 'worktree prune' | head -1 | cut -d: -f1)
+  rm_line=$(printf '%s' "${fn}" | grep -n 'rm -rf' | head -1 | cut -d: -f1)
+  [ "${git_line}" -lt "${rm_line}" ] \
+    || fail "prune the worktree before deleting what is left of it"
 }
 
 @test "have_tty tests stderr, not stdout, so the chooser survives \$(...)" {
@@ -5219,4 +5256,53 @@ FAKE
   sblock=$(sed -n "/^        serve)\$/,/^            ;;/p" "${host}")
   printf '%s' "${sblock}" | grep -q -- '--no-restart) TRYOUT_NO_RESTART=1' \
     || fail "--no-restart must be consumed on the host, not delegated"
+}
+
+@test "removing a worktree takes its branch, unless that would lose work" {
+  set -eu -o pipefail
+  # The branch outlives the worktree, and add_core_worktree refuses a name whose
+  # branch exists — so a leftover blocks re-creating a worktree of the same name,
+  # with an error about a branch nobody is thinking about ("A branch 'jochen'
+  # already exists" when the folder is plainly gone). Removing it closes that.
+  local fn
+  fn=$(sed -n '/^remove_core_worktree()/,/^}/p' "${DIR}/tryout/functions.sh")
+
+  printf '%s' "${fn}" | grep -q 'branch "${del}" "${name}"' \
+    || fail "remove must delete the worktree's branch too"
+
+  # -d, not -D: git refuses -d on a branch holding unmerged work, and that refusal
+  # IS the guard against an unpushed commit vanishing with the checkout. A bare -D
+  # would destroy it silently.
+  printf '%s' "${fn}" | grep -q 'local del="-d"' \
+    || fail "the default must be -d, so git can refuse to lose unmerged work"
+  printf '%s' "${fn}" | grep -q '\[ "${force}" = "true" \] && del="-D"' \
+    || fail "--force is the only way to -D"
+
+  # A refusal must be reported, not swallowed: the branch is still there and the
+  # user has to know why.
+  printf '%s' "${fn}" | grep -q "not merged" \
+    || fail "a kept branch must say why it was kept"
+}
+
+@test "a leftover branch explains itself when it blocks a new worktree" {
+  set -eu -o pipefail
+  # The folder is gone, so "A branch 'x' already exists" sends people hunting for
+  # a directory that is not there. Name the case and the command that clears it —
+  # but change nothing: a command that FAILED must not delete a ref on its way out.
+  local fn
+  fn=$(sed -n '/^add_core_worktree()/,/^}/p' "${DIR}/tryout/functions.sh")
+
+  printf '%s' "${fn}" | grep -q 'its worktree is gone; the branch outlived it' \
+    || fail "the message must say the worktree is gone, not just that a branch exists"
+  printf '%s' "${fn}" | grep -qE 'branch -d \$\{name\}|branch -d \$\{name\}' \
+    || printf '%s' "${fn}" | grep -q 'branch -d' \
+    || fail "it must name the command that clears a spent branch"
+
+  # Advisory only. `branch -d` inside this error path would mutate state on a
+  # failed command; only merge-base (a read) may be used to pick the wording.
+  local acts
+  acts=$(printf '%s' "${fn}" | grep -E '^\s*(if )?git -C .* branch (-d|-D) ' \
+         | grep -v 'error ' || true)
+  [ -z "${acts}" ] \
+    || fail "add must not delete a branch while failing: ${acts}"
 }

@@ -422,7 +422,8 @@ case "${VERB}" in
                 ;;
             remove | rm)
                 [ "${POS}" -le 2 ] && ! wants_flag && worktrees nonprimary
-                flag --force "discard uncommitted changes"
+                flag --force "also drop an unmerged branch"
+                flag --yes   "skip the confirmation"
                 ;;
             serve)
                 if [ "${PREV}" = "--php" ]; then
