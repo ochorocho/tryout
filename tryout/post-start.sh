@@ -16,30 +16,26 @@ echo -e "${BOLD}TYPO3 tryout — Post-Start Setup${NC}"
 echo "═══════════════════════════════════════"
 echo ""
 
-# --- Step 1: Clone TYPO3 Core if not present ---
-# A dangling symlink reads as absent to the tests below, so the clone would fail
-# against an occupied path. Catch it with a message that names the fix.
-if [ -L "${CORE_DIR}" ] && [ ! -e "${CORE_DIR}" ]; then
-    error "typo3-core is a broken symlink -> $(readlink "${CORE_DIR}")"
-    error "  → ddev tryout worktree list, then: ddev tryout worktree use <name>"
-    exit 1
-fi
-
-if [ ! -d "${CORE_DIR}/.git" ] && [ ! -f "${CORE_DIR}/.git" ]; then
-    info "[1/5] Cloning TYPO3 Core repository..."
+# --- Step 1: Clone TYPO3 Core into the project root if not present ---
+# The project root IS the Core clone. `ddev config` has already written .ddev/
+# here, so the directory is never empty and `git clone` would refuse it —
+# clone_core_into_root does the same work with init+fetch+checkout instead.
+if [ ! -d "${CORE_GIT_DIR}" ] && [ ! -f "${CORE_GIT_DIR}" ]; then
+    info "[1/5] Cloning TYPO3 Core repository into the project root..."
     info "This may take a few minutes on first run."
-    if ! git clone --branch "${BRANCH}" "${CORE_REPO}" "${CORE_DIR}"; then
+    if ! clone_core_into_root "${BRANCH}"; then
         error "Failed to clone TYPO3 Core"
         error "  → Try manually: ddev tryout download"
         exit 1
     fi
-    git -C "${CORE_DIR}" remote add gerrit "${GERRIT_REMOTE}"
     ensure_relative_worktree_paths
     success "TYPO3 Core cloned"
 else
     info "[1/5] TYPO3 Core already present"
-    # A checkout that predates the container-side git still records absolute
-    # host paths in its worktrees; make them readable on both sides.
+    # Both are idempotent, and both repair a checkout made by an older payload:
+    # excludes that did not exist yet, and worktrees still recording absolute
+    # host paths.
+    ensure_core_excludes
     ensure_relative_worktree_paths
 fi
 
@@ -63,7 +59,8 @@ fi
 # sysexts actually present in this Core checkout before install can resolve the
 # path repository. Doing it every start also keeps it correct after a branch switch.
 info "[3/5] Syncing composer.tryout.json with Core sysexts..."
-if ! php "$(tryout_script sync-composer.php)"; then
+if ! env PROJECT_ROOT="${INSTANCE_DIR}" TRYOUT_CORE_DIR="${CORE_DIR}" \
+        php "$(tryout_script sync-composer.php)"; then
     error "Failed to sync composer.tryout.json"
     error "  → Try: ddev tryout download --reset && ddev restart"
     exit 1

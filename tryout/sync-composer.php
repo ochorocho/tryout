@@ -4,9 +4,9 @@
 
 /**
  * Regenerates composer.json to match the system extensions available
- * in typo3-core/typo3/sysext/. Run after switching Core branches.
+ * in <core>/typo3/sysext/. Run after switching Core branches.
  *
- * - Scans typo3-core/typo3/sysext/<*>/composer.json for package names
+ * - Scans <core>/typo3/sysext/<*>/composer.json for package names
  * - Rewrites the "require" section with those packages at "@dev"
  * - Preserves non-typo3/cms-* requires (custom packages)
  * - Preserves all other composer.json fields
@@ -24,7 +24,9 @@ $projectRoot = getenv('PROJECT_ROOT') ?: '/var/www/html';
 $composerName = getenv('TRYOUT_COMPOSER_FILE') ?: 'composer.tryout.json';
 $composerFile = $projectRoot . '/' . $composerName;
 $composerLockFile = $projectRoot . '/' . preg_replace('/\.json$/', '.lock', $composerName);
-$coreDir = getenv('TRYOUT_CORE_DIR') ?: $projectRoot . '/typo3-core';
+// The instance lives in Build/, so its Core is one level up. TRYOUT_CORE_DIR
+// overrides for a served site, whose Core is a nested worktree.
+$coreDir = getenv('TRYOUT_CORE_DIR') ?: dirname($projectRoot);
 $sysextDir = $coreDir . '/typo3/sysext';
 
 if (!is_dir($sysextDir)) {
@@ -82,7 +84,7 @@ foreach ($oldRequire as $package => $version) {
 // finds it when typo3/sysext/theme_camino is there, and on 13.4 (where it is not)
 // the entry pointed Composer at a path that does not exist:
 //
-//   Source path "../../typo3-core-main/typo3/sysext/theme_camino" is not found
+//   Source path "../../worktrees/main/typo3/sysext/theme_camino" is not found
 //
 // which fails `composer install` and therefore the whole checkout. The sysexts on
 // disk are the only thing that decides what goes in here.

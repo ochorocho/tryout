@@ -118,7 +118,7 @@ ctr_status_body() {
     fi
 
     # Composer
-    if [ -d "${PROJECT_ROOT}/vendor" ]; then
+    if [ -d "${INSTANCE_DIR}/vendor" ]; then
         echo -e "${TEXT}  Composer:  ${OK} installed${NC}"
     else
         echo -e "${TEXT}  Composer:  ${FAIL} not installed${NC}"
@@ -126,7 +126,7 @@ ctr_status_body() {
     fi
 
     # TYPO3
-    if [ -f "${PROJECT_ROOT}/config/system/settings.php" ]; then
+    if [ -f "${INSTANCE_DIR}/config/system/settings.php" ]; then
         echo -e "${TEXT}  TYPO3:     ${OK} configured${NC}"
     else
         echo -e "${TEXT}  TYPO3:     ${FAIL} not set up${NC}"
@@ -195,16 +195,15 @@ ctr_download() {
     site_is_primary "${site}" || site_arg=" ${site}"
 
     # First-time clone
-    if [ ! -d "${CORE_DIR}" ]; then
-        info "Cloning TYPO3 Core (${BRANCH} branch)..."
+    if [ ! -d "${CORE_GIT_DIR}" ] && [ ! -f "${CORE_GIT_DIR}" ]; then
+        info "Cloning TYPO3 Core (${BRANCH} branch) into the project root..."
         info "This may take a few minutes on first run."
-        if ! git clone --branch "${BRANCH}" "${CORE_REPO}" "${CORE_DIR}"; then
+        if ! clone_core_into_root "${BRANCH}"; then
             error "Failed to clone TYPO3 Core repository"
             exit 1
         fi
-        git -C "${CORE_DIR}" remote add gerrit "${GERRIT_REMOTE}"
         ensure_relative_worktree_paths
-        success "TYPO3 Core cloned into typo3-core/"
+        success "TYPO3 Core cloned into the project root"
         return
     fi
 
@@ -476,7 +475,7 @@ ctr_checkout() {
         || git -C "${CORE_DIR}" checkout -b "${target_branch}" "origin/${target_branch}"
     git -C "${CORE_DIR}" reset --hard "origin/${target_branch}"
     git -C "${CORE_DIR}" clean -fd
-    rm -rf "${PROJECT_ROOT}/var/cache"/*
+    rm -rf "${INSTANCE_DIR}/var/cache"/*
 
     success "Core switched to ${target_branch}"
 
@@ -486,7 +485,8 @@ ctr_checkout() {
     else
         info "Syncing sites/${site}/composer.tryout.json..."
         env PROJECT_ROOT="$(site_dir "${site}")" TRYOUT_CORE_DIR="$(core_worktree_dir "${site}")" \
-            php "$(tryout_script sync-composer.php)"
+            env PROJECT_ROOT="${INSTANCE_DIR}" TRYOUT_CORE_DIR="${CORE_DIR}" \
+        php "$(tryout_script sync-composer.php)"
     fi
     wipe_site_vendor "${site}" || return 1
     rebuild_typo3 "${site}"
@@ -502,7 +502,8 @@ ctr_checkout() {
 ctr_composer() {
     require_core
     info "Syncing composer.tryout.json with available system extensions..."
-    php "$(tryout_script sync-composer.php)"
+    env PROJECT_ROOT="${INSTANCE_DIR}" TRYOUT_CORE_DIR="${CORE_DIR}" \
+        php "$(tryout_script sync-composer.php)"
 }
 
 # ─────────────────────────────────────────────────────────────────────

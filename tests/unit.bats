@@ -87,14 +87,17 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
   assert_output "13.4"
 }
 
-@test "the primary site resolves to the project root" {
+@test "the primary site resolves to Build/, not the project root" {
   set -eu -o pipefail
+  # The project root is Core's source tree; the instance is built in Build/, and
+  # Core's own composer.json is typo3/cms with no web-dir, so nothing would put a
+  # docroot at the root even if we wanted one there.
   run helper site_dir
-  assert_output "${FAKEROOT}"
+  assert_output "${FAKEROOT}/Build"
   run helper site_dir "@primary"
-  assert_output "${FAKEROOT}"
+  assert_output "${FAKEROOT}/Build"
   run helper site_docroot
-  assert_output "${FAKEROOT}/public"
+  assert_output "${FAKEROOT}/Build/public"
 }
 
 @test "a named site resolves under sites/" {
@@ -131,12 +134,14 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
   assert_output "v13.unitproj"
 }
 
-@test "the primary Core dir follows the symlink, a named one does not" {
+@test "the primary Core is the root checkout, a named one is its worktree" {
   set -eu -o pipefail
+  # There is no symlink any more: the root clone IS the primary, and a served
+  # site is nailed to its own nested worktree so it cannot follow the root's branch.
   run helper site_core_dir
-  assert_output "${FAKEROOT}/typo3-core"
+  assert_output "${FAKEROOT}"
   run helper site_core_dir v13
-  assert_output "${FAKEROOT}/typo3-core-v13"
+  assert_output "${FAKEROOT}/worktrees/v13"
 }
 
 @test "worktree names are validated" {
@@ -331,12 +336,24 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
 
 @test "completion lists the worktrees on disk" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13"
 
+  # `use` switches the PRIMARY, so it never offers the primary itself — that is
+  # the root checkout, whose name comes from its branch rather than from a
+  # directory under worktrees/.
   run names worktree use "''"
+  assert_success
+  assert_line "v13"
+  refute_line "main"
+
+  # A verb that takes any worktree offers the root checkout too, exactly once
+  # even when a worktrees/<primary> directory also exists.
+  run names worktree serve "''"
   assert_success
   assert_line "main"
   assert_line "v13"
+  [ "$(printf '%s\n' "${lines[@]}" | grep -c '^main$')" -eq 1 ] \
+    || fail "the primary must be offered once, not once per source"
 }
 
 @test "completion lists served sites for the commands that take one" {
@@ -529,18 +546,18 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
 @test "foreign worktrees are the ones outside the project root" {
   set -eu -o pipefail
   command -v git >/dev/null 2>&1 || skip 'git not available'
-  mkdir -p "${FAKEROOT}/typo3-core"
-  git -C "${FAKEROOT}/typo3-core" init -q .
-  git -C "${FAKEROOT}/typo3-core" commit -q --allow-empty -m init
-  git -C "${FAKEROOT}/typo3-core" worktree add -q "${FAKEROOT}/typo3-core-inside" -b inside
-  git -C "${FAKEROOT}/typo3-core" worktree add -q "${BATS_TMPDIR}/tryout-outside-$$" -b outside
+  # The project root IS the clone, and worktrees are nested inside it.
+  git -C "${FAKEROOT}" init -q .
+  git -C "${FAKEROOT}" commit -q --allow-empty -m init
+  git -C "${FAKEROOT}" worktree add -q "${FAKEROOT}/worktrees/inside" -b inside
+  git -C "${FAKEROOT}" worktree add -q "${BATS_TMPDIR}/tryout-outside-$$" -b outside
 
   run helper_eval 'list_foreign_core_worktrees'
   assert_success
-  refute_output --partial "typo3-core-inside"
+  refute_output --partial "worktrees/inside"
   assert_output --partial "tryout-outside-$$"
 
-  git -C "${FAKEROOT}/typo3-core" worktree remove --force "${BATS_TMPDIR}/tryout-outside-$$" || true
+  git -C "${FAKEROOT}" worktree remove --force "${BATS_TMPDIR}/tryout-outside-$$" || true
 }
 
 @test "a missing herdr says how to install it, per platform" {
@@ -678,11 +695,11 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
   set -eu -o pipefail
   command -v php >/dev/null 2>&1 || skip 'php not available'
 
-  mkdir -p "${FAKEROOT}/typo3-core-capped" "${FAKEROOT}/typo3-core-open" \
-           "${FAKEROOT}/typo3-core-nojson"
-  printf '{"require":{"php":">=8.2 <8.4"}}' > "${FAKEROOT}/typo3-core-capped/composer.json"
-  printf '{"require":{"php":"^8.2"}}'       > "${FAKEROOT}/typo3-core-open/composer.json"
-  printf '{}'                               > "${FAKEROOT}/typo3-core-nojson/composer.json"
+  mkdir -p "${FAKEROOT}/worktrees/capped" "${FAKEROOT}/worktrees/open" \
+           "${FAKEROOT}/worktrees/nojson"
+  printf '{"require":{"php":">=8.2 <8.4"}}' > "${FAKEROOT}/worktrees/capped/composer.json"
+  printf '{"require":{"php":"^8.2"}}'       > "${FAKEROOT}/worktrees/open/composer.json"
+  printf '{}'                               > "${FAKEROOT}/worktrees/nojson/composer.json"
 
   # Stub the container lookup: these are the versions the web image ships.
   run env DDEV_PHP_VERSION=8.5 bash -c "
@@ -761,17 +778,16 @@ FAKE
 
   git -C "${FAKEROOT}" init -q .
   git -C "${FAKEROOT}" commit -q --allow-empty -m init
-  mkdir -p "${FAKEROOT}/typo3-core"
-  git -C "${FAKEROOT}" worktree add -q "${FAKEROOT}/typo3-core-wilie-wonka" -b wilie-wonka
+  git -C "${FAKEROOT}" worktree add -q "${FAKEROOT}/worktrees/wilie-wonka" -b wilie-wonka
 
   run helper_eval 'rename_core_worktree wilie-wonka experiment'
   assert_success
 
-  assert_dir_exist "${FAKEROOT}/typo3-core-experiment"
-  assert_dir_not_exist "${FAKEROOT}/typo3-core-wilie-wonka"
+  assert_dir_exist "${FAKEROOT}/worktrees/experiment"
+  assert_dir_not_exist "${FAKEROOT}/worktrees/wilie-wonka"
 
   # The branch is the point: it must survive the rename untouched.
-  run bash -c "git -C '${FAKEROOT}/typo3-core-experiment' branch --show-current"
+  run bash -c "git -C '${FAKEROOT}/worktrees/experiment' branch --show-current"
   assert_output "wilie-wonka"
 }
 
@@ -780,13 +796,13 @@ FAKE
   command -v git >/dev/null 2>&1 || skip 'git not available'
   git -C "${FAKEROOT}" init -q .
   git -C "${FAKEROOT}" commit -q --allow-empty -m init
-  git -C "${FAKEROOT}" worktree add -q "${FAKEROOT}/typo3-core-a" -b a
-  mkdir -p "${FAKEROOT}/typo3-core-b"
+  git -C "${FAKEROOT}" worktree add -q "${FAKEROOT}/worktrees/a" -b a
+  mkdir -p "${FAKEROOT}/worktrees/b"
 
   run helper_eval 'rename_core_worktree a b'
   assert_failure
   assert_output --partial "already exists"
-  assert_dir_exist "${FAKEROOT}/typo3-core-a"
+  assert_dir_exist "${FAKEROOT}/worktrees/a"
 }
 
 @test "adopt takes an optional name so the branch does not dictate the path" {
@@ -826,7 +842,7 @@ FAKE
   # cobra filters candidates against the partial word itself, so returning the full
   # list is correct.
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13"
 
   run names herd
   assert_success
@@ -840,9 +856,10 @@ FAKE
   assert_success
   assert_line "use"
 
-  run names worktree use ma
+  # `use` never offers the primary, so filter on a worktree that is not it.
+  run names worktree use v1
   assert_success
-  assert_line "main"
+  assert_line "v13"
 
   # An empty word must keep working too.
   run names "''"
@@ -852,7 +869,7 @@ FAKE
 
 @test "completion offers herdr, its worktrees and its flags" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13"
 
   run names "''"
   assert_success
@@ -871,7 +888,7 @@ FAKE
   # as two columns and `_activeHelp_ text` as a hint. A bare word would look like
   # a regression in zsh: no description beside it.
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/sites/v13"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/sites/v13"
   printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
   local args line
   for args in "''" "worktree ''" "worktree add ''" "worktree add x ''" "worktree use ''" \
@@ -917,7 +934,7 @@ FAKE
 
 @test "completion offers serve only unserved worktrees and unserve only served ones" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13" "${FAKEROOT}/typo3-core-v12"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13" "${FAKEROOT}/worktrees/v12"
   mkdir -p "${FAKEROOT}/sites/v13"
   printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
 
@@ -940,8 +957,7 @@ FAKE
 
 @test "completion omits the primary from use and remove" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13"
 
   run names worktree use "''"
   assert_success
@@ -975,7 +991,7 @@ FAKE
 
 @test "completion shows only flags once a dash is typed" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main"
+  mkdir -p "${FAKEROOT}/worktrees/main"
   run names worktree use --
   assert_success
   assert_line "--force"
@@ -984,7 +1000,7 @@ FAKE
 
 @test "completion offers PHP versions after --php" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-v13"
+  mkdir -p "${FAKEROOT}/worktrees/v13"
   run names worktree serve v13 --php "''"
   assert_success
   assert_line "8.2"
@@ -1026,7 +1042,7 @@ FAKE
   # once made a TAB cost a third of a second. Generous bound, coarse clock.
   set -eu -o pipefail
   local n start end
-  for n in 1 2 3 4 5 6; do mkdir -p "${FAKEROOT}/typo3-core-wt${n}"; done
+  for n in 1 2 3 4 5 6; do mkdir -p "${FAKEROOT}/worktrees/wt${n}"; done
   start=$(date +%s)
   complete worktree use "''" >/dev/null
   complete herdr "''" >/dev/null
@@ -1358,9 +1374,8 @@ FAKE
 
 @test "core_worktree_names filters by primary and served state" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13" "${FAKEROOT}/typo3-core-v12" "${FAKEROOT}/sites/v13"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13" "${FAKEROOT}/worktrees/v12" "${FAKEROOT}/sites/v13"
   printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
 
   run helper core_worktree_names all
   assert_line "main"; assert_line "v13"; assert_line "v12"
@@ -1377,7 +1392,7 @@ FAKE
 
 @test "ask_worktree takes a piped answer and fails cleanly with none" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-v13"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13"
 
   run helper_eval 'printf "v13\n" | ask_worktree "which?" all'
   assert_success
@@ -1458,9 +1473,9 @@ FAKE
   set -eu -o pipefail
   command -v php >/dev/null 2>&1 || skip 'php not available'
 
-  mkdir -p "${FAKEROOT}/typo3-core" "${FAKEROOT}/typo3-core-v13"
-  printf '{"require":{"php":"^8.5"}}' > "${FAKEROOT}/typo3-core/composer.json"
-  printf '{"require":{"php":"^8.2"}}' > "${FAKEROOT}/typo3-core-v13/composer.json"
+  mkdir -p "${FAKEROOT}/worktrees/v13"
+  printf '{"require":{"php":"^8.5"}}' > "${FAKEROOT}/composer.json"
+  printf '{"require":{"php":"^8.2"}}' > "${FAKEROOT}/worktrees/v13/composer.json"
 
   # The project on 8.4 against a main Core: refused, with the concrete fix.
   run env DDEV_PHP_VERSION=8.4 bash -c "
@@ -1479,7 +1494,7 @@ FAKE
     export DDEV_APPROOT='${FAKEROOT}'
     source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
     available_php_versions() { printf '8.2\n8.3\n8.4\n8.5\n'; }
-    check_php_for_core '${FAKEROOT}/typo3-core-v13' 8.1 v13
+    check_php_for_core '${FAKEROOT}/worktrees/v13' 8.1 v13
   "
   assert_failure
   assert_output --partial "site 'v13' runs PHP 8.1"
@@ -1492,14 +1507,14 @@ FAKE
   set -eu -o pipefail
   command -v php >/dev/null 2>&1 || skip 'php not available'
 
-  mkdir -p "${FAKEROOT}/typo3-core" "${FAKEROOT}/typo3-core-bare"
-  printf '{"require":{"php":"^8.5"}}' > "${FAKEROOT}/typo3-core/composer.json"
-  printf '{}' > "${FAKEROOT}/typo3-core-bare/composer.json"
+  mkdir -p "${FAKEROOT}/worktrees/bare"
+  printf '{"require":{"php":"^8.5"}}' > "${FAKEROOT}/composer.json"
+  printf '{}' > "${FAKEROOT}/worktrees/bare/composer.json"
 
   run env DDEV_PHP_VERSION=8.5 bash -c "
     export DDEV_APPROOT='${FAKEROOT}'
     source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    check_php_for_core && check_php_for_core '${FAKEROOT}/typo3-core-bare' 8.1 \
+    check_php_for_core && check_php_for_core '${FAKEROOT}/worktrees/bare' 8.1 \
       && check_php_for_core '${FAKEROOT}/nowhere' 8.1 && echo passed
   "
   assert_success
@@ -1530,12 +1545,14 @@ LINES
 }
 
 @test "the single Core checkout of a fresh project opens in herdr under its branch" {
-  # Before any worktree exists there is only typo3-core/ itself. It must resolve
+  # Before any worktree exists there is only the root checkout. It must resolve
   # to that directory under the name the worktree layout gives it later, so the
   # herdr label survives the migration; on the symlink layout the name maps to
-  # typo3-core-<name> as before.
+  # worktrees/<name> as before.
   set -eu -o pipefail
-  git init -q -b main "${FAKEROOT}/typo3-core"
+  # The project root IS the checkout, so a fresh project has exactly one — named
+  # after its branch, with no directory under worktrees/ to find it by.
+  git init -q -b main "${FAKEROOT}"
 
   run bash -c "
     export DDEV_APPROOT='${FAKEROOT}'
@@ -1543,10 +1560,10 @@ LINES
     printf '%s|%s|%s\n' \"\$(plain_core_name)\" \"\$(herdr_checkout_dir main)\" \"\$(herdr_checkout_dir v13)\"
   "
   assert_success
-  assert_output "main|${FAKEROOT}/typo3-core|${FAKEROOT}/typo3-core-v13"
+  assert_output "main|${FAKEROOT}|${FAKEROOT}/worktrees/v13"
 
   # A branch name that is no valid worktree name falls back to the default.
-  git -C "${FAKEROOT}/typo3-core" checkout -q -b 'feature/x' 2>/dev/null
+  git -C "${FAKEROOT}" checkout -q -b 'feature/x' 2>/dev/null
   run bash -c "
     export DDEV_APPROOT='${FAKEROOT}'
     source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
@@ -1555,16 +1572,17 @@ LINES
   assert_success
   assert_output "main"
 
-  # The symlink layout: the plain name is empty and lookups go to typo3-core-<name>.
-  mv "${FAKEROOT}/typo3-core" "${FAKEROOT}/typo3-core-main"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  # Once a worktree of that name exists it wins: a real directory beats the
+  # branch-name fallback, so the workspace opens on the checkout the user made.
+  git -C "${FAKEROOT}" checkout -q -b main 2>/dev/null || git -C "${FAKEROOT}" checkout -q main
+  mkdir -p "${FAKEROOT}/worktrees/main"
   run bash -c "
     export DDEV_APPROOT='${FAKEROOT}'
     source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    printf '[%s]%s' \"\$(plain_core_name)\" \"\$(herdr_checkout_dir main)\"
+    herdr_checkout_dir main
   "
   assert_success
-  assert_output "[]${FAKEROOT}/typo3-core-main"
+  assert_output "${FAKEROOT}/worktrees/main"
 }
 
 @test "the herdr command no longer turns a single-checkout project away" {
@@ -1661,14 +1679,15 @@ LINES
 @test "ensure_relative_worktree_paths converts a worktree recorded with absolute paths" {
   set -eu -o pipefail
   helper git_supports_relative_worktrees || skip "host git < 2.48"
-  local main="${FAKEROOT}/typo3-core-main" wt="${FAKEROOT}/typo3-core-x"
+  # The ROOT is the clone; worktrees are nested inside it under worktrees/<name>.
+  local main="${FAKEROOT}" wt="${FAKEROOT}/worktrees/x"
   git init -q "${main}"
   git -C "${main}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
   git -C "${main}" worktree add -q --detach "${wt}" HEAD
-  # The shape a worktree has when the OTHER side created it.
-  printf 'gitdir: /var/www/html/typo3-core-main/.git/worktrees/typo3-core-x\n' > "${wt}/.git"
-  printf '/var/www/html/typo3-core-x/.git\n' > "${main}/.git/worktrees/typo3-core-x/gitdir"
+  # The shape a worktree has when the OTHER side created it: absolute container
+  # paths, which the host cannot follow.
+  printf 'gitdir: /var/www/html/.git/worktrees/x\n' > "${wt}/.git"
+  printf '/var/www/html/worktrees/x/.git\n' > "${main}/.git/worktrees/x/gitdir"
   run git -C "${wt}" status --short
   assert_failure
 
@@ -1676,34 +1695,50 @@ LINES
   assert_success
   run git -C "${main}" config --get worktree.useRelativePaths
   assert_output "true"
+  # Nested worktrees are two levels down, so the pointer back is ../../.git/...
   run cat "${wt}/.git"
-  assert_output "gitdir: ../typo3-core-main/.git/worktrees/typo3-core-x"
+  assert_output "gitdir: ../../.git/worktrees/x"
   run git -C "${wt}" status --short
   assert_success
   # A worktree added afterwards is relative from the start.
-  git -C "${main}" worktree add -q --detach "${FAKEROOT}/typo3-core-y" HEAD
-  run cat "${FAKEROOT}/typo3-core-y/.git"
-  assert_output "gitdir: ../typo3-core-main/.git/worktrees/typo3-core-y"
+  git -C "${main}" worktree add -q --detach "${FAKEROOT}/worktrees/y" HEAD
+  run cat "${FAKEROOT}/worktrees/y/.git"
+  assert_output "gitdir: ../../.git/worktrees/y"
 }
 
 @test "every clone and worktree operation goes through ensure_relative_worktree_paths" {
   set -eu -o pipefail
   # A worktree made without it is absolute and breaks on the other side.
   local fn body
-  for fn in add_core_worktree migrate_core_to_worktree_layout; do
+  # migrate_core_to_worktree_layout is a no-op now (the root clone IS the layout),
+  # so only the function that actually creates a worktree has to configure paths.
+  for fn in add_core_worktree; do
     body=$(sed -n "/^${fn}() {/,/^}/p" "${DIR}/tryout/functions.sh")
     printf '%s\n' "${body}" | grep -q 'ensure_relative_worktree_paths' \
       || fail "${fn} does not call ensure_relative_worktree_paths"
   done
-  # And a fresh clone is configured before anything else happens to it.
+  # And a fresh clone is configured before anything else happens to it. The clone
+  # goes through clone_core_into_root now — `git clone` cannot be used at all,
+  # because the project root always already holds .ddev/ and clone refuses a
+  # non-empty target.
   local file clone ensure
   for file in "${DIR}/tryout/post-start.sh" "${DIR}/tryout/commands.sh"; do
     [ -f "${file}" ] || continue
-    clone=$(grep -nE '^[[:space:]]*(if ! )?git clone ' "${file}" | head -1 | cut -d: -f1)
+    clone=$(grep -nE 'clone_core_into_root' "${file}" | head -1 | cut -d: -f1)
     [ -n "${clone}" ] || continue
     ensure=$(awk -v from="${clone}" 'NR > from && /ensure_relative_worktree_paths/ { print NR; exit }' "${file}")
-    [ -n "${ensure}" ] || fail "${file}: git clone at line ${clone} is not followed by ensure_relative_worktree_paths"
+    [ -n "${ensure}" ] || fail "${file}: the clone at line ${clone} is not followed by ensure_relative_worktree_paths"
   done
+  # Nothing may use plain `git clone` on the project root.
+  for file in "${DIR}/tryout/post-start.sh" "${DIR}/tryout/commands.sh"; do
+    grep -qE '^[[:space:]]*(if ! )?git clone .*CORE_DIR|PROJECT_ROOT' "${file}" \
+      && grep -qE '^[[:space:]]*(if ! )?git clone ' "${file}" \
+      && fail "${file}: git clone refuses a non-empty root; use clone_core_into_root"
+  done
+  # The clone writes the excludes, or the checkout is dirty from the first start.
+  body=$(sed -n "/^clone_core_into_root() {/,/^}/p" "${DIR}/tryout/functions.sh")
+  printf '%s\n' "${body}" | grep -q 'ensure_core_excludes' \
+    || fail "clone_core_into_root must write .git/info/exclude"
   # add_core_worktree refuses on a git that cannot write relative paths.
   body=$(sed -n "/^add_core_worktree() {/,/^}/p" "${DIR}/tryout/functions.sh")
   printf '%s\n' "${body}" | grep -q 'git_supports_relative_worktrees' \
@@ -1832,7 +1867,7 @@ LINES
 }
 
 @test "the host is brought up to date after a verb that changes files" {
-  # `worktree add x && cd typo3-core-x` on the host must not race Mutagen.
+  # `worktree add x && cd worktrees/x` on the host must not race Mutagen.
   set -eu -o pipefail
   local body
   body=$(sed -n '/^delegate() {/,/^}/p' "${DIR}/commands/host/tryout")
@@ -2182,10 +2217,9 @@ YAML
 
 @test "ask_worktree labels each worktree with its branch, HEAD and state" {
   set -eu -o pipefail
-  local main="${FAKEROOT}/typo3-core-main" wt="${FAKEROOT}/typo3-core-v13"
+  local main="${FAKEROOT}/worktrees/main" wt="${FAKEROOT}/worktrees/v13"
   git init -q "${main}"
   git -C "${main}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
   git -C "${main}" worktree add -q --detach "${wt}" HEAD
   mkdir -p "${FAKEROOT}/sites/v13"
   printf 'php=8.4\n' > "${FAKEROOT}/sites/v13/.tryout-site"
@@ -2207,10 +2241,9 @@ YAML
 
 @test "ask_worktree keeps filtering by primary and served state" {
   set -eu -o pipefail
-  local main="${FAKEROOT}/typo3-core-main" wt="${FAKEROOT}/typo3-core-v13"
+  local main="${FAKEROOT}/worktrees/main" wt="${FAKEROOT}/worktrees/v13"
   git init -q "${main}"
   git -C "${main}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
   git -C "${main}" worktree add -q --detach "${wt}" HEAD
   mkdir -p "${FAKEROOT}/sites/v13"
   printf 'php=8.4\n' > "${FAKEROOT}/sites/v13/.tryout-site"
@@ -2284,9 +2317,8 @@ panel_defs() {
   # Rows are absolute screen rows; FIRST_ROW is where the list starts. Getting this
   # off by one would run the wrong command, which is worse than doing nothing.
   # A served worktree gives the longest menu, so there are rows to miss past.
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-benni" \
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/benni" \
            "${FAKEROOT}/sites/benni"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
   printf 'php=8.3\n' > "${FAKEROOT}/sites/benni/.tryout-site"
 
   run env TRYOUT_PANEL_WORKTREE=benni TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
@@ -2381,8 +2413,7 @@ panel_defs() {
   # whose escape codes then land in the captured output as a bogus entry.
   # The menu is built per worktree state now, so ask it for its rows rather than
   # reading a static array. The primary's list is the widest.
-  mkdir -p "${FAKEROOT}/typo3-core-main"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main"
   verbs=$(TRYOUT_PANEL_WORKTREE=main TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
     eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
     trap - EXIT INT TERM
@@ -2638,8 +2669,7 @@ panel_menu() { # $1=worktree $2=approot
   # A bare ESC arrives with an empty tail — nothing followed it. Arrows and mouse
   # reports come through the same function WITH a tail, so only the empty case may
   # quit, and none of them may run a command on the way out.
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-lonely"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely"
 
   run env TRYOUT_PANEL_WORKTREE=lonely TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
     eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
@@ -2674,8 +2704,7 @@ panel_menu() { # $1=worktree $2=approot
   assert_success
 
   # And it really reaches the selected row, spanning its full width.
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-lonely"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely"
   run env TRYOUT_PANEL_WORKTREE=lonely TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
     eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
     trap - EXIT INT TERM
@@ -2691,8 +2720,7 @@ panel_menu() { # $1=worktree $2=approot
   # `ESC[row;colH` addresses the SCREEN, not the pane. In a split those rows land
   # wherever the pane is not, which made the panel unreadable: only the first row
   # showed and the rest went elsewhere. Sequential output needs no coordinates.
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-lonely"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely"
 
   run env TRYOUT_PANEL_WORKTREE=lonely TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
     eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
@@ -2925,11 +2953,12 @@ panel_menu() { # $1=worktree $2=approot
   # `worktree use X` from a shell or another panel repoints typo3-core. A panel
   # that only computed its state at startup would keep claiming a role it no
   # longer has — and, before the rows named themselves, act on the wrong checkout.
-  mkdir -p "${FAKEROOT}/typo3-core-alpha" "${FAKEROOT}/typo3-core-beta" \
+  mkdir -p "${FAKEROOT}/worktrees/alpha" "${FAKEROOT}/worktrees/beta" \
            "${FAKEROOT}/sites/alpha" "${FAKEROOT}/sites/beta"
   printf 'php=8.3\n' > "${FAKEROOT}/sites/alpha/.tryout-site"
   printf 'php=8.3\n' > "${FAKEROOT}/sites/beta/.tryout-site"
-  ln -s typo3-core-alpha "${FAKEROOT}/typo3-core"
+  # The primary is the ROOT checkout, identified by the branch it is on.
+  git init -q -b alpha "${FAKEROOT}"
 
   local draw="
     eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
@@ -2943,9 +2972,9 @@ panel_menu() { # $1=worktree $2=approot
   assert_success
   assert_output --partial "STATE=primary"
 
-  # Move the primary elsewhere; the same panel must now report itself as served.
-  rm "${FAKEROOT}/typo3-core"
-  ln -s typo3-core-beta "${FAKEROOT}/typo3-core"
+  # Move the primary elsewhere — a branch switch now, not a relink; the same
+  # panel must report itself as served.
+  git -C "${FAKEROOT}" checkout -q -b beta
 
   run env TRYOUT_PANEL_WORKTREE=alpha TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "${draw}"
   assert_success
@@ -3110,8 +3139,7 @@ panel_menu() { # $1=worktree $2=approot
   # get wrong twice: /private/var, and how deep a match is allowed to be.
   local root
   root="$(mktemp -d)"
-  mkdir -p "${root}/typo3-core-jiiha/Build" "${root}/typo3-core-main" "${root}/packages"
-  ln -sfn typo3-core-main "${root}/typo3-core"
+  mkdir -p "${root}/worktrees/jiiha/Build" "${root}/Build" "${root}/packages"
 
   run bash -c "
     set -euo pipefail
@@ -3119,18 +3147,24 @@ panel_menu() { # $1=worktree $2=approot
     PROJECT_ROOT='${root}'
     plain_core_name() { echo plainclone; }
     p() { printf '%s ' \"\$(worktree_name_for_path \"\$1\" \"\${2:-any}\" || echo none)\"; }
-    p '${root}/typo3-core-jiiha'
-    p '${root}/typo3-core-jiiha' top
-    p '${root}/typo3-core-jiiha/Build'
-    p '${root}/typo3-core-jiiha/Build' top
-    p '${root}/packages'
+    p '${root}/worktrees/jiiha'
+    p '${root}/worktrees/jiiha' top
+    p '${root}/worktrees/jiiha/Build'
+    p '${root}/worktrees/jiiha/Build' top
     p '${root}'
-    p '${root}/typo3-core'
+    p '${root}' top
+    p '${root}/Build'
+    p '${root}/Build' top
+    p '${root}/worktrees'
     echo
   "
   assert_success
-  # in-worktree | same, top | subdir | subdir rejected by top | not ours | root | via the symlink
-  assert_output "jiiha jiiha jiiha none none none main "
+  # The root IS the primary checkout now, so a path anywhere under it that is not
+  # in worktrees/ belongs to the primary — packages/ and Build/ included. `top`
+  # still insists on a checkout's own directory, and worktrees/ is the container
+  # of worktrees, not one itself.
+  # in-wt | same,top | subdir | top rejects subdir | root | root,top | Build | top rejects Build | container
+  assert_output "jiiha jiiha jiiha none plainclone plainclone plainclone none none "
   rm -rf "${root}"
 }
 
@@ -3218,9 +3252,8 @@ panel_menu() { # $1=worktree $2=approot
   # the popup asks for everything it needs, so it belongs where nothing is scoped.
   # Removing one is about a specific checkout, so it belongs on that checkout's
   # own panel — where it names itself and the popup only has to confirm.
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-cold" \
-           "${FAKEROOT}/typo3-core-live" "${FAKEROOT}/sites/live"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/cold" \
+           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/sites/live"
   printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
 
   # No worktree: add, and nothing to remove.
@@ -3243,7 +3276,7 @@ panel_menu() { # $1=worktree $2=approot
   # only ever fail, which is the promise this menu exists not to make. And it is
   # the clone every other worktree branches from, so it is where making one
   # belongs. `git worktree add` writes a .git FILE; the origin keeps a directory.
-  mkdir -p "${FAKEROOT}/typo3-core-main/.git"
+  mkdir -p "${FAKEROOT}/worktrees/main/.git"
   for w in main live cold; do
     run panel_menu "${w}" "${FAKEROOT}"
     assert_success
@@ -3279,12 +3312,12 @@ panel_menu() { # $1=worktree $2=approot
   # Commits on top of the upstream ARE the applied patches — the same measure
   # `ddev tryout status` reports.
   local root="${FAKEROOT}/gitinfo"
-  mkdir -p "${root}/sites/live" "${root}/typo3-core-main"
-  ln -s typo3-core-main "${root}/typo3-core"
+  mkdir -p "${root}/sites/live" "${root}/worktrees/main"
+  ln -s worktrees/main "${root}/typo3-core"
   printf 'php=8.3\n' > "${root}/sites/live/.tryout-site"
   git init -q -b main "${root}/up"
   git -C "${root}/up" commit -q --allow-empty -m base
-  git clone -q "${root}/up" "${root}/typo3-core-live" 2>/dev/null
+  git clone -q "${root}/up" "${root}/worktrees/live" 2>/dev/null
 
   draw() {
     TRYOUT_PANEL_WORKTREE=live TRYOUT_PANEL_APPROOT="${root}" /bin/bash -c "
@@ -3303,19 +3336,19 @@ panel_menu() { # $1=worktree $2=approot
   refute_output --regexp '[0-9]+ patch'
 
   # One commit on top is one patch, singular.
-  git -C "${root}/typo3-core-live" commit -q --allow-empty -m 'a patch'
+  git -C "${root}/worktrees/live" commit -q --allow-empty -m 'a patch'
   run draw
   assert_output --partial "1 patch"
   refute_output --partial "1 patches"
 
   # Two is plural.
-  git -C "${root}/typo3-core-live" commit -q --allow-empty -m 'another'
+  git -C "${root}/worktrees/live" commit -q --allow-empty -m 'another'
   run draw
   assert_output --partial "2 patches"
 
   # A detached checkout says so rather than showing nothing: it has no branch and
   # no upstream, so both reads come back empty and the line would have vanished.
-  git -C "${root}/typo3-core-live" checkout -q --detach HEAD
+  git -C "${root}/worktrees/live" checkout -q --detach HEAD
   run draw
   assert_output --partial "detached"
 }
@@ -3433,9 +3466,8 @@ panel_menu() { # $1=worktree $2=approot
   set -eu -o pipefail
   # It is the inverse of serve, and unserve_worktree refuses a site that is not
   # served — so on an unserved checkout the row could only ever fail.
-  mkdir -p "${FAKEROOT}/typo3-core-main/.git" "${FAKEROOT}/typo3-core-cold" \
-           "${FAKEROOT}/typo3-core-live" "${FAKEROOT}/sites/live"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main/.git" "${FAKEROOT}/worktrees/cold" \
+           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/sites/live"
   printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
 
   # The primary and a served worktree both have a site.
@@ -3649,9 +3681,9 @@ panel_menu() { # $1=worktree $2=approot
   # What actually distinguishes it is the object store: `git worktree add` writes a
   # .git FILE pointing back at the main clone, which keeps a real .git DIRECTORY.
   # One filesystem test, so render can re-ask on every draw.
-  mkdir -p "${FAKEROOT}/typo3-core-origin/.git" "${FAKEROOT}/typo3-core-derived"
-  : > "${FAKEROOT}/typo3-core-derived/.git"
-  ln -s typo3-core-derived "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/origin/.git" "${FAKEROOT}/worktrees/derived"
+  : > "${FAKEROOT}/worktrees/derived/.git"
+  ln -s worktrees/derived "${FAKEROOT}/typo3-core"
 
   probe() { # $1=worktree -> yes/no
     TRYOUT_PANEL_WORKTREE="$1" TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
@@ -3674,9 +3706,8 @@ panel_menu() { # $1=worktree $2=approot
   set -eu -o pipefail
   # They sit at the end deliberately: the rows above act on the checkout, these
   # two only look at it. Anything appended after them would separate the pair.
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-live" \
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/live" \
            "${FAKEROOT}/sites/live"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
   printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
 
   local w out last2
@@ -3698,9 +3729,8 @@ panel_menu() { # $1=worktree $2=approot
   # Four parallel arrays and no associative ones, so a row that fell out of step
   # would read another row's arguments — a command run on the wrong worktree,
   # which is the whole class of bug this menu exists to prevent.
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-cold" \
-           "${FAKEROOT}/typo3-core-live" "${FAKEROOT}/sites/live"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/cold" \
+           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/sites/live"
   printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
 
   counts() { # $1=worktree — every menu shape, since each builds a different list
@@ -3800,8 +3830,7 @@ panel_menu() { # $1=worktree $2=approot
   # drops both streams — a silent-failure bug no grep of the source would catch.
   # So run the REAL run_direct against a stub ddev, rather than a copy of its
   # redirection, which would pass however the shipped one is written.
-  mkdir -p "${FAKEROOT}/typo3-core-main"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main"
 
   drive() { # $1=stub body -> "NOTICE=[…]"
     TRYOUT_PANEL_WORKTREE=main TRYOUT_PANEL_APPROOT="${FAKEROOT}" \
@@ -3838,9 +3867,8 @@ panel_menu() { # $1=worktree $2=approot
 
 @test "the panel offers download where there is a site to update" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-lonely" \
-           "${FAKEROOT}/typo3-core-live" "${FAKEROOT}/sites/live"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely" \
+           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/sites/live"
   printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
 
   run panel_menu live "${FAKEROOT}"
@@ -3864,9 +3892,8 @@ panel_menu() { # $1=worktree $2=approot
   # a bare checkout would be a row that can only error. It also takes the site
   # positionally, which is why the primary gets the @primary sentinel rather than
   # an empty string — empty would shift the command into the site's place.
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-lonely" \
-           "${FAKEROOT}/typo3-core-live" "${FAKEROOT}/sites/live"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely" \
+           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/sites/live"
   printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
 
   # Served: its own name.
@@ -3892,8 +3919,7 @@ panel_menu() { # $1=worktree $2=approot
   set -eu -o pipefail
   # Most worktrees are just checkouts. checkout/reset/patch need a site, so on
   # one of those they would fail — or worse, silently act on the primary.
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-lonely"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely"
 
   run panel_menu lonely "${FAKEROOT}"
   assert_success
@@ -3908,9 +3934,8 @@ panel_menu() { # $1=worktree $2=approot
 
 @test "a served worktree carries its own site, so nothing asks which one" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/typo3-core-benni" \
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/benni" \
            "${FAKEROOT}/sites/benni"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
   printf 'php=8.3\n' > "${FAKEROOT}/sites/benni/.tryout-site"
 
   run panel_menu benni "${FAKEROOT}"
@@ -3928,8 +3953,7 @@ panel_menu() { # $1=worktree $2=approot
   # cmd_reset hands its argument straight to the container, and unlike cmd_patch
   # and cmd_delete it does NOT blank "@primary" first — the container's parser
   # would reject it.
-  mkdir -p "${FAKEROOT}/typo3-core-main"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main"
 
   run panel_menu main "${FAKEROOT}"
   assert_success
@@ -3950,7 +3974,7 @@ panel_menu() { # $1=worktree $2=approot
   # typo3/theme-camino used to be appended whenever the branch looked like main or
   # v14+. On 13.4 there is no typo3/sysext/theme_camino, so the entry pointed a
   # path repository at a directory that does not exist:
-  #   Source path "…/typo3-core-main/typo3/sysext/theme_camino" is not found
+  #   Source path "…/worktrees/main/typo3/sysext/theme_camino" is not found
   # which fails composer install and with it the whole checkout. A detached
   # worktree made it worse: the fallback read EXT:core's branch-alias, got "main",
   # and added camino to a 13.4 tree. The sysexts present decide, and nothing else.
@@ -4037,7 +4061,7 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
   # Terminal tab and the panel existed, is missing whatever came later — and the
   # early return for "already open" is what kept it that way: `ddev tryout herdr
   # <name>` skips the reconcile pass, so nothing else ever reached it. That is
-  # how typo3-core-main ended up as the one workspace with no tryout panel.
+  # how worktrees/main ended up as the one workspace with no tryout panel.
   local fn
   fn=$(sed -n '/^open_worktree_in_herdr()/,/^}/p' "${DIR}/tryout/functions.sh")
 
@@ -4059,7 +4083,7 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
   # It must find the workspace by DIRECTORY, not by label. A workspace old enough
   # to be missing the tab and the panel is old enough to be missing the
   # core-<name> label too, so looking it up by that label found nothing and the
-  # whole branch did nothing — which is exactly how typo3-core-main stayed broken
+  # whole branch did nothing — which is exactly how worktrees/main stayed broken
   # through a fix that was supposed to repair it.
   printf '%s' "${skip}" | grep -q 'herdr_workspace_id_for_dir' \
     || fail "the backfill must find the workspace by directory, not by label"
@@ -4272,16 +4296,16 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
   mkdir -p "${root}"
   local w
   for w in alpha beta; do
-    git init -q -b "br-${w}" "${root}/typo3-core-${w}"
-    git -C "${root}/typo3-core-${w}" commit -q --allow-empty -m x
+    git init -q -b "br-${w}" "${root}/worktrees/${w}"
+    git -C "${root}/worktrees/${w}" commit -q --allow-empty -m x
   done
-  ln -s typo3-core-alpha "${root}/typo3-core"
+  ln -s worktrees/alpha "${root}/typo3-core"
 
   emit() { # $1=function
     helper_eval "
       PROJECT_ROOT='${root}'
       CORE_DIR='${root}/typo3-core'
-      CORE_WORKTREE_PREFIX='${root}/typo3-core-'
+      CORE_WORKTREE_PREFIX='${root}/worktrees/'
       $1
     " 2>/dev/null
   }
@@ -4539,8 +4563,8 @@ FAKE
 @test "a workspace whose worktree is gone is an orphan; one still on disk is not" {
   set -eu -o pipefail
   # v13 exists on disk, v12 does not.
-  mkdir -p "${FAKEROOT}/typo3-core-v13"
-  ln -s typo3-core-v13 "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/v13"
+  ln -s worktrees/v13 "${FAKEROOT}/typo3-core"
   fake_herdr '{"result":{"workspaces":[
     {"workspace_id":"w1","label":"core-v13"},
     {"workspace_id":"w2","label":"core-v12"}
@@ -4561,10 +4585,9 @@ FAKE
   # The session is per project, but a user may have opened anything in it. Only
   # the core-<name> label marks a workspace as one this command manages.
   set -eu -o pipefail
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
   fake_herdr '{"result":{"workspaces":[
     {"workspace_id":"w1","label":"my-notes"},
-    {"workspace_id":"w2","label":"typo3-core-main"},
+    {"workspace_id":"w2","label":"worktrees/main"},
     {"workspace_id":"w3","label":"core-gone"}
   ]}}'
 
@@ -4577,13 +4600,12 @@ FAKE
   assert_output --partial "core-gone"
   refute_output --partial "my-notes"
   # Labelled like a directory, but not our scheme — leave it alone.
-  refute_output --partial "typo3-core-main"
+  refute_output --partial "worktrees/main"
 }
 
 @test "close_orphan_workspaces closes each orphan once, by id, and says so" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main"
   fake_herdr '{"result":{"workspaces":[
     {"workspace_id":"w1","label":"core-main"},
     {"workspace_id":"w2","label":"core-v12"},
@@ -4608,8 +4630,7 @@ FAKE
 
 @test "nothing is closed when every worktree is still there" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main"
   fake_herdr '{"result":{"workspaces":[{"workspace_id":"w1","label":"core-main"}]}}'
 
   run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
@@ -4626,7 +4647,6 @@ FAKE
   # Before any worktree exists, typo3-core/ is a plain clone and the workspace is
   # labelled after its branch — herdr_checkout_dir resolves that to typo3-core/.
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core"
   git init -q "${FAKEROOT}/typo3-core"
   git -C "${FAKEROOT}/typo3-core" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
   git -C "${FAKEROOT}/typo3-core" branch -M main
@@ -4684,14 +4704,13 @@ FAKE
 }
 
 @test "a workspace on our worktree but mislabelled is adopted, not closed" {
-  # This is the wC/'typo3-core-main' shape: same directory, older label. Closing
+  # This is the wC/'worktrees/main' shape: same directory, older label. Closing
   # it would kill a live agent and open a duplicate beside it.
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main"
   fake_herdr_panes \
-    '{"result":{"workspaces":[{"workspace_id":"wC","label":"typo3-core-main"}]}}' \
-    "{\"result\":{\"panes\":[{\"pane_id\":\"wC:p1\",\"workspace_id\":\"wC\",\"cwd\":\"${FAKEROOT}/typo3-core-main\"}]}}"
+    '{"result":{"workspaces":[{"workspace_id":"wC","label":"worktrees/main"}]}}' \
+    "{\"result\":{\"panes\":[{\"pane_id\":\"wC:p1\",\"workspace_id\":\"wC\",\"cwd\":\"${FAKEROOT}/worktrees/main\"}]}}"
 
   run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
     export DDEV_APPROOT='${FAKEROOT}'
@@ -4708,15 +4727,14 @@ FAKE
 
 @test "a workspace pointing outside the project is closed" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/elsewhere"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/elsewhere"
   fake_herdr_panes \
     '{"result":{"workspaces":[
        {"workspace_id":"wA","label":"core-main"},
        {"workspace_id":"wB","label":"scratch"}
      ]}}' \
     "{\"result\":{\"panes\":[
-       {\"pane_id\":\"wA:p1\",\"workspace_id\":\"wA\",\"cwd\":\"${FAKEROOT}/typo3-core-main\"},
+       {\"pane_id\":\"wA:p1\",\"workspace_id\":\"wA\",\"cwd\":\"${FAKEROOT}/worktrees/main\"},
        {\"pane_id\":\"wB:p1\",\"workspace_id\":\"wB\",\"cwd\":\"/tmp\"}
      ]}}"
 
@@ -4737,8 +4755,7 @@ FAKE
   # The project root itself, or packages/ — someone opened it deliberately. It is
   # not a Core worktree, so this command has no business closing it.
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main" "${FAKEROOT}/packages"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/packages"
   fake_herdr_panes \
     '{"result":{"workspaces":[{"workspace_id":"wP","label":"packages"}]}}' \
     "{\"result\":{\"panes\":[{\"pane_id\":\"wP:p1\",\"workspace_id\":\"wP\",\"cwd\":\"${FAKEROOT}/packages\"}]}}"
@@ -4757,16 +4774,15 @@ FAKE
   # The whole point of adopting: herdr_worktree_is_open keys on pane cwd, so once
   # the label is fixed the open loop must still see it as already open.
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/typo3-core-main"
-  ln -s typo3-core-main "${FAKEROOT}/typo3-core"
+  mkdir -p "${FAKEROOT}/worktrees/main"
   fake_herdr_panes \
-    '{"result":{"workspaces":[{"workspace_id":"wC","label":"typo3-core-main"}]}}' \
-    "{\"result\":{\"panes\":[{\"pane_id\":\"wC:p1\",\"workspace_id\":\"wC\",\"cwd\":\"${FAKEROOT}/typo3-core-main\"}]}}"
+    '{"result":{"workspaces":[{"workspace_id":"wC","label":"worktrees/main"}]}}' \
+    "{\"result\":{\"panes\":[{\"pane_id\":\"wC:p1\",\"workspace_id\":\"wC\",\"cwd\":\"${FAKEROOT}/worktrees/main\"}]}}"
 
   run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
     export DDEV_APPROOT='${FAKEROOT}'
     source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    herdr_worktree_is_open '${FAKEROOT}/typo3-core-main' && echo OPEN
+    herdr_worktree_is_open '${FAKEROOT}/worktrees/main' && echo OPEN
   "
   assert_success
   assert_output --partial "OPEN"
@@ -4785,7 +4801,7 @@ FAKE
 }
 
 # --- creating a worktree ----------------------------------------------------
-# Every route must end at <project>/typo3-core-<name>, and must ask which branch
+# Every route must end at <project>/worktrees/<name>, and must ask which branch
 # the checkout is based on rather than silently taking whatever Core is on.
 
 @test "the branch is asked for even when the name came in as an argument" {
@@ -4868,7 +4884,7 @@ FAKE
   assert_output "curious-fox"
   run helper worktree_name_from_ref "refs/heads/bugfix-9421"
   assert_output "bugfix-9421"
-  # An already-prefixed name must not become typo3-core-typo3-core-x.
+  # An already-prefixed name must not become worktrees/worktrees/x.
   run helper worktree_name_from_ref "typo3-core-v13"
   assert_output "v13"
   # Anything a directory cannot hold becomes a dash — including the slash of a

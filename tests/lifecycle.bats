@@ -64,7 +64,7 @@ addon_start() {
   addon_start
 
   # Core was cloned by the post-start hook.
-  assert_dir_exist "${TESTDIR}/typo3-core/typo3/sysext/core"
+  assert_dir_exist "${TESTDIR}/typo3/sysext/core"
 
   # The overlay was generated from the sysexts actually on disk. It ships empty,
   # so a populated require block proves sync-composer.php ran before install.
@@ -102,7 +102,7 @@ addon_start() {
   run ddev tryout checkout 13.4
   assert_success
 
-  run bash -c "cd '${TESTDIR}/typo3-core' && git branch --show-current"
+  run bash -c "cd '${TESTDIR}' && git branch --show-current"
   assert_output "13.4"
 
   run ddev exec vendor/bin/typo3 --version
@@ -155,7 +155,7 @@ addon_start() {
   run ddev tryout patch 999999999
   assert_failure
 
-  run bash -c "cd '${TESTDIR}/typo3-core' && git status --porcelain | wc -l | tr -d ' '"
+  run bash -c "cd '${TESTDIR}' && git status --porcelain | wc -l | tr -d ' '"
   assert_output "0"
 }
 
@@ -166,9 +166,9 @@ addon_start() {
 
   run ddev tryout worktree add v13 13.4
   assert_success
-  assert_dir_exist "${TESTDIR}/typo3-core-v13"
+  assert_dir_exist "${TESTDIR}/worktrees/v13"
   # The primary becomes a symlink to the active worktree.
-  assert_link_exist "${TESTDIR}/typo3-core"
+  assert_link_exist "${TESTDIR}"
 
   run ddev tryout worktree serve v13 --php 8.4
   assert_success
@@ -182,7 +182,7 @@ addon_start() {
 
   # The served site's overlay points at its own worktree and back at the shared
   # packages/ and the project's composer.json.
-  run grep -q '\.\./\.\./typo3-core-v13/typo3/sysext/\*' "${TESTDIR}/sites/v13/composer.tryout.json"
+  run grep -q '\.\./\.\./worktrees/v13/typo3/sysext/\*' "${TESTDIR}/sites/v13/composer.tryout.json"
   assert_success
   run grep -q '\.\./\.\./packages/\*' "${TESTDIR}/sites/v13/composer.tryout.json"
   assert_success
@@ -212,7 +212,7 @@ addon_start() {
   run ddev tryout worktree unserve v13
   assert_success
   assert_dir_not_exist "${TESTDIR}/sites/v13"
-  assert_dir_exist "${TESTDIR}/typo3-core-v13"
+  assert_dir_exist "${TESTDIR}/worktrees/v13"
 
   # ...and the hostname stops answering, while the primary is unaffected.
   run ddev restart -y

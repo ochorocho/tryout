@@ -157,8 +157,8 @@ APPROOT="${DDEV_APPROOT:-${PWD}}"
     || { err "The tryout add-on is not installed in ${APPROOT}"; exit 1; }
 
 case "${caller_dir}" in
-    "${APPROOT}/typo3-core-"*)
-        PANEL_WORKTREE="${caller_dir#"${APPROOT}/typo3-core-"}"
+    "${APPROOT}/worktrees/"*)
+        PANEL_WORKTREE="${caller_dir#"${APPROOT}/worktrees/"}"
         # Only the top of a worktree counts, not a directory inside one.
         case "${PANEL_WORKTREE}" in */*) PANEL_WORKTREE="" ;; esac ;;
 esac

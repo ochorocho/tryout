@@ -31,5 +31,5 @@ cd "${TESTDIR}"
 # tryout drives TYPO3, so the project type and docroot are fixed. PHP is pinned so
 # the assertions below do not drift with the DDEV default.
 run ddev config --project-name="${PROJNAME}" --project-tld=ddev.site \
-  --project-type=typo3 --docroot=public --php-version=8.5
+  --project-type=typo3 --docroot=Build/public --php-version=8.5
 assert_success

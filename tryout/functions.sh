@@ -4,9 +4,20 @@
 # Shared functions for TYPO3 tryout DDEV commands.
 # Source this file: source "${DDEV_APPROOT}/.ddev/tryout/functions.sh"
 
+# The project root IS the TYPO3 Core clone. Core's own .gitignore has carried
+# /.ddev/* since 2018 (10a9e0ee805), so DDEV living here is a shape Core expects;
+# everything else the add-on generates is kept out of `git status` by
+# .git/info/exclude, which is local to the clone and never reaches a patch.
 PROJECT_ROOT="${DDEV_APPROOT}"
-CORE_DIR="${PROJECT_ROOT}/typo3-core"
+CORE_DIR="${PROJECT_ROOT}"
 CORE_GIT_DIR="${CORE_DIR}/.git"
+
+# The Composer instance is built in Build/, not at the root: the root is Core's
+# source tree, and Core's own composer.json is typo3/cms — a library with no
+# web-dir, so it produces no docroot. The overlay sets web-dir/vendor-dir to put
+# public/ and vendor/ in here. Build/ is Core's own directory (its build tooling
+# lives beside these), which is why every path we add under it is excluded by name.
+INSTANCE_DIR="${PROJECT_ROOT}/Build"
 # shellcheck disable=SC2034 # used by post-start.sh and commands/host/tryout
 CORE_REPO="https://github.com/typo3/typo3.git"
 GERRIT_REMOTE="https://review.typo3.org/Packages/TYPO3.CMS"
@@ -26,16 +37,19 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=28
+TRYOUT_VERSION=29
 
-# Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
-# symlink to whichever one is active. See `ddev tryout worktree`.
-CORE_WORKTREE_PREFIX="${PROJECT_ROOT}/typo3-core-"
+# Core worktrees live INSIDE the clone, under worktrees/<name>. Nested worktrees
+# keep relative metadata on both pointers (worktrees/<n>/.git -> ../../.git/... and
+# .git/worktrees/<n>/gitdir -> ../../../worktrees/<n>/.git), which is what keeps
+# host and container paths interchangeable. See `ddev tryout worktree`.
+WORKTREES_DIR="${PROJECT_ROOT}/worktrees"
+CORE_WORKTREE_PREFIX="${WORKTREES_DIR}/"
 DEFAULT_CORE_WORKTREE="main"
 
-# Served sites. The PRIMARY site is the project root (public/, vendor/, config/)
-# serving whichever worktree typo3-core points at; every other served worktree gets
-# its own tree under sites/<name>/. See `ddev tryout worktree serve`.
+# Served sites. The PRIMARY site is Build/ (public/, vendor/, config/) serving the
+# root checkout itself; every other served worktree gets its own tree under
+# sites/<name>/. See `ddev tryout worktree serve`.
 SITES_DIR="${PROJECT_ROOT}/sites"
 PRIMARY_SITE="@primary"
 WORKTREE_CONFIG="${PROJECT_ROOT}/.ddev/config.worktrees.yaml"
@@ -74,8 +88,8 @@ tryout_script() { echo "${PROJECT_ROOT}/.ddev/tryout/$1"; }
 
 # Composer reads COMPOSER=composer.tryout.json from the container environment
 # (config.tryout.yaml), exactly as `ddev composer` did.
-run_composer() { (cd "${PROJECT_ROOT}" && composer "$@"); }
-run_typo3()    { (cd "${PROJECT_ROOT}" && vendor/bin/typo3 "$@"); }
+run_composer() { (cd "${INSTANCE_DIR}" && composer "$@"); }
+run_typo3()    { (cd "${INSTANCE_DIR}" && vendor/bin/typo3 "$@"); }
 
 db_is_postgres() { [[ "${DDEV_DATABASE:-mariadb}" == postgres* ]]; }
 
@@ -579,7 +593,7 @@ ensure_gerrit_remote() {
 
 require_core() {
     if [ ! -d "${CORE_GIT_DIR}" ] && [ ! -f "${CORE_GIT_DIR}" ]; then
-        error "TYPO3 Core not found at typo3-core/"
+        error "TYPO3 Core not found — the project root is not a git checkout"
         error "  → Run: ddev tryout download"
         exit 1
     fi
@@ -614,7 +628,7 @@ rebuild_typo3() {
         info "Running extension:setup..."
         run_typo3 extension:setup 2>/dev/null || true
         info "Flushing caches..."
-        rm -rf "${PROJECT_ROOT}/var/cache"/* 2>/dev/null || true
+        rm -rf "${INSTANCE_DIR}/var/cache"/* 2>/dev/null || true
         run_typo3 cache:flush 2>/dev/null || true
         success "Rebuild complete"
         return
@@ -652,13 +666,80 @@ reset_core_to_main() {
 # ─────────────────────────────────────────────────────────────────────
 # Core worktrees
 #
-# typo3-core is a symlink to the active typo3-core-<name>. Keeping the path
-# stable means composer.json's path repository, sync-composer.php and CORE_DIR
-# all keep working untouched. Composer resolves the symlink when it writes
-# vendor/ links, so a switch MUST be followed by a rebuild — see use_core_worktree.
+# The project root IS the primary Core checkout; worktrees are nested under
+# worktrees/<name>. The instance in Build/ points at ../typo3/sysext/*, so the
+# primary always follows the root checkout and a served site is nailed to its own
+# worktree. Switching the root's branch MUST be followed by a rebuild, because
+# composer resolves the sysext paths when it writes vendor/ — see use_core_worktree.
 # ─────────────────────────────────────────────────────────────────────
 
 core_worktree_dir() { echo "${CORE_WORKTREE_PREFIX}$1"; }
+
+# Clone Core INTO an existing directory. `git clone` refuses a non-empty target,
+# and the target always is non-empty here: `ddev config` writes .ddev/ before the
+# add-on ever runs. So do what clone does, by hand — init, fetch the one branch,
+# check it out. Same result, no emptiness requirement.
+#
+# `checkout -f` because the worktree is not empty either: .ddev/ is sitting there
+# and git would otherwise refuse to overwrite nothing at all. Nothing of the
+# user's is at risk — the branch's files cannot collide with .ddev/, which Core
+# has ignored since 2018.
+clone_core_into_root() {
+    local branch="${1:-${BRANCH}}"
+    info "Fetching TYPO3 Core (${branch})..."
+    git -C "${PROJECT_ROOT}" init -q 2>/dev/null || { error "git init failed in ${PROJECT_ROOT}"; return 1; }
+    git -C "${PROJECT_ROOT}" remote add origin "${CORE_REPO}" 2>/dev/null ||         git -C "${PROJECT_ROOT}" remote set-url origin "${CORE_REPO}"
+    git -C "${PROJECT_ROOT}" remote add gerrit "${GERRIT_REMOTE}" 2>/dev/null || true
+    if ! git -C "${PROJECT_ROOT}" fetch --depth 1 origin "${branch}"; then
+        error "Failed to fetch ${branch} from ${CORE_REPO}"
+        return 1
+    fi
+    # A shallow fetch keeps the first start quick; unshallow later if history is
+    # wanted (`git fetch --unshallow`). Gerrit patching only needs the tip plus
+    # the change ref it fetches on demand.
+    if ! git -C "${PROJECT_ROOT}" checkout -f -B "${branch}" FETCH_HEAD; then
+        error "Failed to check out ${branch}"
+        return 1
+    fi
+    git -C "${PROJECT_ROOT}" branch --set-upstream-to="origin/${branch}" "${branch}" >/dev/null 2>&1 || true
+    ensure_core_excludes
+    return 0
+}
+
+# Keep everything the add-on generates out of `git status`, without touching a
+# tracked file. .git/info/exclude is local to the clone, is never committed and
+# so never reaches a Gerrit patch — which is exactly what it is for. It lives in
+# the SHARED .git, so one write also covers every worktree, present and future.
+#
+# Idempotent: each line is added only when missing, so it is safe to call after
+# every clone and every `worktree add`.
+ensure_core_excludes() {
+    local f="${CORE_GIT_DIR}/info/exclude" e
+    # In a worktree .git is a file; the real dir is the common one.
+    if [ -f "${CORE_GIT_DIR}" ]; then
+        f="$(git -C "${PROJECT_ROOT}" rev-parse --git-common-dir 2>/dev/null)/info/exclude"
+    fi
+    [ -n "${f}" ] || return 0
+    mkdir -p "$(dirname "${f}")" 2>/dev/null || return 0
+    [ -f "${f}" ] || : > "${f}"
+    for e in \
+        "/.ddev/" \
+        "/worktrees/" \
+        "/sites/" \
+        "/Build/public/" \
+        "/Build/vendor/" \
+        "/Build/var/" \
+        "/Build/config/" \
+        "/Build/composer.tryout.json" \
+        "/Build/composer.tryout.lock" \
+        "/Build/composer.json" \
+        "/Build/composer.lock" \
+        "/packages/" \
+        "/herdr-plugin.toml"
+    do
+        grep -qxF "${e}" "${f}" 2>/dev/null || printf '%s\n' "${e}" >> "${f}"
+    done
+}
 
 # git >= 2.48 can record worktree metadata with RELATIVE paths. That is what lets
 # the container (which does the git work) and the host (editors, herdr, the
@@ -716,7 +797,10 @@ validate_worktree_name() {
     fi
 }
 
-core_is_symlinked() { [ -L "${CORE_DIR}" ]; }
+# Was: "is typo3-core a symlink to a sibling worktree?". The root clone IS the
+# primary now and never a symlink, so the question became "does this project have
+# worktrees at all?" — which is what every caller actually wanted to know.
+core_is_symlinked() { [ -d "${WORKTREES_DIR}" ]; }
 
 # Name of the active worktree, empty on the legacy plain-clone layout.
 # Hand a URL to the desktop's browser. Host-only: the container has no browser,
@@ -761,28 +845,35 @@ worktree_name_for_path() {
     root="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P)" || return 1
     real="$(cd "${path}" 2>/dev/null && pwd -P)" || return 1
 
+    # Order is load-bearing: worktrees/ lives INSIDE the root checkout, so the
+    # nested arm has to be tested before the root arm, or every worktree would be
+    # claimed by the root.
     local rest=""
     case "${real}" in
-        "${root}/typo3-core-"*) name="${real#"${root}/typo3-core-"}"
+        "${root}/worktrees/"*)  name="${real#"${root}/worktrees/"}"
                                 rest="${name#*/}"
                                 [ "${rest}" = "${name}" ] && rest=""
                                 name="${name%%/*}" ;;
-        "${root}/typo3-core")   name="$(plain_core_name)" ;;
-        "${root}/typo3-core/"*) name="$(plain_core_name)"
-                                rest="${real#"${root}/typo3-core/"}" ;;
+        "${root}/worktrees")    return 1 ;;   # the container, not a worktree
+        "${root}")              name="$(plain_core_name)" ;;
+        "${root}/"*)            name="$(plain_core_name)"
+                                rest="${real#"${root}/"}" ;;
         *) return 1 ;;
     esac
 
-    # typo3-core-<name>/Build/... is still <name>; only `top` insists on the root.
+    # worktrees/<name>/Build/... is still <name>; only `top` insists on the checkout
+    # root itself.
     [ "${mode}" = "top" ] && [ -n "${rest}" ] && return 1
 
     [ -n "${name}" ] || return 1
     printf '%s' "${name}"
 }
 
+# The active Core is the ROOT checkout, always — there is no symlink to move. Its
+# name is its branch, the same answer plain_core_name gives, so the two agree and
+# `worktree use` becomes a checkout rather than a relink.
 active_worktree_name() {
-    core_is_symlinked || return 0
-    basename "$(readlink "${CORE_DIR}")" | sed "s|^$(basename "${CORE_WORKTREE_PREFIX}")||"
+    plain_core_name
 }
 
 # The worktree that owns the object store; git lists it first. worktree add must
@@ -806,7 +897,6 @@ core_worktree_is_dirty() {
 # renames it to, so anything keyed on it — a herdr workspace label — survives the
 # move to the worktree layout. Empty on the symlink layout.
 plain_core_name() {
-    core_is_symlinked && return 0
     local name
     name=$(git -C "${CORE_DIR}" branch --show-current 2>/dev/null || true)
     [ -z "${name}" ] && name="${DEFAULT_CORE_WORKTREE}"
@@ -814,29 +904,13 @@ plain_core_name() {
     echo "${name}"
 }
 
+# Nothing to migrate any more: the root clone IS the primary checkout and the
+# worktrees hang off it, so there is no plain-clone-to-symlink step to perform.
+# Kept as a no-op because `worktree add` calls it, and making every caller test
+# for a layout that no longer varies would be noise.
 migrate_core_to_worktree_layout() {
-    core_is_symlinked && return 0
-
-    local name target
-    name=$(plain_core_name)
-    target=$(core_worktree_dir "${name}")
-
-    if [ -e "${target}" ]; then
-        error "Cannot migrate: ${target} already exists"
-        error "  → Move it aside, then retry"
-        return 1
-    fi
-    if core_worktree_is_dirty "${CORE_DIR}"; then
-        error "TYPO3 Core has uncommitted changes — refusing to migrate"
-        error "  → Commit or stash them in typo3-core/, then retry"
-        return 1
-    fi
-
-    info "Migrating typo3-core/ to the worktree layout..."
-    mv "${CORE_DIR}" "${target}"
-    ln -sfn "$(basename "${target}")" "${CORE_DIR}"
-    ensure_relative_worktree_paths
-    success "typo3-core -> $(basename "${target}")"
+    mkdir -p "${WORKTREES_DIR}" 2>/dev/null || true
+    return 0
 }
 
 # Create a sibling worktree on a branch of its own, named after the worktree.
@@ -944,7 +1018,7 @@ use_core_worktree() {
     elif [ -n "${active}" ] && [ "${force}" != "true" ] \
          && core_worktree_is_dirty "$(core_worktree_dir "${active}")"; then
         error "Active worktree '${active}' has uncommitted changes"
-        error "  Switching would hide them from typo3-core/."
+        error "  Switching would hide them from the project root."
         error "  → Commit or stash them, or: ddev tryout worktree use ${name} --force"
         return 1
     fi
@@ -954,7 +1028,8 @@ use_core_worktree() {
 
     # Sysext sets differ between versions, so regenerate before installing.
     info "Syncing composer.tryout.json..."
-    php "$(tryout_script sync-composer.php)" || warn "composer sync had warnings"
+    env PROJECT_ROOT="${INSTANCE_DIR}" TRYOUT_CORE_DIR="${CORE_DIR}" \
+        php "$(tryout_script sync-composer.php)" || warn "composer sync had warnings"
     wipe_site_vendor || return 1
     rebuild_typo3
 }
@@ -1284,9 +1359,12 @@ herdr_agent_name() {
 
 # Where a checkout name lives: typo3-core-<name> on the worktree layout, and the
 # plain typo3-core/ clone itself when that is all a fresh project has yet.
+# Where a worktree's workspace is rooted. The primary is the ROOT checkout, which
+# does not live under worktrees/ — so it is named after its branch and answered
+# separately.
 herdr_checkout_dir() {
     local name="$1"
-    if ! core_is_symlinked && [ "${name}" = "$(plain_core_name)" ]; then
+    if [ ! -d "$(core_worktree_dir "${name}")" ] && [ "${name}" = "$(plain_core_name)" ]; then
         echo "${CORE_DIR}"
     else
         core_worktree_dir "${name}"
@@ -1933,7 +2011,7 @@ addon_is_stale() {
 # the silent failure mode of a symlink swap without a reinstall.
 vendor_core_mismatch() {
     local link resolved active
-    link="${PROJECT_ROOT}/vendor/typo3/cms-core"
+    link="${INSTANCE_DIR}/vendor/typo3/cms-core"
     [ -L "${link}" ] || return 1
     active=$(active_worktree_name)
     [ -n "${active}" ] || return 1
@@ -1956,8 +2034,10 @@ vendor_core_mismatch() {
 site_is_primary() { [ "${1:-}" = "${PRIMARY_SITE}" ] || [ -z "${1:-}" ]; }
 
 # Root of a site's TYPO3 instance (composer root).
+# The PRIMARY site's tree is Build/ — the project root is Core's source, and the
+# instance is built beside its build tooling. Every other site keeps sites/<name>/.
 site_dir() {
-    if site_is_primary "${1:-}"; then echo "${PROJECT_ROOT}"; else echo "${SITES_DIR}/$1"; fi
+    if site_is_primary "${1:-}"; then echo "${INSTANCE_DIR}"; else echo "${SITES_DIR}/$1"; fi
 }
 
 site_docroot() { echo "$(site_dir "${1:-}")/public"; }
@@ -2612,7 +2692,7 @@ serve_worktree() {
     # trustedHostsPattern, without which its hostname is rejected outright.
     # Symlink rather than copy so there stays one source of truth.
     # Four levels up: system -> config -> <name> -> sites -> project root.
-    ln -sfn ../../../../config/system/additional.php "${dir}/config/system/additional.php"
+    ln -sfn ../../../../Build/config/system/additional.php "${dir}/config/system/additional.php"
 
     generate_site_composer "${name}" "${php}" || return 1
 
@@ -2969,7 +3049,7 @@ configure_author_identity() {
     fi
     if [ -z "${GERRIT_ACCOUNT_EMAIL}" ]; then
         warn "Gerrit account '${user}' exposes no preferred email — set one manually:"
-        warn "  git -C typo3-core config user.email <your-gerrit-email>"
+        warn "  git config user.email <your-gerrit-email>"
         return 0
     fi
 
@@ -2988,7 +3068,7 @@ configure_author_identity() {
 
     if [ -n "${current}" ]; then
         warn "Previous value was ${current} — amend commits made before this with:"
-        warn "  git -C typo3-core commit --amend --reset-author --no-edit"
+        warn "  git commit --amend --reset-author --no-edit"
     fi
 }
 
@@ -3092,7 +3172,8 @@ install_commit_template() {
     # The path is given relative to the typo3-core working tree so it resolves
     # correctly both on the host (when running `git commit` from typo3-core/)
     # and inside the DDEV container.
-    local tmpl_path="../.ddev/tryout/gitmessage.txt"
+    # The Core working tree IS the project root now, so .ddev/ is a direct child.
+    local tmpl_path=".ddev/tryout/gitmessage.txt"
     git -C "${CORE_DIR}" config commit.template "${tmpl_path}"
     # Drop any leftover copy from an older setup; the canonical file lives
     # in .ddev/tryout/ now.
@@ -3306,7 +3387,7 @@ cmd_cs_setup() {
     success "Contribution setup complete!"
     echo ""
     echo -e "  ${BOLD}Push a change for review:${NC}"
-    echo -e "    ${DIM}cd typo3-core && git push origin HEAD:refs/for/${BRANCH}${NC}"
+    echo -e "    ${DIM}git push origin HEAD:refs/for/${BRANCH}${NC}"
     echo ""
     echo -e "  ${BOLD}Diagnose state:${NC} ddev tryout cs doctor"
     echo ""

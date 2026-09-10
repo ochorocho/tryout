@@ -54,8 +54,8 @@ if [ -z "${APPROOT}" ]; then
 fi
 if [ -z "${WORKTREE}" ] && [ -n "${APPROOT}" ]; then
     case "${PWD}" in
-        "${APPROOT}/typo3-core-"*)
-            WORKTREE="${PWD#"${APPROOT}/typo3-core-"}"
+        "${APPROOT}/worktrees/"*)
+            WORKTREE="${PWD#"${APPROOT}/worktrees/"}"
             case "${WORKTREE}" in */*) WORKTREE="" ;; esac ;;
     esac
 fi
@@ -70,9 +70,15 @@ fi
 # than a worktree added beside it? `git worktree add` writes a .git FILE pointing
 # back at the main clone, which keeps a real .git DIRECTORY. One filesystem test,
 # cheap enough for the rebuild render does on every draw.
+# The checkout that owns the shared object store, told apart by its .git: a real
+# DIRECTORY in the origin clone, a FILE (`gitdir: …`) in an added worktree. That
+# is the project root now, so a panel scoped to a nested worktree is never it.
 is_origin_checkout() {
-    [ -n "${WORKTREE}" ] && [ -n "${APPROOT}" ] || return 1
-    [ -d "${APPROOT}/typo3-core-${WORKTREE}/.git" ]
+    [ -n "${APPROOT}" ] || return 1
+    local dir="${APPROOT}"
+    [ -n "${WORKTREE}" ] && [ -d "${APPROOT}/worktrees/${WORKTREE}" ] \
+        && dir="${APPROOT}/worktrees/${WORKTREE}"
+    [ -d "${dir}/.git" ]
 }
 
 # Branch and applied-patch count, cached. Unlike worktree_state these are git
@@ -91,7 +97,7 @@ GIT_STALE=0
 refresh_git_info() {
     GIT_BRANCH=""; GIT_AHEAD=""; GIT_READ=0
     [ -n "${WORKTREE}" ] && [ -n "${APPROOT}" ] || return 0
-    local dir="${APPROOT}/typo3-core-${WORKTREE}"
+    local dir="${APPROOT}/worktrees/${WORKTREE}"
     [ -d "${dir}" ] || return 0
     GIT_READ=1
 
@@ -109,9 +115,13 @@ refresh_git_info() {
 
 worktree_state() {
     [ -n "${WORKTREE}" ] && [ -n "${APPROOT}" ] || { echo "unserved"; return 0; }
+    # The PRIMARY is the root checkout, named after its branch — there is no
+    # symlink to read any more. A checkout with no branch (detached, or not a repo
+    # at all) falls back to "main", the same default plain_core_name uses, so the
+    # panel and the command agree on which worktree is primary.
     local active=""
-    [ -L "${APPROOT}/typo3-core" ] \
-        && active="$(basename "$(readlink "${APPROOT}/typo3-core")" | sed 's|^typo3-core-||')"
+    active="$(git -C "${APPROOT}" branch --show-current 2>/dev/null)"
+    [ -n "${active}" ] || active="main"
     if [ "${WORKTREE}" = "${active}" ]; then
         echo "primary"
     elif [ -f "${APPROOT}/sites/${WORKTREE}/.tryout-site" ]; then

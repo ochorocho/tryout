@@ -110,7 +110,7 @@ teardown() { load teardown.sh; }
 
   run grep -q "name: ${PROJNAME}" "${TESTDIR}/.ddev/config.yaml"
   assert_success
-  run grep -q 'docroot: public' "${TESTDIR}/.ddev/config.yaml"
+  run grep -q 'docroot: Build/public' "${TESTDIR}/.ddev/config.yaml"
   assert_success
 }
 
@@ -175,7 +175,7 @@ JSON
   set -eu -o pipefail
   run ddev add-on get "${DIR}"
   assert_success
-  run grep -q 'typo3-core/typo3/sysext/\*' "${TESTDIR}/composer.tryout.json"
+  run grep -q 'typo3/sysext/\*' "${TESTDIR}/composer.tryout.json"
   assert_success
   run grep -q 'packages/\*' "${TESTDIR}/composer.tryout.json"
   assert_success
@@ -200,7 +200,7 @@ JSON
   # ...and what tryout must ignore was added.
   run grep -qxF '/composer.tryout.json' "${TESTDIR}/.gitignore"
   assert_success
-  run grep -qxF '/typo3-core' "${TESTDIR}/.gitignore"
+  run grep -qxF '' "${TESTDIR}/.gitignore"
   assert_success
   # It is the user's file, so it must not be claimed with a marker.
   run grep -q '#ddev-generated' "${TESTDIR}/.gitignore"

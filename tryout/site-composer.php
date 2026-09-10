@@ -49,20 +49,25 @@ foreach (($data['repositories'] ?? []) as $i => $repo) {
     if (($repo['type'] ?? '') !== 'path') {
         continue;
     }
+    // From sites/<name>/ it is two levels up to the project root, which IS the
+    // Core clone. A served site points at its own nested worktree, never at the
+    // root checkout: it must not follow whatever the root happens to be on.
     $url = $repo['url'] ?? '';
-    if (str_contains($url, 'typo3-core')) {
-        $data['repositories'][$i]['url'] = '../../typo3-core-' . $name . '/typo3/sysext/*';
-    } elseif (str_starts_with($url, 'packages')) {
+    if (str_contains($url, 'typo3/sysext')) {
+        $data['repositories'][$i]['url'] = '../../worktrees/' . $name . '/typo3/sysext/*';
+    } elseif (str_contains($url, 'packages')) {
         $data['repositories'][$i]['url'] = '../../packages/*';
     }
 }
 
-// The merge-plugin include is relative to this overlay, which now sits two levels
-// down in sites/<name>/. Repoint it at the project root's composer.json so a served
-// site still picks up the user's own dependencies.
+// The merge-plugin include names the user's own composer.json, which lives beside
+// the primary overlay in Build/. From sites/<name>/ that is ../../Build/.
+// Deliberately NOT the project root's composer.json: that one is Core's own
+// typo3/cms manifest, and merging its 67 requires would install Core-the-library
+// on top of the path repositories pointing at its source.
 if (isset($data['extra']['merge-plugin']['include'])) {
     $data['extra']['merge-plugin']['include'] = array_map(
-        static fn (string $path): string => str_starts_with($path, '..') ? $path : '../../' . $path,
+        static fn (string $path): string => str_starts_with($path, '..') ? $path : '../../Build/' . $path,
         $data['extra']['merge-plugin']['include']
     );
 }

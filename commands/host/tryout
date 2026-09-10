@@ -35,7 +35,7 @@ shift || true
 #
 # When the verb comes back the host is brought up to date: with Mutagen a
 # worktree the container just checked out is not on the host for a few seconds
-# more, and `ddev tryout worktree add x && cd typo3-core-x` must not race that.
+# more, and `ddev tryout worktree add x && cd worktrees/x` must not race that.
 # The two verbs that change nothing skip the flush.
 delegate() {
     local envs=() rc=0
@@ -438,7 +438,7 @@ cmd_worktree() {
             done
             # Guided: no name means ask for it.
             if [ -z "${name}" ]; then
-                name="$(ask_text "Name for the new worktree (becomes typo3-core-<name>)" "e.g. bugfix-12345")" \
+                name="$(ask_text "Name for the new worktree (becomes worktrees/<name>)" "e.g. bugfix-12345")" \
                     || { explain_missing "ddev tryout worktree add <name> [<branch>] [--branch] [--serve] [--php 8.2] [--herdr]"; return 1; }
             fi
             validate_worktree_name "${name}" || return 1
@@ -680,7 +680,7 @@ cmd_worktree() {
             echo ""
             echo -e "${BOLD}ddev tryout worktree${NC} — side-by-side Core checkouts"
             echo ""
-            echo -e "  ${BOLD}add <name> [<branch>]${NC}   Create typo3-core-<name> on a branch <name>, off origin/<branch>"
+            echo -e "  ${BOLD}add <name> [<branch>]${NC}   Create worktrees/<name> on a branch <name>, off origin/<branch>"
             echo -e "  ${BOLD}list${NC}                    List worktrees and served sites"
             echo -e "  ${BOLD}use <name>${NC}              Point the PRIMARY site at <name>, then rebuild"
             echo -e "  ${BOLD}serve <name>${NC}            Give <name> its own URL, PHP version and database"
@@ -953,7 +953,7 @@ cmd_herdr_new() {
 
     # No name given: ask, if there is anyone to ask.
     if [ -z "${name}" ]; then
-        name="$(ask_text "Name for the new worktree (becomes typo3-core-<name>)" "e.g. bugfix-12345")" \
+        name="$(ask_text "Name for the new worktree (becomes worktrees/<name>)" "e.g. bugfix-12345")" \
             || { explain_missing "ddev tryout herdr new <name> [<branch>]"; return 1; }
     fi
 

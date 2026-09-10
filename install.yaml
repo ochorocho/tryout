@@ -82,37 +82,65 @@ post_install_actions:
     #ddev-description:Install the Composer overlay
     # Never clobber an existing overlay — it carries the generated require block
     # plus whatever the user added to it.
-    if [ ! -f ../composer.tryout.json ]; then
-      cp tryout/composer.tryout.json ../composer.tryout.json
+    if [ ! -f ../Build/composer.tryout.json ]; then
+      cp tryout/composer.tryout.json ../Build/composer.tryout.json
     fi
 
   - |
     #ddev-description:Create the packages/ and config/system/ directories
     # Deliberately absent from removal_actions: packages/ holds the user's own
     # extensions, so uninstalling the add-on must not take them with it.
-    mkdir -p ../packages ../config/system
+    mkdir -p ../packages ../Build/config/system
 
   - |
     #ddev-description:Install config/system/additional.php
     # Copy if absent, or if ours is still there unmodified. A hand-edited file
     # (marker removed) is left alone.
-    if [ ! -f ../config/system/additional.php ] || grep -q '#ddev-generated' ../config/system/additional.php; then
-      cp tryout/additional.php ../config/system/additional.php
+    if [ ! -f ../Build/config/system/additional.php ] || grep -q '#ddev-generated' ../Build/config/system/additional.php; then
+      cp tryout/additional.php ../Build/config/system/additional.php
     else
       echo "Skipping config/system/additional.php — it has been modified."
     fi
 
   - |
-    #ddev-description:Install the project .gitignore
-    if [ ! -f ../.gitignore ]; then
-      cp tryout/gitignore ../.gitignore
-    elif grep -q '#ddev-generated' ../.gitignore; then
-      cp tryout/gitignore ../.gitignore
-    else
-      # Someone else's .gitignore: append only what tryout must have ignored,
-      # and only once.
-      for entry in /typo3-core /typo3-core-\* /sites/ /composer.tryout.json /composer.tryout.lock; do
-        grep -qxF "$entry" ../.gitignore || printf '%s\n' "$entry" >> ../.gitignore
+    #ddev-description:Clone TYPO3 Core into the project root
+    # On the HOST, deliberately. DDEV's mutagen config ignores "/.git" at the
+    # project root (it bind-mounts a host .git instead of syncing one), so a clone
+    # made inside the container never reaches the host — the files arrive, the
+    # repository does not, and `git status` on the host says "not a git
+    # repository". Cloning here also means the bind-mount exists by the time
+    # `ddev start` runs.
+    #
+    # `git clone` cannot be used: `ddev config` has already written .ddev/, and
+    # clone refuses a non-empty target. init + fetch + checkout does the same job.
+    if [ ! -e ../.git ]; then
+      echo "Cloning TYPO3 Core into the project root (a few minutes)..."
+      branch="$(sed -n 's/^ *- *TRYOUT_BRANCH=//p' config.tryout*.yaml 2>/dev/null | head -1)"
+      [ -n "$branch" ] || branch=main
+      ( cd .. \
+        && git init -q \
+        && git remote add origin https://github.com/typo3/typo3.git \
+        && git remote add gerrit https://review.typo3.org/Packages/TYPO3.CMS \
+        && git fetch --depth 1 origin "$branch" \
+        && git checkout -f -B "$branch" FETCH_HEAD \
+        && git branch --set-upstream-to="origin/$branch" "$branch" >/dev/null 2>&1 \
+      ) || echo "  Core clone failed — run 'ddev tryout download' after 'ddev start'."
+    fi
+
+  - |
+    #ddev-description:Keep generated files out of git status
+    # The project root is the TYPO3 Core clone, so its .gitignore is CORE'S — a
+    # tracked file that must never be touched, or every Gerrit patch carries the
+    # change. .git/info/exclude does the same job, is local to the clone, is never
+    # committed, and is shared by every worktree. Written here only if the repo
+    # already exists; otherwise the first `ddev start` writes it after cloning.
+    if [ -d ../.git ]; then
+      mkdir -p ../.git/info
+      touch ../.git/info/exclude
+      for entry in /.ddev/ /worktrees/ /sites/ /Build/public/ /Build/vendor/ /Build/var/ \
+                   /Build/config/ /Build/composer.tryout.json /Build/composer.tryout.lock \
+                   /Build/composer.json /Build/composer.lock /packages/ /herdr-plugin.toml; do
+        grep -qxF "$entry" ../.git/info/exclude || printf '%s\n' "$entry" >> ../.git/info/exclude
       done
     fi
 
@@ -153,20 +181,27 @@ removal_actions:
 
   - |
     #ddev-description:Remove the Composer overlay
-    if [ -f ../composer.tryout.json ] && grep -q '#ddev-generated' ../composer.tryout.json; then
-      rm -f ../composer.tryout.json ../composer.tryout.lock
+    if [ -f ../Build/composer.tryout.json ] && grep -q '#ddev-generated' ../Build/composer.tryout.json; then
+      rm -f ../Build/composer.tryout.json ../Build/composer.tryout.lock
     fi
 
   - |
     #ddev-description:Remove config/system/additional.php
-    if [ -f ../config/system/additional.php ] && grep -q '#ddev-generated' ../config/system/additional.php; then
-      rm -f ../config/system/additional.php
+    if [ -f ../Build/config/system/additional.php ] && grep -q '#ddev-generated' ../Build/config/system/additional.php; then
+      rm -f ../Build/config/system/additional.php
     fi
 
   - |
-    #ddev-description:Remove the project .gitignore
-    if [ -f ../.gitignore ] && grep -q '#ddev-generated' ../.gitignore; then
-      rm -f ../.gitignore
+    #ddev-description:Remove the generated git excludes
+    # Only our own lines, and only from info/exclude — the repo's tracked
+    # .gitignore is Core's and was never touched.
+    if [ -f ../.git/info/exclude ]; then
+      for entry in /.ddev/ /worktrees/ /sites/ /Build/public/ /Build/vendor/ /Build/var/ \
+                   /Build/config/ /Build/composer.tryout.json /Build/composer.tryout.lock \
+                   /Build/composer.json /Build/composer.lock /packages/ /herdr-plugin.toml; do
+        grep -vxF "$entry" ../.git/info/exclude > ../.git/info/exclude.tmp 2>/dev/null \
+          && mv ../.git/info/exclude.tmp ../.git/info/exclude
+      done
     fi
 
   - |

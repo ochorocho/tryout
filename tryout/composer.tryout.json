@@ -1,16 +1,16 @@
 {
-    "_comment": "#ddev-generated — the tryout Composer overlay. Selected via COMPOSER=composer.tryout.json in .ddev/config.tryout.yaml. Your own composer.json is merged in and never rewritten; `ddev tryout composer` regenerates the require block below from the sysexts in typo3-core/.",
-    "description": "TYPO3 development environment — Core contribution & custom extensions",
+    "_comment": "#ddev-generated \u2014 the tryout Composer overlay. It lives in Build/ and is selected via COMPOSER=composer.tryout.json in .ddev/config.tryout.yaml. The project root is the TYPO3 Core clone itself, so the paths below reach UP out of Build/. Your own composer.json is merged in and never rewritten; `ddev tryout composer` regenerates the require block from the sysexts in the Core checkout.",
+    "description": "TYPO3 development environment \u2014 Core contribution & custom extensions",
     "license": "GPL-2.0-or-later",
     "type": "project",
     "repositories": [
         {
             "type": "path",
-            "url": "packages/*"
+            "url": "../packages/*"
         },
         {
             "type": "path",
-            "url": "typo3-core/typo3/sysext/*",
+            "url": "../typo3/sysext/*",
             "options": {
                 "symlink": true
             }
@@ -27,6 +27,9 @@
             "merge-extra": true,
             "merge-extra-deep": true,
             "merge-scripts": true
+        },
+        "typo3/cms": {
+            "web-dir": "public"
         }
     },
     "config": {
@@ -34,7 +37,8 @@
             "typo3/class-alias-loader": true,
             "typo3/cms-composer-installers": true,
             "wikimedia/composer-merge-plugin": true
-        }
+        },
+        "vendor-dir": "vendor"
     },
     "minimum-stability": "dev",
     "prefer-stable": true

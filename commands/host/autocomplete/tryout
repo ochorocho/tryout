@@ -142,15 +142,27 @@ worktree_php() {
 # Names come from the directory glob — the same one list_core_worktrees walks,
 # minus its per-worktree `git status`.
 worktrees() {
-    local mode="${1:-all}" prefix="${APPROOT}/typo3-core-" d name primary php
+    local mode="${1:-all}" prefix="${APPROOT}/worktrees/" d name primary php
     primary="$(primary_name)"
+    # The ROOT checkout is a worktree too — the primary one — and it does not live
+    # under worktrees/, so the glob below never sees it. Offer it by name first,
+    # unless the caller asked for everything but the primary.
+    if [ -n "${primary}" ] && [ "${mode}" != "nonprimary" ]; then
+        case "${mode}" in
+            unserved) served_by_marker "${primary}" || c "${primary}" "primary — at the project URL" ;;
+            served)   served_by_marker "${primary}" && c "${primary}" "primary — at the project URL" ;;
+            *)        c "${primary}" "primary — at the project URL" ;;
+        esac
+    fi
     for d in "${prefix}"*; do
         [ -d "${d}" ] || continue
         name="${d#"${prefix}"}"
+        # The primary was already offered above; a worktrees/<primary> directory
+        # would otherwise list it twice.
+        [ "${name}" = "${primary}" ] && continue
         case "${mode}" in
             unserved)   served_by_marker "${name}" && continue ;;
             served)     served_by_marker "${name}" || continue ;;
-            nonprimary) [ "${name}" = "${primary}" ] && continue ;;
         esac
         if [ "${name}" = "${primary}" ]; then
             c "${name}" "primary — at the project URL"
@@ -183,7 +195,7 @@ sites() {
 branches() {
     fn list_local_core_branches || return 0
     local current b
-    current="$(git -C "${APPROOT}/typo3-core" branch --show-current 2>/dev/null)"
+    current="$(git -C "${APPROOT}" branch --show-current 2>/dev/null)"
     list_local_core_branches 2>/dev/null | sort -rV \
         | awk '$0=="main"{next} /^[0-9]/{print; next} {legacy=legacy $0 "\n"} END{printf "%s", legacy}' \
         | { echo main; cat; } \
@@ -205,7 +217,7 @@ branches() {
 # using the same reading of require.php as best_php_for_worktree.
 php_versions() {
     local wt="${1:-}" all="8.1 8.2 8.3 8.4 8.5" ok v best=""
-    local composer="${APPROOT}/typo3-core-${wt}/composer.json"
+    local composer="${APPROOT}/worktrees/${wt}/composer.json"
     ok="${all}"
     if [ -n "${wt}" ] && [ -f "${composer}" ] && command -v php >/dev/null 2>&1; then
         ok="$(php -r '
@@ -368,7 +380,7 @@ case "${VERB}" in
                 new)
                     # herdr new [<name> [<branch>]]
                     if [ "${POS}" -eq 2 ]; then
-                        hint "name for the new worktree (becomes typo3-core-<name>)"
+                        hint "name for the new worktree (becomes worktrees/<name>)"
                     elif [ "${POS}" -eq 3 ]; then
                         branches
                     fi
@@ -386,7 +398,7 @@ case "${VERB}" in
         case "${SUB}" in
             '' | "''")
                 if [ "${POS}" -le 1 ]; then
-                    c add     "create typo3-core-<name> from a branch"
+                    c add     "create worktrees/<name> from a branch"
                     c list    "list worktrees and served sites"
                     c use     "point the primary site at a worktree, then rebuild"
                     c serve   "give a worktree its own URL, PHP version and database"
@@ -400,7 +412,7 @@ case "${VERB}" in
             add)
                 # add <name> [<branch>] [--detach] [--serve] [--php 8.2] [--herdr]
                 if [ "${POS}" -le 2 ]; then
-                    hint "name for the new worktree (becomes typo3-core-<name>)"
+                    hint "name for the new worktree (becomes worktrees/<name>)"
                 elif [ "${PREV}" = "--php" ]; then
                     php_versions "${LINE[2]:-}"
                 else
