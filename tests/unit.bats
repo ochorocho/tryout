@@ -5063,3 +5063,66 @@ FAKE
     && fail "a wildcard copy defeats the point: ${copies}"
   :
 }
+
+@test "the panel start is confirmed after a wait, never straight after pane run" {
+  set -eu -o pipefail
+  # `pane run` answers in ~17ms; the pane's terminal title — all
+  # panel_pane_is_running has to go on — takes ~700ms to appear. Checking with no
+  # wait between them therefore reported "not running" every single time, however
+  # well the panel had started, and the retry then typed the command AT A LIVE
+  # PANEL. Those keystrokes end in a newline, which the panel reads as Enter, so it
+  # ran the selected row: `status` on a fresh panel. Measured on a real herdr
+  # session; this is the whole bug.
+  # Scoped to the START loop: panel_pane_is_running is also used far above, on the
+  # existing-panel branch, where no pane run precedes it.
+  local fn
+  fn=$(sed -n '/^ensure_panel_pane()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#' | sed -n '/pane run/,$p')
+
+  # A wait has to sit between starting it and judging it.
+  local run_line check_line sleep_line
+  run_line=$(printf '%s' "${fn}" | grep -n 'pane run' | head -1 | cut -d: -f1)
+  check_line=$(printf '%s' "${fn}" | grep -n 'panel_pane_is_running' | head -1 | cut -d: -f1)
+  sleep_line=$(printf '%s' "${fn}" | grep -n 'sleep' | head -1 | cut -d: -f1)
+  [ -n "${run_line}" ] && [ -n "${check_line}" ] || fail "the panel must be started and confirmed"
+  [ -n "${sleep_line}" ] || fail "there must be a wait before the verdict"
+  [ "${sleep_line}" -gt "${run_line}" ] \
+    || fail "the wait belongs after pane run, not before it"
+  [ "${sleep_line}" -lt "${check_line}" ] \
+    || fail "confirming with no wait is the bug: it always fails and retries into a live panel"
+
+  # And it must still give up, or a panel that never starts hangs every worktree
+  # queued behind it.
+  printf '%s' "${fn}" | grep -qE '\[ "\$\{attempt\}" -ge [0-9]+ \] && break' \
+    || fail "the retry must stay bounded"
+}
+
+@test "the panel throws away input that arrived before it could draw" {
+  set -eu -o pipefail
+  # Nothing a human typed can be buffered before the first menu is on screen, so
+  # anything sitting there was typed by something else — `pane run` starts a
+  # command by typing it, newline and all, and that newline reads as Enter. The
+  # drain is what stops a byte the user never pressed from running a row.
+  local script
+  script="${DIR}/tryout/herdr-panel.sh"
+
+  grep -q 'drain_stdin' "${script}" || fail "the panel must drain stdin at startup"
+
+  # It has to happen BEFORE the loop, or it drains nothing worth draining.
+  local drain_line loop_line
+  drain_line=$(grep -n '^drain_stdin$' "${script}" | head -1 | cut -d: -f1)
+  loop_line=$(grep -n '^while :; do' "${script}" | head -1 | cut -d: -f1)
+  [ -n "${drain_line}" ] || fail "the drain must actually be called, not just defined"
+  [ -n "${loop_line}" ] || fail "the main loop is gone?"
+  [ "${drain_line}" -lt "${loop_line}" ] \
+    || fail "draining after the loop starts is too late"
+
+  # bash 3.2 rejects a fractional -t outright, so a drain written that way would
+  # never run at all — the very trap the existing timeout test guards.
+  local fn
+  fn=$(sed -n '/^drain_stdin()/,/^}/p' "${script}")
+  printf '%s' "${fn}" | grep -qE 'read .*-t +[0-9]+\.' \
+    && fail "a fractional -t makes the drain a runtime error on macOS"
+  printf '%s' "${fn}" | grep -qE 'read .*-t +[0-9]+' \
+    || fail "the drain needs a timeout, or it blocks the panel forever"
+}

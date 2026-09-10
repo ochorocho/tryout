@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=22
+TRYOUT_VERSION=23
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -1483,13 +1483,30 @@ ensure_panel_pane() {
     # start_agent_in_pane retries for. herdr answering ok proves only that it
     # delivered the keystrokes, so confirm the panel is really up before believing
     # it, and say so if it never comes.
-    local attempt=0
+    #
+    # WAIT before concluding it did not start. `pane run` answers in ~17ms, but the
+    # pane's terminal title — all panel_pane_is_running has to go on — takes ~700ms
+    # to appear. Checking straight after the call therefore failed every single
+    # time, however well the panel had started, and the "retry" then typed the
+    # command AT A LIVE PANEL. Those keystrokes end in a newline, the panel's
+    # `read -rsn1` returns that as empty, and its loop reads empty as Enter — so it
+    # ran whatever row was selected, which on a fresh panel is row 0: `status`.
+    # That is the bug this loop caused; re-running at a running panel is never
+    # harmless, so the poll below has to lose before another `pane run` may fire.
+    local attempt=0 waited
     while :; do
         herdr_cli pane run "${new}" bash "${script}" >/dev/null 2>&1 || true
-        panel_pane_is_running "${new}" && return 0
+        # ~700ms is the measured norm; six whole seconds is slack for a loaded
+        # machine. Whole-second sleeps only: a fractional one is not portable and
+        # this runs on the host.
+        waited=0
+        while [ "${waited}" -lt 6 ]; do
+            sleep 1
+            waited=$((waited + 1))
+            panel_pane_is_running "${new}" && return 0
+        done
         attempt=$((attempt + 1))
-        [ "${attempt}" -ge 5 ] && break
-        sleep 1
+        [ "${attempt}" -ge 3 ] && break
     done
     return 1
 }

@@ -473,6 +473,27 @@ build_menu
 refresh_git_info
 mouse_on
 
+# Throw away anything already waiting on stdin before the first draw. Nothing a
+# human typed can be here yet — the panel has not drawn a menu to type at — so
+# whatever is buffered was typed BY something else.
+#
+# `herdr pane run` is that something else: it starts a command by typing it into
+# the pane's shell, ending with a newline. Aimed at a pane where this panel is
+# already reading, the command text is consumed a byte at a time and the trailing
+# newline arrives as an empty `read`, which the loop below treats as Enter — so
+# the panel ran the selected row, `status` on a fresh panel, that nobody chose.
+# ensure_panel_pane no longer re-runs at a live panel, and this makes sure no
+# other caller can do it either.
+#
+# One whole second: bash 3.2 rejects a fractional -t outright (a unit test pins
+# that), and this runs once at startup where a second costs nothing.
+drain_stdin() {
+    local _discard
+    while IFS= read -rsn1 -t 1 _discard; do :; done
+    return 0
+}
+drain_stdin
+
 while :; do
     # Before the draw, not after: a popup launched earlier has had time to finish,
     # and refilling here means the very next repaint shows its result. After
