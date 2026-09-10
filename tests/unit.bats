@@ -5334,3 +5334,37 @@ FAKE
     || fail "the probe must be skipped where nc is absent, not assumed to fail"
   :
 }
+
+@test "the Gerrit SSH verdict comes from SSH, not from what an agent holds" {
+  set -eu -o pipefail
+  # An `ssh-add -l` gate AHEAD of the auth probe answers a different question and
+  # used to return early on its answer: a host whose agent is empty but which
+  # authenticates from a key on disk — ~/.ssh/id_rsa offered and accepted by
+  # Gerrit, the ordinary case — was told "no-agent-key" and pointed at an ssh-add
+  # it did not need, right after `ddev auth ssh` had correctly filled the
+  # CONTAINER's agent. Ask the thing being reported on, then explain.
+  local fn
+  fn=$(sed -n '/^diagnose_gerrit_ssh()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#')
+
+  local auth_line agent_line
+  auth_line=$(printf '%s' "${fn}" | grep -n 'gerrit version' | head -1 | cut -d: -f1)
+  agent_line=$(printf '%s' "${fn}" | grep -n 'ssh-add -l' | head -1 | cut -d: -f1)
+  [ -n "${auth_line}" ] || fail "the auth probe is gone"
+  [ -n "${agent_line}" ] || fail "the agent check is gone; it still classifies a failure"
+  [ "${auth_line}" -lt "${agent_line}" ] \
+    || fail "ssh-add before the auth probe is the bug: it short-circuits a working host"
+
+  # no-agent-key must mean no identity ANYWHERE — an empty agent alone is not it,
+  # because ssh authenticates from ~/.ssh/id_* without one.
+  printf '%s' "${fn}" | grep -q 'id_\*' \
+    || fail "an on-disk key must count, or an empty agent is misreported"
+  printf '%s' "${fn}" | grep -q 'case "${k}" in \*.pub) continue ;; esac' \
+    || fail "a .pub file is not a usable identity"
+
+  # Both reasons must survive: they have different fixes.
+  printf '%s' "${fn}" | grep -q 'CS_SSH_REASON="no-agent-key"' \
+    || fail "the container's real case must still be diagnosable"
+  printf '%s' "${fn}" | grep -q 'CS_SSH_REASON="denied"' \
+    || fail "a key that Gerrit refuses is a different fix from having none"
+}

@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=27
+TRYOUT_VERSION=28
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -3138,9 +3138,9 @@ diagnose_gerrit_ssh() {
     #
     # `nc -z -w` is quiet, takes the same flags on the BSD nc macOS ships and on
     # GNU/OpenBSD nc, and reports the truth. Where there is no nc at all, skip
-    # this step rather than guess: step 3 below is a real connection to the same
-    # host and port, so an unreachable server cannot slip through — it just says
-    # "denied" instead of "unreachable".
+    # this step rather than guess: the auth probe below is a real connection to the
+    # same host and port, so an unreachable server cannot slip through — it just
+    # says "denied" instead of "unreachable".
     if command -v nc >/dev/null 2>&1; then
         if ! nc -z -w 5 "${GERRIT_SSH_HOST}" "${GERRIT_SSH_PORT}" >/dev/null 2>&1; then
             CS_SSH_REASON="unreachable"
@@ -3148,18 +3148,42 @@ diagnose_gerrit_ssh() {
         fi
     fi
 
-    # 2. ssh-agent must hold at least one identity, otherwise auth will fail
-    #    with a misleading "permission denied" instead of a clear hint.
-    if ! ssh-add -l >/dev/null 2>&1; then
-        CS_SSH_REASON="no-agent-key"
-        return 1
-    fi
-
-    # 3. Full auth probe.
+    # 2. Ask SSH, rather than guess from what an agent happens to hold. This is the
+    #    thing being reported on, so it decides — an ssh-add check ahead of it
+    #    answers a DIFFERENT question and used to return early on its answer:
+    #    a host whose agent is empty but which authenticates from a key on disk
+    #    (~/.ssh/id_rsa, offered and accepted by Gerrit — the ordinary case) was
+    #    told "no-agent-key" and pointed at an ssh-add it did not need.
+    #
+    #    Costs one round trip where the early return was free. Worth it: the
+    #    short-circuit was cheap because it was answering the wrong question.
     if ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
            -p "${GERRIT_SSH_PORT}" "${user}@${GERRIT_SSH_HOST}" gerrit version >/dev/null 2>&1; then
         return 0
     fi
+
+    # 3. It failed — now work out why, to say something better than "denied".
+    #    No identity anywhere is its own diagnosis: in the CONTAINER that is the
+    #    normal shape of the problem, since ~/.ssh there holds only `config` and
+    #    the forwarded ddev-ssh-agent is the only route, so an empty one fails
+    #    with a misleading "permission denied". A key present but refused is a
+    #    different fix (upload it to Gerrit), so keep the two apart.
+    #
+    #    The on-disk test mirrors what ssh itself would try by default. Plain
+    #    globbing, no bash-4 features.
+    local have_key="false" k
+    ssh-add -l >/dev/null 2>&1 && have_key="true"
+    if [ "${have_key}" = "false" ]; then
+        for k in "${HOME}/.ssh"/id_*; do
+            case "${k}" in *.pub) continue ;; esac
+            [ -r "${k}" ] && { have_key="true"; break; }
+        done
+    fi
+    if [ "${have_key}" = "false" ]; then
+        CS_SSH_REASON="no-agent-key"
+        return 1
+    fi
+
     CS_SSH_REASON="denied"
     return 1
 }
