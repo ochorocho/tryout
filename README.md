@@ -38,6 +38,46 @@ Once finished, open the backend:
 To update the add-on later, run `ddev add-on get bmack/tryout` again; to remove it,
 `ddev add-on remove tryout`.
 
+### Optional but recommended
+
+Two host tools make the add-on considerably nicer to use. Neither is installed by the
+add-on, and **everything works without them** — install them because they improve the
+experience, not because anything depends on them.
+
+**[gum](https://github.com/charmbracelet/gum)** — draws the tables, prompts and
+spinners. With it, `ddev tryout worktree list` is a real table, `ddev tryout status` a
+bordered report, and any command missing an argument offers a pick-from-a-list chooser
+instead of asking you to type the answer. Without it every command prints the same
+information as plain text with a typed prompt; the unit suite runs both ways in CI, so
+the no-gum path stays honest. Installation mentions it once and carries on.
+
+```bash
+brew install gum              # macOS
+sudo apt-get install gum      # Debian/Ubuntu
+sudo dnf install gum          # Fedora
+sudo pacman -S gum            # Arch
+```
+
+**[herdr](https://herdr.dev)** — a terminal multiplexer built around coding agents,
+needed only for `ddev tryout herdr`. That one command opens each Core worktree as its
+own workspace, with a Claude tab, a shell and a command panel all rooted at that
+worktree — see [Opening worktrees in herdr](#opening-worktrees-in-herdr). It also needs
+[`jq`](https://jqlang.github.io/jq/download/), because herdr answers in JSON. Without
+either, `ddev tryout herdr` exits with the install command for your platform and every
+other command is unaffected.
+
+```bash
+# macOS
+brew install herdr jq
+
+# everywhere else — plus jq from your package manager
+curl -fsSL https://herdr.dev/install.sh | sh
+```
+
+No Linux distribution packages herdr, so the installer — not an `apt-get` line that
+would fail — is the honest answer there. See [herdr's install
+docs](https://herdr.dev/docs/install/) for the details.
+
 ### Installing from the repository
 
 `ddev add-on get` takes a local directory, a GitHub repo or a tarball URL, so you can
@@ -959,14 +999,19 @@ where both the host and the container can see it.
   to the container. On Windows this means Git Bash (bundled with Git for Windows);
   DDEV finds it automatically. An SSH client on the host is only needed to push to
   Gerrit from a host shell; `ddev auth ssh` covers pushing from the container.
-- Optional: [gum](https://github.com/charmbracelet/gum) — draws the tables,
-  pick-from-a-list prompts and spinners (`brew install gum`, or your package
-  manager). Without it every command still works and prints the same
-  information, just as plain text with a typed prompt instead of a chooser.
-  Installation says so once and carries on.
-- Optional, for `ddev tryout herdr` only: [herdr](https://herdr.dev) and `jq` on the
-  host. The add-on installs neither; without them that one command exits with the
-  install command for your platform and everything else works as usual.
+- Optional but recommended: [gum](https://github.com/charmbracelet/gum) — draws the
+  tables, pick-from-a-list prompts and spinners. Without it every command still works
+  and prints the same information, just as plain text with a typed prompt instead of a
+  chooser; installation says so once and carries on. Install with `brew install gum`,
+  `sudo apt-get install gum`, `sudo dnf install gum` or `sudo pacman -S gum`.
+- Optional, for `ddev tryout herdr` only: [herdr](https://herdr.dev) plus
+  [`jq`](https://jqlang.github.io/jq/download/) on the host — `brew install herdr jq`,
+  or `curl -fsSL https://herdr.dev/install.sh | sh` where no distribution packages it.
+  The add-on installs neither; without them that one command exits with the install
+  command for your platform and everything else works as usual.
+
+Both are covered with a little more context under
+[Optional but recommended](#optional-but-recommended).
 
 Output is meant to be read by people: with gum installed,
 `ddev tryout worktree list` draws a table and `ddev tryout status` a bordered
