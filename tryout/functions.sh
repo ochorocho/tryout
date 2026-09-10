@@ -2040,8 +2040,14 @@ vendor_core_mismatch() {
     active=$(active_worktree_name)
     [ -n "${active}" ] || return 1
     resolved=$(cd "$(dirname "${link}")" && cd "$(readlink "${link}")" 2>/dev/null && pwd -P) || return 1
+    # The PRIMARY is the root checkout, which has no directory under worktrees/ —
+    # asking core_worktree_dir for it names a path that does not exist, and the cd
+    # below then printed an error on every `status`.
+    local expected
+    expected="$(herdr_checkout_dir "${active}")"
+    expected="$(cd "${expected}" 2>/dev/null && pwd -P)" || return 1
     case "${resolved}" in
-        "$(cd "$(core_worktree_dir "${active}")" && pwd -P)"/*) return 1 ;;
+        "${expected}"/*) return 1 ;;
         *) return 0 ;;
     esac
 }

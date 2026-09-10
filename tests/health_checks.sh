@@ -74,8 +74,10 @@ assert_output --partial "TYPO3 development toolkit"
 assert_output --partial "cs [setup|doctor]"
 assert_output --partial "worktree"
 
-# Status works before Core is cloned, and says so.
+# Status works right after install. Core is cloned by a post_install_action now —
+# on the HOST, because DDEV's mutagen config ignores /.git at the project root —
+# so by this point the root already IS the checkout and status reports its branch
+# rather than "not cloned".
 run ddev tryout status
 assert_success
-assert_output --partial "not cloned"
-assert_output --partial "ddev tryout download"
+assert_output --partial "TYPO3 tryout"
