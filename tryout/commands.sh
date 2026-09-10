@@ -569,12 +569,10 @@ ctr_worktree() {
             if [ "${1:-}" = "--plain" ]; then plain="true"; fi
             echo ""
             echo -e "${BOLD}Core worktrees${NC}"
-            if ! core_is_symlinked; then
-                echo -e "  ${DIM}single Core checkout (no worktrees yet)${NC}"
-                echo -e "  ${DIM}→ ddev tryout worktree add <name> [<branch>]${NC}"
-                echo ""
-                return 0
-            fi
+            # No early return: the project root is a checkout, so there is always
+            # at least one row — the primary. Hiding the table when no NESTED
+            # worktree exists yet would leave the one row the user most expects
+            # missing, and `--plain` is a parsed contract that must not go empty.
             # --plain is the machine-readable contract: the padded columns other
             # tools already parse (tests/e2e discovers served sites from it). The
             # default is a real table for humans.

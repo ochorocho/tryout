@@ -128,19 +128,19 @@ teardown() { load teardown.sh; }
 
 @test "an existing composer.json is never rewritten" {
   set -eu -o pipefail
-  cat > "${TESTDIR}/composer.json" <<'JSON'
+  cat > "${TESTDIR}/Build/composer.json" <<'JSON'
 {
     "name": "acme/site",
     "require": { "psr/log": "^3.0" },
     "extra": { "acme-marker": "must-survive" }
 }
 JSON
-  cp "${TESTDIR}/composer.json" "${TESTDIR}/composer.json.orig"
+  cp "${TESTDIR}/Build/composer.json" "${TESTDIR}/composer.json.orig"
 
   run ddev add-on get "${DIR}"
   assert_success
 
-  run diff "${TESTDIR}/composer.json" "${TESTDIR}/composer.json.orig"
+  run diff "${TESTDIR}/Build/composer.json" "${TESTDIR}/composer.json.orig"
   assert_success
 
   # The user's file is pulled in by composer-merge-plugin, not copied into ours.
@@ -187,22 +187,25 @@ JSON
 # Files outside .ddev/ — the guarded stage-then-copy contract
 # ─────────────────────────────────────────────────────────────────────
 
-@test "the project's own .gitignore is never touched" {
+@test "the .gitignore at the root stays Core's own, unmarked by the add-on" {
   set -eu -o pipefail
   # The project root is the TYPO3 Core clone, so .gitignore there is CORE'S — a
-  # tracked file. Writing to it would put the add-on's paths into every Gerrit
-  # patch, which is the whole reason the excludes live elsewhere.
-  printf 'node_modules/\n*.log\n' > "${TESTDIR}/.gitignore"
-  local before
-  before="$(cat "${TESTDIR}/.gitignore")"
-
+  # tracked file. The add-on must not write to it: doing so would put its paths
+  # into every Gerrit patch, which is the whole reason the excludes live in
+  # .git/info/exclude instead.
   run ddev add-on get "${DIR}"
   assert_success
 
-  run cat "${TESTDIR}/.gitignore"
-  assert_output "${before}"
+  # The file that is there came from the clone, not from us.
+  assert_file_exist "${TESTDIR}/.gitignore"
   run grep -q '#ddev-generated' "${TESTDIR}/.gitignore"
   assert_failure
+  # And none of the add-on's own paths were appended to it.
+  local e
+  for e in /worktrees/ /sites/ /Build/vendor/ /Build/composer.tryout.json; do
+    run grep -qxF "${e}" "${TESTDIR}/.gitignore"
+    assert_failure
+  done
 }
 
 @test "generated paths are excluded through .git/info/exclude" {
@@ -233,13 +236,13 @@ JSON
   assert_success
 
   # Removing the marker is the documented way to take ownership.
-  sed -i.bak 's/#ddev-generated/#user-owned/' "${TESTDIR}/config/system/additional.php"
-  echo '// my own change' >> "${TESTDIR}/config/system/additional.php"
+  sed -i.bak 's/#ddev-generated/#user-owned/' "${TESTDIR}/Build/config/system/additional.php"
+  echo '// my own change' >> "${TESTDIR}/Build/config/system/additional.php"
 
   run ddev add-on get "${DIR}"
   assert_success
   assert_output --partial "Skipping config/system/additional.php"
-  run grep -q 'my own change' "${TESTDIR}/config/system/additional.php"
+  run grep -q 'my own change' "${TESTDIR}/Build/config/system/additional.php"
   assert_success
 }
 
@@ -247,10 +250,10 @@ JSON
   set -eu -o pipefail
   run ddev add-on get "${DIR}"
   assert_success
-  run grep -q "getenv('IS_DDEV_PROJECT')" "${TESTDIR}/config/system/additional.php"
+  run grep -q "getenv('IS_DDEV_PROJECT')" "${TESTDIR}/Build/config/system/additional.php"
   assert_success
   # It must read the per-site database name the served-site vhosts inject.
-  run grep -q "TYPO3_DB_DBNAME" "${TESTDIR}/config/system/additional.php"
+  run grep -q "TYPO3_DB_DBNAME" "${TESTDIR}/Build/config/system/additional.php"
   assert_success
 }
 
@@ -258,10 +261,14 @@ JSON
 # Command behaviour that needs no TYPO3 Core checkout
 # ─────────────────────────────────────────────────────────────────────
 
-@test "commands that need Core fail with a next step before it is cloned" {
+@test "commands that need Core fail with a next step when it is missing" {
   set -eu -o pipefail
   run ddev add-on get "${DIR}"
   assert_success
+
+  # Install clones Core into the root, so the guard has to be provoked: take the
+  # repository away and the command must still name the fix rather than crash.
+  rm -rf "${TESTDIR}/.git"
 
   run ddev tryout patch 12345
   assert_failure
@@ -304,14 +311,16 @@ JSON
   assert_output --partial "No served site"
 }
 
-@test "worktree list reports no worktrees before Core is cloned" {
+@test "worktree list shows the root checkout right after install" {
   set -eu -o pipefail
   run ddev add-on get "${DIR}"
   assert_success
 
+  # The root IS a checkout from the moment the add-on is installed, so the list is
+  # never empty — the primary is always in it.
   run ddev tryout worktree list
-  assert_failure
-  assert_output --partial "TYPO3 Core not found"
+  assert_success
+  assert_output --partial "primary"
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -337,8 +346,7 @@ JSON
   assert_file_not_exist "${TESTDIR}/.ddev/tryout/.version"
   assert_file_not_exist "${TESTDIR}/Build/composer.tryout.json"
   assert_file_not_exist "${TESTDIR}/composer.tryout.lock"
-  assert_file_not_exist "${TESTDIR}/config/system/additional.php"
-  assert_file_not_exist "${TESTDIR}/.gitignore"
+  assert_file_not_exist "${TESTDIR}/Build/config/system/additional.php"
 
   # The project's own config is untouched.
   assert_file_exist "${TESTDIR}/.ddev/config.yaml"
@@ -354,12 +362,12 @@ JSON
   assert_success
 
   sed -i.bak '/ddev-generated/d' "${TESTDIR}/Build/composer.tryout.json"
-  sed -i.bak 's/#ddev-generated/#user-owned/' "${TESTDIR}/config/system/additional.php"
+  sed -i.bak 's/#ddev-generated/#user-owned/' "${TESTDIR}/Build/config/system/additional.php"
 
   run ddev add-on remove tryout
   assert_success
   assert_file_exist "${TESTDIR}/Build/composer.tryout.json"
-  assert_file_exist "${TESTDIR}/config/system/additional.php"
+  assert_file_exist "${TESTDIR}/Build/config/system/additional.php"
 }
 
 @test "an edited patch list survives an update and a removal" {
