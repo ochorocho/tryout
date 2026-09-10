@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=26
+TRYOUT_VERSION=27
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -3128,11 +3128,25 @@ diagnose_gerrit_ssh() {
     fi
 
     # 1. Raw TCP reachability to the Gerrit SSH port.
-    if ! (exec 3<>"/dev/tcp/${GERRIT_SSH_HOST}/${GERRIT_SSH_PORT}") 2>/dev/null; then
-        CS_SSH_REASON="unreachable"
-        return 1
+    #
+    # NOT bash's /dev/tcp: on macOS the kernel SIGKILLs a shell that opens one to
+    # an external host, so the probe died with "Killed: 9" printed straight to the
+    # terminal and the doctor then reported the port unreachable — on a machine
+    # where it was reachable, and one line after a successful authenticated call
+    # to the very same host. (Verified: /dev/tcp to 127.0.0.1 works, to any
+    # external host it is killed, rc=137.)
+    #
+    # `nc -z -w` is quiet, takes the same flags on the BSD nc macOS ships and on
+    # GNU/OpenBSD nc, and reports the truth. Where there is no nc at all, skip
+    # this step rather than guess: step 3 below is a real connection to the same
+    # host and port, so an unreachable server cannot slip through — it just says
+    # "denied" instead of "unreachable".
+    if command -v nc >/dev/null 2>&1; then
+        if ! nc -z -w 5 "${GERRIT_SSH_HOST}" "${GERRIT_SSH_PORT}" >/dev/null 2>&1; then
+            CS_SSH_REASON="unreachable"
+            return 1
+        fi
     fi
-    exec 3<&- 3>&- 2>/dev/null || true
 
     # 2. ssh-agent must hold at least one identity, otherwise auth will fail
     #    with a misleading "permission denied" instead of a clear hint.

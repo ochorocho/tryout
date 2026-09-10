@@ -5306,3 +5306,31 @@ FAKE
   [ -z "${acts}" ] \
     || fail "add must not delete a branch while failing: ${acts}"
 }
+
+@test "the Gerrit port probe does not use bash /dev/tcp" {
+  set -eu -o pipefail
+  # macOS SIGKILLs a shell that opens /dev/tcp to an EXTERNAL host — verified:
+  # 127.0.0.1 works, any outside address dies with rc=137. The subshell's death
+  # printed "Killed: 9" straight to the user's terminal, and diagnose_gerrit_ssh
+  # read the failure as "the port is unreachable" — on a machine where it was
+  # reachable, one line after an authenticated call to that very host and port.
+  local fn
+  fn=$(sed -n '/^diagnose_gerrit_ssh()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#')
+
+  printf '%s' "${fn}" | grep -q '/dev/tcp' \
+    && fail "/dev/tcp is killed by macOS for external hosts; use nc"
+
+  # nc -z -w takes the same flags on the BSD nc macOS ships and on GNU nc.
+  # -G would be BSD-only, which the portability rules forbid.
+  printf '%s' "${fn}" | grep -q 'nc -z -w' \
+    || fail "the reachability probe must use a portable, quiet nc"
+  printf '%s' "${fn}" | grep -q 'nc .*-G ' \
+    && fail "-G is BSD-only; -w works on both"
+
+  # No nc must not mean a false verdict: step 3 opens a real connection to the
+  # same host and port, so skipping is safe and guessing is not.
+  printf '%s' "${fn}" | grep -q 'command -v nc' \
+    || fail "the probe must be skipped where nc is absent, not assumed to fail"
+  :
+}
