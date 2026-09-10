@@ -42,6 +42,18 @@ resolves the new shapes; unit suite green.
 **Tests**: test.bats install/removal.
 **Status**: Complete — README, CLAUDE.md, install.yaml and the suites retargeted.
 
+## Also verified
+- **A Gerrit patch carries nothing of the add-on's.** `git add -A` after editing a
+  Core file stages that file and nothing else — zero entries under `Build/`,
+  `worktrees/`, `sites/`, `.ddev/` or `packages/`. This is the whole point of
+  using `.git/info/exclude` rather than Core's tracked `.gitignore`.
+- **`cs setup` works from the root**: hooks land in `.git/hooks/`, the commit
+  template resolves as `.ddev/tryout/gitmessage.txt` (a direct child now, so no
+  `../`), Gerrit SSH authenticates, and the checkout stays clean. The push command
+  is now plain `git push origin HEAD:refs/for/main` with no `cd` first.
+- **`worktree serve` builds a nested worktree's site** with its own vendor, public
+  and database, both checkouts still clean.
+
 ## Verified end to end
 `ddev config --docroot=Build/public` + `ddev add-on get` + `ddev start` on a clean
 directory produced: the project root a TYPO3 Core clone on `main` with both remotes
