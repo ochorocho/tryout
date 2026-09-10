@@ -410,6 +410,7 @@ case "${VERB}" in
                     flag --serve  "serve it immediately"
                     flag --php    "run it on another PHP version"
                     flag --herdr  "open it as a herdr workspace"
+                    flag --no-restart "skip the DDEV restart --serve needs"
                 fi
                 ;;
             list)
@@ -429,11 +430,13 @@ case "${VERB}" in
                 else
                     [ "${POS}" -le 2 ] && ! wants_flag && worktrees unserved
                     flag --php "run this site on another PHP version"
+                    flag --no-restart "skip the DDEV restart a new hostname needs"
                 fi
                 ;;
             unserve)
                 [ "${POS}" -le 2 ] && ! wants_flag && worktrees served
                 flag --drop-db "also drop the site's database"
+                flag --no-restart "skip the DDEV restart that releases the hostname"
                 ;;
             adopt)
                 # adopt [<path> [<name>]] [--dry-run]

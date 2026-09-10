@@ -5027,12 +5027,15 @@ FAKE
   [ "${snap_line}" -lt "${marker_line}" ] \
     || fail "snapshot after the marker would always compare equal"
 
-  # The restart advice must survive on the path that still needs it.
+  # unserve still drops the vhost immediately, or the dead site keeps answering.
+  # It no longer tells the user to restart: the HOST does that itself, and `ddev`
+  # does not work in here anyway.
   fn=$(sed -n '/^unserve_worktree()/,/^}/p' "${DIR}/tryout/functions.sh")
-  printf '%s' "${fn}" | grep -q "ddev restart" \
-    || fail "unserve still needs a restart to release the hostname"
   printf '%s' "${fn}" | grep -q 'sync_and_reload_webserver' \
     || fail "unserve must drop the vhost now, or the dead site keeps serving"
+  printf '%s' "${fn}" | grep -q "ddev restart" \
+    && fail "the container must not ask for a restart the host already runs"
+  :
 }
 
 @test "the vhosts are copied back by name, never by globbing the source" {
@@ -5154,4 +5157,66 @@ FAKE
   fn=$(sed -n '/^render()/,/^}/p' "${script}")
   printf '%s' "${fn}" | grep -qE 'printf "   \$\{ROW\}' \
     || fail "an unselected row printed bare inherits the pane's foreground"
+}
+
+@test "the restart runs on the host, and only when the hostname set moved" {
+  set -eu -o pipefail
+  # DDEV owns the Traefik rule, $VIRTUAL_HOST and the certificate SANs, all keyed
+  # on additional_hostnames — none refreshable from inside the container. So a
+  # hostname that just appeared or went needs a restart. An UNCHANGED set does not:
+  # serve_worktree already reloaded the webserver in place, and a restart costs
+  # minutes on a Mutagen project for nothing.
+  local fn
+  fn=$(sed -n '/^restart_if_hosts_changed()/,/^}/p' "${DIR}/commands/host/tryout")
+  [ -n "${fn}" ] || fail "the host has no restart helper"
+
+  printf '%s' "${fn}" | grep -q 'ddev restart' \
+    || fail "it has to actually restart, not just advise one"
+  # The gate: same set, no restart.
+  printf '%s' "${fn}" | grep -q '\[ "${before}" != "${after}" \] || return 0' \
+    || fail "an unchanged hostname set must not pay for a restart"
+  # And an opt-out, so serving several worktrees can restart once at the end.
+  printf '%s' "${fn}" | grep -q 'TRYOUT_NO_RESTART' \
+    || fail "--no-restart must be honoured"
+
+  # It lives on the HOST: ddev is only a stub in the web image.
+  grep -q '^restart_if_hosts_changed()' "${DIR}/commands/host/tryout" \
+    || fail "the restart helper belongs in the host command"
+  local f
+  for f in functions.sh commands.sh; do
+    run grep -q 'restart_if_hosts_changed' "${DIR}/tryout/${f}"
+    assert_failure   # container-side files must not carry it
+  done
+}
+
+@test "every verb that moves a hostname snapshots before delegating" {
+  set -eu -o pipefail
+  # The snapshot has to be taken BEFORE the container writes or removes the
+  # .tryout-site marker, or the set always compares equal and nothing restarts.
+  # serve, unserve and rename all move it; `add` does too, but only with --serve.
+  local host="${DIR}/commands/host/tryout"
+  local verb
+  for verb in serve unserve; do
+    local block
+    block=$(sed -n "/^        ${verb})\$/,/^            ;;/p" "${host}")
+    [ -n "${block}" ] || fail "no ${verb} dispatch block"
+    printf '%s' "${block}" | grep -q 'served_hostname_set' \
+      || fail "${verb} must snapshot the hostname set"
+    printf '%s' "${block}" | grep -q 'restart_if_hosts_changed' \
+      || fail "${verb} must restart when that set moved"
+
+    # Snapshot first, delegate second: reversed, the marker is already written.
+    local snap_line del_line
+    snap_line=$(printf '%s' "${block}" | grep -n 'served_hostname_set' | head -1 | cut -d: -f1)
+    del_line=$(printf '%s' "${block}" | grep -n 'delegate ' | head -1 | cut -d: -f1)
+    [ "${snap_line}" -lt "${del_line}" ] \
+      || fail "${verb} snapshots after the work, so the set always looks unchanged"
+  done
+
+  # --no-restart is the host's own word; delegating it would fail the container's
+  # argument parser, so it must be stripped before the call.
+  local sblock
+  sblock=$(sed -n "/^        serve)\$/,/^            ;;/p" "${host}")
+  printf '%s' "${sblock}" | grep -q -- '--no-restart) TRYOUT_NO_RESTART=1' \
+    || fail "--no-restart must be consumed on the host, not delegated"
 }

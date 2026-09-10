@@ -59,6 +59,39 @@ flush_mutagen() {
     ddev mutagen sync >/dev/null 2>&1 || true
 }
 
+# Restart the project when serving or unserving changed the set of hostnames.
+#
+# DDEV owns three things keyed on additional_hostnames: the Traefik routing rule,
+# $VIRTUAL_HOST, and the mkcert certificate SANs. None can be refreshed from
+# inside the container, so a hostname that has just appeared or gone needs a
+# restart before its URL works at all. When the set is UNCHANGED — re-serving a
+# site, a --php change — serve_worktree has already reloaded the webserver in
+# place, and a restart would cost minutes for nothing.
+#
+# Runs on the HOST: `ddev` is only a stub inside the web image, and a unit test
+# greps the container-side files for it.
+#
+# Takes the hostname set from BEFORE the command; compares against the set now.
+restart_if_hosts_changed() {
+    local before="$1" after
+    after="$(served_hostname_set)"
+    [ "${before}" != "${after}" ] || return 0
+
+    if [ "${TRYOUT_NO_RESTART:-}" = "1" ]; then
+        warn "Hostnames changed — run 'ddev restart' to apply them."
+        return 0
+    fi
+
+    info "Restarting DDEV to register the hostname and issue its certificate..."
+    if ddev restart; then
+        success "DDEV restarted."
+    else
+        error "ddev restart failed"
+        error "  → ddev restart"
+        return 1
+    fi
+}
+
 # Some commands take no arguments. Silently ignoring an extra word makes a typo
 # look like it worked — `ddev tryout composer install` regenerated the overlay and
 # said nothing about `install`.
@@ -393,6 +426,7 @@ cmd_worktree() {
                     # an existing habit or script does not start erroring.
                     --branch)  ;;
                     --detach|--serve) flags+=("$1") ;;
+                    --no-restart) TRYOUT_NO_RESTART=1 ;;
                     --php)     flags+=("--php=${2:-}"); shift ;;
                     --php=*)   flags+=("$1") ;;
                     -*)        error "Unknown option: $1"
@@ -415,7 +449,13 @@ cmd_worktree() {
             ASKED_BRANCH="${branch}"
             ask_new_worktree_branch "ddev tryout worktree add <name> [<branch>]" || return 1
             branch="${ASKED_BRANCH}"
+            # --serve inside add creates a hostname just as `worktree serve` does,
+            # so it needs the same restart. Snapshot before the work; a plain add
+            # serves nothing, leaves the set alone and restarts nothing.
+            local ad_before
+            ad_before="$(served_hostname_set)"
             delegate worktree add "${name}" ${branch:+"${branch}"} ${flags[@]+"${flags[@]}"} || return 1
+            restart_if_hosts_changed "${ad_before}" || true
             if [ "${in_herdr}" = "true" ]; then
                 echo ""
                 ensure_herdr_session && open_worktree_in_herdr "${name}" "true" "true"
@@ -470,7 +510,21 @@ cmd_worktree() {
             shift || true
             [ -n "${name}" ] || name="$(ask_worktree "Serve which worktree?" unserved)" \
                 || { explain_missing "ddev tryout worktree serve <name> [--php 8.2]"; return 1; }
-            delegate worktree serve "${name}" "$@"
+            # --no-restart is the HOST's, not a verb the container knows: strip it
+            # before delegating or ctr_worktree rejects it as an unknown argument.
+            local sv_args=() sv_rc=0 sv_before
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --no-restart) TRYOUT_NO_RESTART=1 ;;
+                    *)            sv_args+=("$1") ;;
+                esac
+                shift
+            done
+            # Snapshot before the work: the marker it writes is what changes the set.
+            sv_before="$(served_hostname_set)"
+            delegate worktree serve "${name}" ${sv_args[@]+"${sv_args[@]}"} || sv_rc=$?
+            [ "${sv_rc}" -eq 0 ] || return "${sv_rc}"
+            restart_if_hosts_changed "${sv_before}"
             ;;
 
         unserve)
@@ -479,7 +533,18 @@ cmd_worktree() {
             shift || true
             [ -n "${name}" ] || name="$(ask_worktree "Stop serving which worktree?" served)" \
                 || { explain_missing "ddev tryout worktree unserve <name> [--drop-db]"; return 1; }
-            delegate worktree unserve "${name}" "$@"
+            local un_args=() un_rc=0 un_before
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --no-restart) TRYOUT_NO_RESTART=1 ;;
+                    *)            un_args+=("$1") ;;
+                esac
+                shift
+            done
+            un_before="$(served_hostname_set)"
+            delegate worktree unserve "${name}" ${un_args[@]+"${un_args[@]}"} || un_rc=$?
+            [ "${un_rc}" -eq 0 ] || return "${un_rc}"
+            restart_if_hosts_changed "${un_before}"
             ;;
 
         rename)
@@ -494,7 +559,14 @@ cmd_worktree() {
                 error "  Renames the checkout only — the branch is untouched."
                 return 1
             fi
-            delegate worktree rename "${old}" "${new}"
+            # A served worktree's hostname is its name, so renaming one moves the
+            # set: unserve under the old name, re-serve under the new. Same restart
+            # rule as serve/unserve, and a no-op when it was not served.
+            local rn_before rn_rc=0
+            rn_before="$(served_hostname_set)"
+            delegate worktree rename "${old}" "${new}" || rn_rc=$?
+            [ "${rn_rc}" -eq 0 ] || return "${rn_rc}"
+            restart_if_hosts_changed "${rn_before}"
             ;;
 
         adopt)
@@ -614,6 +686,7 @@ cmd_worktree() {
             echo "         --force     (use: switch despite uncommitted changes)"
             echo "                     (remove: discard uncommitted changes)"
             echo "         --drop-db   (unserve: also drop the site's database)"
+            echo "         --no-restart (add --serve/serve/unserve/rename: skip the restart)"
             echo ""
             echo "  Two ways to run several Cores:"
             echo "    use    — one site at the project URL, switch which Core it serves"

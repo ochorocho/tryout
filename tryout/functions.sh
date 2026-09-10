@@ -26,7 +26,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=24
+TRYOUT_VERSION=25
 
 # Core worktrees live next to the main clone as typo3-core-<name>; CORE_DIR is a
 # symlink to whichever one is active. See `ddev tryout worktree`.
@@ -2584,10 +2584,14 @@ serve_worktree() {
 
     trap - RETURN    # got to the end: the marker stands
     success "Site '${name}' prepared — PHP ${php}, db $(site_database "${name}")"
+    # The HOST restarts when the hostname set changed — it can see the same
+    # markers and `ddev` only works out there. So report what happened here and
+    # leave the next step to it, rather than telling the user to do a thing that
+    # is already being done.
     if apply_site_config "${hosts_before}"; then
         success "Applied without a restart."
     else
-        warn "Run 'ddev restart' to register $(site_hostname "${name}") and issue its certificate."
+        info "New hostname $(site_hostname "${name}") — it needs DDEV restarted."
     fi
     echo -e "  ${DIM}then: https://$(site_hostname "${name}")/typo3/  (admin / Password.1)${NC}"
 }
@@ -2649,9 +2653,9 @@ unserve_worktree() {
     # vhost from the running webserver, or the site keeps answering on a hostname
     # that no longer has anything behind it.
     if in_container && sync_and_reload_webserver; then
-        info "Stopped serving it now; the hostname is released on the next restart."
+        info "Stopped serving it now; the host releases the hostname."
     else
-        warn "Run 'ddev restart' to release its hostname."
+        info "Its hostname is released when DDEV restarts."
     fi
 }
 
