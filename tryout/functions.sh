@@ -12,12 +12,20 @@ PROJECT_ROOT="${DDEV_APPROOT}"
 CORE_DIR="${PROJECT_ROOT}"
 CORE_GIT_DIR="${CORE_DIR}/.git"
 
-# The Composer instance is built in Build/, not at the root: the root is Core's
-# source tree, and Core's own composer.json is typo3/cms — a library with no
-# web-dir, so it produces no docroot. The overlay sets web-dir/vendor-dir to put
-# public/ and vendor/ in here. Build/ is Core's own directory (its build tooling
-# lives beside these), which is why every path we add under it is excluded by name.
-INSTANCE_DIR="${PROJECT_ROOT}/Build"
+# Instances are built under TYPO3-Instances/, never at the root and never in
+# Build/: the root is Core's source tree, and Build/ is Core's OWN directory —
+# Gruntfile.js, phpstan/, Sources/, ~700 tracked files — so an instance there
+# interleaves build output with Core's build tooling. TYPO3-Instances/ is a name
+# Core does not use, so one exclude line covers all of it.
+#
+# Core's composer.json is typo3/cms, a library with no web-dir, so nothing would
+# create a docroot on its own; the overlay sets web-dir/vendor-dir per instance.
+INSTANCES_DIR="${PROJECT_ROOT}/TYPO3-Instances"
+# The instance served at the project URL. A plain name, not the branch: it goes in
+# the user's .ddev/config.yaml as the docroot, which must not change when the root
+# checkout switches branch.
+PRIMARY_INSTANCE="primary"
+INSTANCE_DIR="${INSTANCES_DIR}/${PRIMARY_INSTANCE}"
 # shellcheck disable=SC2034 # used by post-start.sh and commands/host/tryout
 CORE_REPO="https://github.com/typo3/typo3.git"
 GERRIT_REMOTE="https://review.typo3.org/Packages/TYPO3.CMS"
@@ -47,10 +55,10 @@ WORKTREES_DIR="${PROJECT_ROOT}/worktrees"
 CORE_WORKTREE_PREFIX="${WORKTREES_DIR}/"
 DEFAULT_CORE_WORKTREE="main"
 
-# Served sites. The PRIMARY site is Build/ (public/, vendor/, config/) serving the
-# root checkout itself; every other served worktree gets its own tree under
-# sites/<name>/. See `ddev tryout worktree serve`.
-SITES_DIR="${PROJECT_ROOT}/sites"
+# Served sites live beside the primary, one directory per instance, so every site
+# has the same shape: TYPO3-Instances/<name>/{public,vendor,config,var}. The
+# primary is simply the one called "primary". See `ddev tryout worktree serve`.
+SITES_DIR="${INSTANCES_DIR}"
 PRIMARY_SITE="@primary"
 WORKTREE_CONFIG="${PROJECT_ROOT}/.ddev/config.worktrees.yaml"
 
@@ -609,7 +617,7 @@ require_core() {
 # sync-composer.php's job.
 wipe_site_vendor() {
     local name="${1:-${PRIMARY_SITE}}" rel=""
-    site_is_primary "${name}" || rel="sites/${name}/"
+    site_is_primary "${name}" || rel="TYPO3-Instances/${name}/"
     info "Removing ${rel}vendor/ — Core changed, a stale install cannot be updated in place"
     rm -rf "$(site_vendor "${name}")" \
         || { error "Could not remove ${rel}vendor/"; return 1; }
@@ -667,7 +675,7 @@ reset_core_to_main() {
 # Core worktrees
 #
 # The project root IS the primary Core checkout; worktrees are nested under
-# worktrees/<name>. The instance in Build/ points at ../typo3/sysext/*, so the
+# worktrees/<name>. An instance points at the sysexts of the checkout it serves,
 # primary always follows the root checkout and a served site is nailed to its own
 # worktree. Switching the root's branch MUST be followed by a rebuild, because
 # composer resolves the sysext paths when it writes vendor/ — see use_core_worktree.
@@ -725,15 +733,7 @@ ensure_core_excludes() {
     for e in \
         "/.ddev/" \
         "/worktrees/" \
-        "/sites/" \
-        "/Build/public/" \
-        "/Build/vendor/" \
-        "/Build/var/" \
-        "/Build/config/" \
-        "/Build/composer.tryout.json" \
-        "/Build/composer.tryout.lock" \
-        "/Build/composer.json" \
-        "/Build/composer.lock" \
+        "/TYPO3-Instances/" \
         "/packages/" \
         "/herdr-plugin.toml"
     do
@@ -861,7 +861,7 @@ worktree_name_for_path() {
         *) return 1 ;;
     esac
 
-    # worktrees/<name>/Build/... is still <name>; only `top` insists on the checkout
+    # A path inside a worktree is still that worktree; only `top` insists on its
     # root itself.
     [ "${mode}" = "top" ] && [ -n "${rest}" ] && return 1
 
@@ -2064,10 +2064,10 @@ vendor_core_mismatch() {
 site_is_primary() { [ "${1:-}" = "${PRIMARY_SITE}" ] || [ -z "${1:-}" ]; }
 
 # Root of a site's TYPO3 instance (composer root).
-# The PRIMARY site's tree is Build/ — the project root is Core's source, and the
-# instance is built beside its build tooling. Every other site keeps sites/<name>/.
+# The PRIMARY site is TYPO3-Instances/primary — the root is Core's source, and the
+# every instance is a sibling under TYPO3-Instances/, the primary included.
 site_dir() {
-    if site_is_primary "${1:-}"; then echo "${INSTANCE_DIR}"; else echo "${SITES_DIR}/$1"; fi
+    if site_is_primary "${1:-}"; then echo "${INSTANCE_DIR}"; else echo "${INSTANCES_DIR}/$1"; fi
 }
 
 site_docroot() { echo "$(site_dir "${1:-}")/public"; }
@@ -2109,12 +2109,18 @@ site_php_version() {
 }
 
 # Names of all served extra sites (primary excluded).
+# The EXTRA sites, never the primary. It is a sibling of theirs under
+# TYPO3-Instances/ now, so the glob sees it — and site_is_served answers true for
+# any name that resolves to the primary, so without this skip the primary would
+# be listed as one of its own extra sites and every hostname comparison would
+# count it twice.
 served_site_names() {
     [ -d "${SITES_DIR}" ] || return 0
     local d name
     for d in "${SITES_DIR}"/*; do
         [ -d "${d}" ] || continue
         name="$(basename "${d}")"
+        [ "${name}" = "${PRIMARY_INSTANCE}" ] && continue
         site_is_served "${name}" && echo "${name}"
     done
 }
@@ -2144,7 +2150,7 @@ site_hash_config_file() {
 generate_site_vhost() {
     local name="$1" php="$2" file docroot host db sock
     file=$(site_vhost_file "${name}")
-    docroot="/var/www/html/sites/${name}/public"
+    docroot="/var/www/html/TYPO3-Instances/${name}/public"
     host=$(site_hostname "${name}")
     db=$(site_database "${name}")
     # Must match tryout-php-fpm.sh, which binds under /run/php/ because /run is
@@ -2676,7 +2682,7 @@ check_php_for_core() {
 # at that worktree.
 generate_site_composer() {
     local name="$1" php="${2:-}"
-    info "Generating sites/${name}/composer.tryout.json..."
+    info "Generating TYPO3-Instances/${name}/composer.tryout.json..."
     php "$(tryout_script site-composer.php)" "${name}" "${php}" >/dev/null \
         || { error "Failed to generate the Composer overlay for ${name}"; return 1; }
 }
@@ -2722,12 +2728,12 @@ serve_worktree() {
     # trustedHostsPattern, without which its hostname is rejected outright.
     # Symlink rather than copy so there stays one source of truth.
     # Four levels up: system -> config -> <name> -> sites -> project root.
-    ln -sfn ../../../../Build/config/system/additional.php "${dir}/config/system/additional.php"
+    ln -sfn ../../../primary/config/system/additional.php "${dir}/config/system/additional.php"
 
     generate_site_composer "${name}" "${php}" || return 1
 
     # Sysext set is version-specific, so sync against this worktree.
-    info "Syncing sites/${name}/composer.tryout.json with its Core sysexts..."
+    info "Syncing TYPO3-Instances/${name}/composer.tryout.json with its Core sysexts..."
     env PROJECT_ROOT="${dir}" TRYOUT_CORE_DIR="$(core_worktree_dir "${name}")" \
         php "$(tryout_script sync-composer.php)" \
         || { error "composer sync failed for ${name}"; return 1; }

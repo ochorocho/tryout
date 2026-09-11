@@ -3,7 +3,7 @@
 // #ddev-generated
 
 /**
- * Creates sites/<name>/composer.json for a served worktree.
+ * Creates TYPO3-Instances/<name>/composer.json for a served worktree.
  *
  * Runs inside the web container. Copies the root tryout overlay and repoints its
  * path repositories: Core comes from that worktree, packages/ stays shared so one
@@ -30,9 +30,10 @@ if ($sitePhp !== '' && !preg_match('/^\d+\.\d+$/', $sitePhp)) {
 
 $root = getenv('DDEV_APPROOT') ?: '/var/www/html';
 
-// The primary overlay lives in Build/, not at the project root: the root is the
-// TYPO3 Core clone and its composer.json is Core's own typo3/cms manifest.
-$instance = $root . '/Build';
+// The primary overlay lives in TYPO3-Instances/primary/, not at the project root:
+// the root is the TYPO3 Core clone and its composer.json is Core's own typo3/cms
+// manifest.
+$instance = $root . '/TYPO3-Instances/primary';
 
 // The tryout overlay, not the project's own composer.json — see sync-composer.php.
 $composerName = getenv('TRYOUT_COMPOSER_FILE') ?: 'composer.tryout.json';
@@ -53,7 +54,7 @@ foreach (($data['repositories'] ?? []) as $i => $repo) {
     if (($repo['type'] ?? '') !== 'path') {
         continue;
     }
-    // From sites/<name>/ it is two levels up to the project root, which IS the
+    // From TYPO3-Instances/<name>/ it is two levels up to the project root, which IS the
     // Core clone. A served site points at its own nested worktree, never at the
     // root checkout: it must not follow whatever the root happens to be on.
     $url = $repo['url'] ?? '';
@@ -65,13 +66,13 @@ foreach (($data['repositories'] ?? []) as $i => $repo) {
 }
 
 // The merge-plugin include names the user's own composer.json, which lives beside
-// the primary overlay in Build/. From sites/<name>/ that is ../../Build/.
+// the primary overlay. From TYPO3-Instances/<name>/ that is ../primary/.
 // Deliberately NOT the project root's composer.json: that one is Core's own
 // typo3/cms manifest, and merging its 67 requires would install Core-the-library
 // on top of the path repositories pointing at its source.
 if (isset($data['extra']['merge-plugin']['include'])) {
     $data['extra']['merge-plugin']['include'] = array_map(
-        static fn (string $path): string => str_starts_with($path, '..') ? $path : '../../Build/' . $path,
+        static fn (string $path): string => str_starts_with($path, '..') ? $path : '../primary/' . $path,
         $data['extra']['merge-plugin']['include']
     );
 }
@@ -84,7 +85,7 @@ if ($sitePhp !== '') {
     $data['config']['platform']['php'] = $sitePhp;
 }
 
-$dir = $root . '/sites/' . $name;
+$dir = $root . '/TYPO3-Instances/' . $name;
 if (!is_dir($dir) && !mkdir($dir, 0777, true) && !is_dir($dir)) {
     fwrite(STDERR, "site-composer: cannot create $dir\n");
     exit(1);

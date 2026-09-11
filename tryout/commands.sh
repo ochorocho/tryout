@@ -483,7 +483,7 @@ ctr_checkout() {
     if site_is_primary "${site}"; then
         ctr_composer
     else
-        info "Syncing sites/${site}/composer.tryout.json..."
+        info "Syncing TYPO3-Instances/${site}/composer.tryout.json..."
         env PROJECT_ROOT="$(site_dir "${site}")" TRYOUT_CORE_DIR="$(core_worktree_dir "${site}")" \
             env PROJECT_ROOT="${INSTANCE_DIR}" TRYOUT_CORE_DIR="${CORE_DIR}" \
         php "$(tryout_script sync-composer.php)"

@@ -87,25 +87,26 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
   assert_output "13.4"
 }
 
-@test "the primary site resolves to Build/, not the project root" {
+@test "the primary site resolves to TYPO3-Instances/primary" {
   set -eu -o pipefail
-  # The project root is Core's source tree; the instance is built in Build/, and
-  # Core's own composer.json is typo3/cms with no web-dir, so nothing would put a
-  # docroot at the root even if we wanted one there.
+  # The project root is Core's source tree, and Build/ is Core's OWN directory —
+  # instances live under TYPO3-Instances/ instead, one per site, the primary
+  # included. Core's composer.json is typo3/cms with no web-dir, so nothing would
+  # put a docroot at the root even if we wanted one there.
   run helper site_dir
-  assert_output "${FAKEROOT}/Build"
+  assert_output "${FAKEROOT}/TYPO3-Instances/primary"
   run helper site_dir "@primary"
-  assert_output "${FAKEROOT}/Build"
+  assert_output "${FAKEROOT}/TYPO3-Instances/primary"
   run helper site_docroot
-  assert_output "${FAKEROOT}/Build/public"
+  assert_output "${FAKEROOT}/TYPO3-Instances/primary/public"
 }
 
-@test "a named site resolves under sites/" {
+@test "a named site resolves under TYPO3-Instances/" {
   set -eu -o pipefail
   run helper site_dir v13
-  assert_output "${FAKEROOT}/sites/v13"
+  assert_output "${FAKEROOT}/TYPO3-Instances/v13"
   run helper site_docroot v13
-  assert_output "${FAKEROOT}/sites/v13/public"
+  assert_output "${FAKEROOT}/TYPO3-Instances/v13/public"
 }
 
 @test "the primary keeps the plain db name, extras get their own" {
@@ -164,8 +165,8 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
   assert_failure
 
   # A site is served once its marker exists.
-  mkdir -p "${FAKEROOT}/sites/v13"
-  printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  mkdir -p "${FAKEROOT}/TYPO3-Instances/v13"
+  printf 'php=8.2\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
   run helper site_is_served v13
   assert_success
   run helper site_php_version v13
@@ -180,9 +181,9 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
 
 @test "served_site_names lists only sites with a marker" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/sites/v13" "${FAKEROOT}/sites/v12" "${FAKEROOT}/sites/scratch"
-  printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
-  printf 'php=8.3\n' > "${FAKEROOT}/sites/v12/.tryout-site"
+  mkdir -p "${FAKEROOT}/TYPO3-Instances/v13" "${FAKEROOT}/TYPO3-Instances/v12" "${FAKEROOT}/TYPO3-Instances/scratch"
+  printf 'php=8.2\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
+  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/v12/.tryout-site"
 
   run helper_eval 'served_site_names | sort | tr "\n" " "'
   assert_output "v12 v13 "
@@ -358,8 +359,8 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
 
 @test "completion lists served sites for the commands that take one" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/sites/v13"
-  printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  mkdir -p "${FAKEROOT}/TYPO3-Instances/v13"
+  printf 'php=8.2\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
 
   run names exec "''"
   assert_success
@@ -750,8 +751,8 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
   assert_failure
 
   # And site_exec itself: a fake php records what it received.
-  mkdir -p "${FAKEROOT}/bin" "${FAKEROOT}/sites/v13"
-  printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  mkdir -p "${FAKEROOT}/bin" "${FAKEROOT}/TYPO3-Instances/v13"
+  printf 'php=8.2\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
   cat > "${FAKEROOT}/bin/php8.2" <<'FAKE'
 #!/bin/sh
 printf 'cwd=%s\n' "$(pwd)"
@@ -761,7 +762,7 @@ FAKE
   chmod +x "${FAKEROOT}/bin/php8.2"
   run helper_eval "PATH='${FAKEROOT}/bin:${PATH}' site_exec v13 vendor/bin/typo3 config:set X 'My Site'"
   assert_success
-  assert_line "cwd=${FAKEROOT}/sites/v13"
+  assert_line "cwd=${FAKEROOT}/TYPO3-Instances/v13"
   assert_line "db=db_v13 site=v13"
   assert_line "arg=[vendor/bin/typo3]"
   assert_line "arg=[config:set]"
@@ -888,8 +889,8 @@ FAKE
   # as two columns and `_activeHelp_ text` as a hint. A bare word would look like
   # a regression in zsh: no description beside it.
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/sites/v13"
-  printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/TYPO3-Instances/v13"
+  printf 'php=8.2\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
   local args line
   for args in "''" "worktree ''" "worktree add ''" "worktree add x ''" "worktree use ''" \
               "worktree serve ''" "worktree list ''" "cs ''" "cs setup ''" "herdr ''" \
@@ -935,8 +936,8 @@ FAKE
 @test "completion offers serve only unserved worktrees and unserve only served ones" {
   set -eu -o pipefail
   mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13" "${FAKEROOT}/worktrees/v12"
-  mkdir -p "${FAKEROOT}/sites/v13"
-  printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  mkdir -p "${FAKEROOT}/TYPO3-Instances/v13"
+  printf 'php=8.2\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
 
   run names worktree serve "''"
   assert_success
@@ -1374,8 +1375,8 @@ FAKE
 
 @test "core_worktree_names filters by primary and served state" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13" "${FAKEROOT}/worktrees/v12" "${FAKEROOT}/sites/v13"
-  printf 'php=8.2\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13" "${FAKEROOT}/worktrees/v12" "${FAKEROOT}/TYPO3-Instances/v13"
+  printf 'php=8.2\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
 
   run helper core_worktree_names all
   assert_line "main"; assert_line "v13"; assert_line "v12"
@@ -2149,9 +2150,9 @@ YAML
 
 @test "ask_site shows what each site is, and returns the name behind it" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/sites/v13" "${FAKEROOT}/sites/v12"
-  printf 'php=8.4\n' > "${FAKEROOT}/sites/v13/.tryout-site"
-  printf 'php=8.2\n' > "${FAKEROOT}/sites/v12/.tryout-site"
+  mkdir -p "${FAKEROOT}/TYPO3-Instances/v13" "${FAKEROOT}/TYPO3-Instances/v12"
+  printf 'php=8.4\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
+  printf 'php=8.2\n' > "${FAKEROOT}/TYPO3-Instances/v12/.tryout-site"
 
   # The label carries the URL and PHP version; the answer is the bare name.
   run bash -c "printf 'v13          https://v13.unitproj.ddev.site  PHP 8.4\n' \
@@ -2171,8 +2172,8 @@ YAML
 @test "ask_site offers the extra entries it is given, unchanged" {
   # delete uses this for --all: wiping everything is a pick, not a flag to recall.
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/sites/v13"
-  printf 'php=8.4\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  mkdir -p "${FAKEROOT}/TYPO3-Instances/v13"
+  printf 'php=8.4\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
   run bash -c "printf -- '--all         every site\n' \
     | { source '${DIR}/tryout/functions.sh' >/dev/null 2>&1; ask_site 'Which?' '--all         every site'; }"
   assert_success
@@ -2223,8 +2224,8 @@ YAML
   git init -q "${main}"
   git -C "${main}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
   git -C "${main}" worktree add -q --detach "${wt}" HEAD
-  mkdir -p "${FAKEROOT}/sites/v13"
-  printf 'php=8.4\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  mkdir -p "${FAKEROOT}/TYPO3-Instances/v13"
+  printf 'php=8.4\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
 
   # The rendered rows carry branch, HEAD, state and what the site is.
   run helper worktree_labels all
@@ -2247,8 +2248,8 @@ YAML
   git init -q "${main}"
   git -C "${main}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
   git -C "${main}" worktree add -q --detach "${wt}" HEAD
-  mkdir -p "${FAKEROOT}/sites/v13"
-  printf 'php=8.4\n' > "${FAKEROOT}/sites/v13/.tryout-site"
+  mkdir -p "${FAKEROOT}/TYPO3-Instances/v13"
+  printf 'php=8.4\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
 
   # served: only v13. unserved and nonprimary: only main / only what is left.
   run helper worktree_labels served
@@ -2320,8 +2321,8 @@ panel_defs() {
   # off by one would run the wrong command, which is worse than doing nothing.
   # A served worktree gives the longest menu, so there are rows to miss past.
   mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/benni" \
-           "${FAKEROOT}/sites/benni"
-  printf 'php=8.3\n' > "${FAKEROOT}/sites/benni/.tryout-site"
+           "${FAKEROOT}/TYPO3-Instances/benni"
+  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/benni/.tryout-site"
 
   run env TRYOUT_PANEL_WORKTREE=benni TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
     eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
@@ -2956,9 +2957,9 @@ panel_menu() { # $1=worktree $2=approot
   # that only computed its state at startup would keep claiming a role it no
   # longer has — and, before the rows named themselves, act on the wrong checkout.
   mkdir -p "${FAKEROOT}/worktrees/alpha" "${FAKEROOT}/worktrees/beta" \
-           "${FAKEROOT}/sites/alpha" "${FAKEROOT}/sites/beta"
-  printf 'php=8.3\n' > "${FAKEROOT}/sites/alpha/.tryout-site"
-  printf 'php=8.3\n' > "${FAKEROOT}/sites/beta/.tryout-site"
+           "${FAKEROOT}/TYPO3-Instances/alpha" "${FAKEROOT}/TYPO3-Instances/beta"
+  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/alpha/.tryout-site"
+  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/beta/.tryout-site"
   # The primary is the ROOT checkout, identified by the branch it is on.
   git init -q -b alpha "${FAKEROOT}"
 
@@ -2998,7 +2999,7 @@ panel_menu() { # $1=worktree $2=approot
   local rows
   rows="$(panel_menu alpha "${FAKEROOT}")"
   printf '%s' "${rows}" | grep -q 'ROW reset|' || fail "a served panel offers reset"
-  rm "${FAKEROOT}/sites/alpha/.tryout-site"
+  rm "${FAKEROOT}/TYPO3-Instances/alpha/.tryout-site"
   rows="$(panel_menu alpha "${FAKEROOT}")"
   printf '%s' "${rows}" | grep -q 'ROW reset|' \
     && fail "reset survived unserving: the rows did not follow the state"
@@ -3255,8 +3256,8 @@ panel_menu() { # $1=worktree $2=approot
   # Removing one is about a specific checkout, so it belongs on that checkout's
   # own panel — where it names itself and the popup only has to confirm.
   mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/cold" \
-           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/sites/live"
-  printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
+           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/TYPO3-Instances/live"
+  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/live/.tryout-site"
 
   # No worktree: add, and nothing to remove.
   run panel_menu "" "${FAKEROOT}"
@@ -3314,9 +3315,9 @@ panel_menu() { # $1=worktree $2=approot
   # Commits on top of the upstream ARE the applied patches — the same measure
   # `ddev tryout status` reports.
   local root="${FAKEROOT}/gitinfo"
-  mkdir -p "${root}/sites/live" "${root}/worktrees/main"
+  mkdir -p "${root}/TYPO3-Instances/live" "${root}/worktrees/main"
   ln -s worktrees/main "${root}/typo3-core"
-  printf 'php=8.3\n' > "${root}/sites/live/.tryout-site"
+  printf 'php=8.3\n' > "${root}/TYPO3-Instances/live/.tryout-site"
   git init -q -b main "${root}/up"
   git -C "${root}/up" commit -q --allow-empty -m base
   git clone -q "${root}/up" "${root}/worktrees/live" 2>/dev/null
@@ -3469,8 +3470,8 @@ panel_menu() { # $1=worktree $2=approot
   # It is the inverse of serve, and unserve_worktree refuses a site that is not
   # served — so on an unserved checkout the row could only ever fail.
   mkdir -p "${FAKEROOT}/worktrees/main/.git" "${FAKEROOT}/worktrees/cold" \
-           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/sites/live"
-  printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
+           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/TYPO3-Instances/live"
+  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/live/.tryout-site"
 
   # The primary and a served worktree both have a site.
   local w
@@ -3709,8 +3710,8 @@ panel_menu() { # $1=worktree $2=approot
   # They sit at the end deliberately: the rows above act on the checkout, these
   # two only look at it. Anything appended after them would separate the pair.
   mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/live" \
-           "${FAKEROOT}/sites/live"
-  printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
+           "${FAKEROOT}/TYPO3-Instances/live"
+  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/live/.tryout-site"
 
   local w out last2
   # Both shapes that have a site: the served worktree and the primary, whose
@@ -3732,8 +3733,8 @@ panel_menu() { # $1=worktree $2=approot
   # would read another row's arguments — a command run on the wrong worktree,
   # which is the whole class of bug this menu exists to prevent.
   mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/cold" \
-           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/sites/live"
-  printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
+           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/TYPO3-Instances/live"
+  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/live/.tryout-site"
 
   counts() { # $1=worktree — every menu shape, since each builds a different list
     TRYOUT_PANEL_WORKTREE="$1" TRYOUT_PANEL_APPROOT="${FAKEROOT}" \
@@ -3870,8 +3871,8 @@ panel_menu() { # $1=worktree $2=approot
 @test "the panel offers download where there is a site to update" {
   set -eu -o pipefail
   mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely" \
-           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/sites/live"
-  printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
+           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/TYPO3-Instances/live"
+  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/live/.tryout-site"
 
   run panel_menu live "${FAKEROOT}"
   assert_success
@@ -3895,8 +3896,8 @@ panel_menu() { # $1=worktree $2=approot
   # positionally, which is why the primary gets the @primary sentinel rather than
   # an empty string — empty would shift the command into the site's place.
   mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely" \
-           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/sites/live"
-  printf 'php=8.3\n' > "${FAKEROOT}/sites/live/.tryout-site"
+           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/TYPO3-Instances/live"
+  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/live/.tryout-site"
 
   # Served: its own name.
   run panel_menu live "${FAKEROOT}"
@@ -3937,8 +3938,8 @@ panel_menu() { # $1=worktree $2=approot
 @test "a served worktree carries its own site, so nothing asks which one" {
   set -eu -o pipefail
   mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/benni" \
-           "${FAKEROOT}/sites/benni"
-  printf 'php=8.3\n' > "${FAKEROOT}/sites/benni/.tryout-site"
+           "${FAKEROOT}/TYPO3-Instances/benni"
+  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/benni/.tryout-site"
 
   run panel_menu benni "${FAKEROOT}"
   assert_success
@@ -4935,17 +4936,16 @@ FAKE
   # changes — and none of them can be refreshed from inside the container. So the
   # gate is the hostname set, and nothing else.
   local root="${FAKEROOT}/reloadgate"
-  mkdir -p "${root}/sites/keep" "${root}/sites/gone"
-  printf 'php=8.3\n' > "${root}/sites/keep/.tryout-site"
-  printf 'php=8.3\n' > "${root}/sites/gone/.tryout-site"
+  mkdir -p "${root}/TYPO3-Instances/keep" "${root}/TYPO3-Instances/gone"
+  printf 'php=8.3\n' > "${root}/TYPO3-Instances/keep/.tryout-site"
+  printf 'php=8.3\n' > "${root}/TYPO3-Instances/gone/.tryout-site"
 
+  # DDEV_APPROOT, not PROJECT_ROOT: helper_eval sources functions.sh BEFORE it runs
+  # this, so every derived path is already fixed by then. The environment is the
+  # only lever that reaches the assignments themselves.
   snap() {
-    helper_eval "
-      PROJECT_ROOT='${root}'
-      SITES_DIR='${root}/sites'
-      DDEV_SITENAME='proj'
-      served_hostname_set
-    " 2>/dev/null
+    ( export DDEV_APPROOT="${root}" DDEV_SITENAME='proj'
+      helper_eval 'served_hostname_set' ) 2>/dev/null
   }
 
   local before after
@@ -4955,7 +4955,7 @@ FAKE
   [ "${before}" = "${after}" ] || fail "an unchanged set must compare equal"
 
   # Removing one changes it, so the restart stays required.
-  rm -f "${root}/sites/gone/.tryout-site"
+  rm -f "${root}/TYPO3-Instances/gone/.tryout-site"
   after="$(snap)"
   [ "${before}" != "${after}" ] || fail "dropping a site must change the set"
 

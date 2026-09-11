@@ -132,7 +132,7 @@ primary_name() { fn active_worktree_name && active_worktree_name 2>/dev/null; }
 
 # A site directory carries a .tryout-site marker once `worktree serve` has
 # finished. That file test is the whole cost of knowing a worktree's state.
-served_by_marker() { [ -f "${APPROOT}/sites/$1/.tryout-site" ]; }
+served_by_marker() { [ -f "${APPROOT}/TYPO3-Instances/$1/.tryout-site" ]; }
 
 worktree_php() {
     fn site_php_version && site_php_version "$1" 2>/dev/null
@@ -180,7 +180,7 @@ worktrees() {
 sites() {
     local d name php
     c "${PRIMARY_SITE:-@primary}" "the primary site at the project URL"
-    for d in "${APPROOT}"/sites/*/; do
+    for d in "${APPROOT}"/TYPO3-Instances/*/; do
         name="$(basename "${d}")"
         served_by_marker "${name}" || continue
         php="$(worktree_php "${name}")"

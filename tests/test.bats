@@ -110,7 +110,7 @@ teardown() { load teardown.sh; }
 
   run grep -q "name: ${PROJNAME}" "${TESTDIR}/.ddev/config.yaml"
   assert_success
-  run grep -q 'docroot: Build/public' "${TESTDIR}/.ddev/config.yaml"
+  run grep -q 'docroot: TYPO3-Instances/primary/public' "${TESTDIR}/.ddev/config.yaml"
   assert_success
 }
 
@@ -128,25 +128,25 @@ teardown() { load teardown.sh; }
 
 @test "an existing composer.json is never rewritten" {
   set -eu -o pipefail
-  cat > "${TESTDIR}/Build/composer.json" <<'JSON'
+  cat > "${TESTDIR}/TYPO3-Instances/primary/composer.json" <<'JSON'
 {
     "name": "acme/site",
     "require": { "psr/log": "^3.0" },
     "extra": { "acme-marker": "must-survive" }
 }
 JSON
-  cp "${TESTDIR}/Build/composer.json" "${TESTDIR}/composer.json.orig"
+  cp "${TESTDIR}/TYPO3-Instances/primary/composer.json" "${TESTDIR}/composer.json.orig"
 
   run ddev add-on get "${DIR}"
   assert_success
 
-  run diff "${TESTDIR}/Build/composer.json" "${TESTDIR}/composer.json.orig"
+  run diff "${TESTDIR}/TYPO3-Instances/primary/composer.json" "${TESTDIR}/composer.json.orig"
   assert_success
 
   # The user's file is pulled in by composer-merge-plugin, not copied into ours.
-  run grep -q '"include"' "${TESTDIR}/Build/composer.tryout.json"
+  run grep -q '"include"' "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
   assert_success
-  run grep -q 'psr/log' "${TESTDIR}/Build/composer.tryout.json"
+  run grep -q 'psr/log' "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
   assert_failure
   rm -f "${TESTDIR}/composer.json.orig"
 }
@@ -161,13 +161,13 @@ JSON
   # Stand in for what `ddev tryout composer` generates plus a package the user
   # added themselves. A plain sed keeps this independent of a container.
   sed -i.bak 's#"require": {#"require": {\n        "acme/thing": "^1.0",#' \
-    "${TESTDIR}/Build/composer.tryout.json"
-  run grep -q 'acme/thing' "${TESTDIR}/Build/composer.tryout.json"
+    "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
+  run grep -q 'acme/thing' "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
   assert_success
 
   run ddev add-on get "${DIR}"
   assert_success
-  run grep -q 'acme/thing' "${TESTDIR}/Build/composer.tryout.json"
+  run grep -q 'acme/thing' "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
   assert_success
 }
 
@@ -175,11 +175,11 @@ JSON
   set -eu -o pipefail
   run ddev add-on get "${DIR}"
   assert_success
-  run grep -q 'typo3/sysext/\*' "${TESTDIR}/Build/composer.tryout.json"
+  run grep -q 'typo3/sysext/\*' "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
   assert_success
-  run grep -q 'packages/\*' "${TESTDIR}/Build/composer.tryout.json"
+  run grep -q 'packages/\*' "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
   assert_success
-  run grep -q 'wikimedia/composer-merge-plugin' "${TESTDIR}/Build/composer.tryout.json"
+  run grep -q 'wikimedia/composer-merge-plugin' "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
   assert_success
 }
 
@@ -202,7 +202,7 @@ JSON
   assert_failure
   # And none of the add-on's own paths were appended to it.
   local e
-  for e in /worktrees/ /sites/ /Build/vendor/ /Build/composer.tryout.json; do
+  for e in /worktrees/ /TYPO3-Instances/ /packages/; do
     run grep -qxF "${e}" "${TESTDIR}/.gitignore"
     assert_failure
   done
@@ -219,7 +219,7 @@ JSON
 
   assert_file_exist "${TESTDIR}/.git/info/exclude"
   local e
-  for e in /.ddev/ /worktrees/ /sites/ /Build/vendor/ /Build/composer.tryout.json; do
+  for e in /.ddev/ /worktrees/ /TYPO3-Instances/ /packages/; do
     run grep -qxF "${e}" "${TESTDIR}/.git/info/exclude"
     assert_success
   done
@@ -236,13 +236,13 @@ JSON
   assert_success
 
   # Removing the marker is the documented way to take ownership.
-  sed -i.bak 's/#ddev-generated/#user-owned/' "${TESTDIR}/Build/config/system/additional.php"
-  echo '// my own change' >> "${TESTDIR}/Build/config/system/additional.php"
+  sed -i.bak 's/#ddev-generated/#user-owned/' "${TESTDIR}/TYPO3-Instances/primary/config/system/additional.php"
+  echo '// my own change' >> "${TESTDIR}/TYPO3-Instances/primary/config/system/additional.php"
 
   run ddev add-on get "${DIR}"
   assert_success
   assert_output --partial "Skipping config/system/additional.php"
-  run grep -q 'my own change' "${TESTDIR}/Build/config/system/additional.php"
+  run grep -q 'my own change' "${TESTDIR}/TYPO3-Instances/primary/config/system/additional.php"
   assert_success
 }
 
@@ -250,10 +250,10 @@ JSON
   set -eu -o pipefail
   run ddev add-on get "${DIR}"
   assert_success
-  run grep -q "getenv('IS_DDEV_PROJECT')" "${TESTDIR}/Build/config/system/additional.php"
+  run grep -q "getenv('IS_DDEV_PROJECT')" "${TESTDIR}/TYPO3-Instances/primary/config/system/additional.php"
   assert_success
   # It must read the per-site database name the served-site vhosts inject.
-  run grep -q "TYPO3_DB_DBNAME" "${TESTDIR}/Build/config/system/additional.php"
+  run grep -q "TYPO3_DB_DBNAME" "${TESTDIR}/TYPO3-Instances/primary/config/system/additional.php"
   assert_success
 }
 
@@ -344,9 +344,9 @@ JSON
   assert_file_not_exist "${TESTDIR}/.ddev/config.tryout-patches.yaml"
   assert_file_not_exist "${TESTDIR}/.ddev/web-build/Dockerfile.tryout"
   assert_file_not_exist "${TESTDIR}/.ddev/tryout/.version"
-  assert_file_not_exist "${TESTDIR}/Build/composer.tryout.json"
+  assert_file_not_exist "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
   assert_file_not_exist "${TESTDIR}/composer.tryout.lock"
-  assert_file_not_exist "${TESTDIR}/Build/config/system/additional.php"
+  assert_file_not_exist "${TESTDIR}/TYPO3-Instances/primary/config/system/additional.php"
 
   # The project's own config is untouched.
   assert_file_exist "${TESTDIR}/.ddev/config.yaml"
@@ -361,13 +361,13 @@ JSON
   run ddev add-on get "${DIR}"
   assert_success
 
-  sed -i.bak '/ddev-generated/d' "${TESTDIR}/Build/composer.tryout.json"
-  sed -i.bak 's/#ddev-generated/#user-owned/' "${TESTDIR}/Build/config/system/additional.php"
+  sed -i.bak '/ddev-generated/d' "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
+  sed -i.bak 's/#ddev-generated/#user-owned/' "${TESTDIR}/TYPO3-Instances/primary/config/system/additional.php"
 
   run ddev add-on remove tryout
   assert_success
-  assert_file_exist "${TESTDIR}/Build/composer.tryout.json"
-  assert_file_exist "${TESTDIR}/Build/config/system/additional.php"
+  assert_file_exist "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
+  assert_file_exist "${TESTDIR}/TYPO3-Instances/primary/config/system/additional.php"
 }
 
 @test "an edited patch list survives an update and a removal" {

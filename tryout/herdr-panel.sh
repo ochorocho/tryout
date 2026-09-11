@@ -124,7 +124,7 @@ worktree_state() {
     [ -n "${active}" ] || active="main"
     if [ "${WORKTREE}" = "${active}" ]; then
         echo "primary"
-    elif [ -f "${APPROOT}/sites/${WORKTREE}/.tryout-site" ]; then
+    elif [ -f "${APPROOT}/TYPO3-Instances/${WORKTREE}/.tryout-site" ]; then
         echo "served"
     else
         echo "unserved"

@@ -13,7 +13,7 @@
  */
 
 // PROJECT_ROOT is the composer root to rewrite (the project itself, or one
-// sites/<name> tree). TRYOUT_CORE_DIR names the Core checkout to read sysexts from,
+// TYPO3-Instances/<name> tree). TRYOUT_CORE_DIR names the Core checkout to read sysexts from,
 // which for a served site is a sibling worktree outside that root.
 $projectRoot = getenv('PROJECT_ROOT') ?: '/var/www/html';
 
@@ -24,9 +24,10 @@ $projectRoot = getenv('PROJECT_ROOT') ?: '/var/www/html';
 $composerName = getenv('TRYOUT_COMPOSER_FILE') ?: 'composer.tryout.json';
 $composerFile = $projectRoot . '/' . $composerName;
 $composerLockFile = $projectRoot . '/' . preg_replace('/\.json$/', '.lock', $composerName);
-// The instance lives in Build/, so its Core is one level up. TRYOUT_CORE_DIR
-// overrides for a served site, whose Core is a nested worktree.
-$coreDir = getenv('TRYOUT_CORE_DIR') ?: dirname($projectRoot);
+// An instance lives two levels down (TYPO3-Instances/<name>), so its Core is the
+// project root above both. TRYOUT_CORE_DIR overrides for a served site, whose
+// Core is a nested worktree rather than the root checkout.
+$coreDir = getenv('TRYOUT_CORE_DIR') ?: dirname(dirname($projectRoot));
 $sysextDir = $coreDir . '/typo3/sysext';
 
 if (!is_dir($sysextDir)) {
