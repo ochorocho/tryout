@@ -59,7 +59,7 @@ fi
 # sysexts actually present in this Core checkout before install can resolve the
 # path repository. Doing it every start also keeps it correct after a branch switch.
 info "[3/5] Syncing composer.tryout.json with Core sysexts..."
-if ! env PROJECT_ROOT="${INSTANCE_DIR}" TRYOUT_CORE_DIR="${CORE_DIR}" \
+if ! env PROJECT_ROOT="${INSTANCE_DIR}" TRYOUT_CORE_DIR="$(active_core_dir)" \
         php "$(tryout_script sync-composer.php)"; then
     error "Failed to sync composer.tryout.json"
     error "  → Try: ddev tryout download --reset && ddev restart"

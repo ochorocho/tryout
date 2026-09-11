@@ -331,7 +331,7 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
   run names worktree unserve "''"
   assert_line "--drop-db"
 
-  run names worktree use "''"
+  run names worktree remove "''"
   assert_line "--force"
 }
 
@@ -391,7 +391,9 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
   assert_success
   rm -f "${FAKEROOT}/.ddev/tryout/functions.sh"
 
-  run names worktree use "''"
+  # A verb that still HAS a flag — `use` has none now, and an empty candidate list
+  # would pass this test without proving the script survived.
+  run names worktree remove "''"
   assert_success
   assert_line "--force"
 }
@@ -992,11 +994,13 @@ FAKE
 
 @test "completion shows only flags once a dash is typed" {
   set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main"
-  run names worktree use --
+  # `remove`, not `use`: switching repoints the primary instance's overlay and
+  # touches no checkout, so `use` has no flags left to offer.
+  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13"
+  run names worktree remove --
   assert_success
   assert_line "--force"
-  refute_line "main"
+  refute_line "v13"
 }
 
 @test "completion offers PHP versions after --php" {
@@ -5429,4 +5433,77 @@ FAKE
   # Nothing anywhere falls back to plain db rather than erroring out.
   run resolve "" ""
   assert_output "db"
+}
+
+@test "a path that is not a checkout is not dirty" {
+  set -eu -o pipefail
+  command -v git >/dev/null 2>&1 || skip 'git not available'
+  # `! git diff --quiet` turns "cannot look" into "has changes": git fails on a
+  # path that is not a repository, --quiet returns non-zero, and the negation
+  # reports dirty. That is how `worktree use` came to refuse a clean project —
+  # it tested worktrees/<primary>, which never exists because the primary IS the
+  # root checkout.
+  local repo="${FAKEROOT}/dirtycheck"
+  git init -q "${repo}"
+  git -C "${repo}" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+
+  run helper core_worktree_is_dirty "${FAKEROOT}/no-such-directory"
+  assert_failure
+  run helper core_worktree_is_dirty "${FAKEROOT}"
+  assert_failure   # exists, but is not a checkout
+
+  # A real change still reports dirty, or the guard would be useless.
+  echo change > "${repo}/file"
+  git -C "${repo}" add file
+  run helper core_worktree_is_dirty "${repo}"
+  assert_success
+}
+
+@test "the active Core comes from the primary overlay, not the root's branch" {
+  set -eu -o pipefail
+  # `worktree use` repoints the primary instance's sysext path repository. The
+  # root's branch would keep answering for the root even after that switch, so
+  # everything asking "which Core is served" has to read the overlay.
+  local root="${FAKEROOT}/activecore"
+  mkdir -p "${root}/TYPO3-Instances/primary"
+
+  overlay() { # <sysext-url>
+    printf '{"repositories":[{"type":"path","url":"../../packages/*"},{"type":"path","url":"%s"}]}\n' \
+      "$1" > "${root}/TYPO3-Instances/primary/composer.tryout.json"
+  }
+  active() {
+    ( export DDEV_APPROOT="${root}"
+      helper_eval 'plain_core_name() { echo rootbranch; }; active_worktree_name' )
+  }
+
+  # Pointing at a worktree names that worktree.
+  overlay "../../worktrees/v13/typo3/sysext/*"
+  run active
+  assert_output "v13"
+
+  # Pointing at the root names the root, whose name is its branch.
+  overlay "../../typo3/sysext/*"
+  run active
+  assert_output "rootbranch"
+
+  # No overlay at all falls back the same way rather than erroring.
+  rm -f "${root}/TYPO3-Instances/primary/composer.tryout.json"
+  run active
+  assert_output "rootbranch"
+}
+
+@test "switching the active Core never writes a symlink" {
+  set -eu -o pipefail
+  # CORE_DIR is the project root now, and `ln -sfn <target> <existing-dir>` does
+  # not replace a directory — it creates a link INSIDE it. The old set_active_core
+  # would have littered the Core working tree with a stray symlink and switched
+  # nothing; only the false dirty-check was stopping it.
+  local fn
+  fn=$(sed -n '/^set_active_core()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#')
+
+  printf '%s' "${fn}" | grep -q 'ln -s' \
+    && fail "set_active_core must not symlink: CORE_DIR is the project root"
+  printf '%s' "${fn}" | grep -q 'use-core.php' \
+    || fail "switching must rewrite the primary overlay"
 }

@@ -485,8 +485,7 @@ ctr_checkout() {
     else
         info "Syncing TYPO3-Instances/${site}/composer.tryout.json..."
         env PROJECT_ROOT="$(site_dir "${site}")" TRYOUT_CORE_DIR="$(core_worktree_dir "${site}")" \
-            env PROJECT_ROOT="${INSTANCE_DIR}" TRYOUT_CORE_DIR="${CORE_DIR}" \
-        php "$(tryout_script sync-composer.php)"
+            php "$(tryout_script sync-composer.php)"
     fi
     wipe_site_vendor "${site}" || return 1
     rebuild_typo3 "${site}"
@@ -502,7 +501,7 @@ ctr_checkout() {
 ctr_composer() {
     require_core
     info "Syncing composer.tryout.json with available system extensions..."
-    env PROJECT_ROOT="${INSTANCE_DIR}" TRYOUT_CORE_DIR="${CORE_DIR}" \
+    env PROJECT_ROOT="${INSTANCE_DIR}" TRYOUT_CORE_DIR="$(active_core_dir)" \
         php "$(tryout_script sync-composer.php)"
 }
 
@@ -612,12 +611,14 @@ ctr_worktree() {
             ;;
 
         use)
-            local name="${1:-}" force="false"
+            # No --force: switching repoints the primary instance's overlay and
+            # touches no checkout, so there is nothing to force past. Still
+            # tolerated so an older habit does not error, and ignored on purpose.
+            local name="${1:-}"
             shift || true
-            [ "${1:-}" = "--force" ] && force="true"
-            [ -n "${name}" ] || { error "Usage: ddev tryout worktree use <name> [--force]"; return 1; }
+            [ -n "${name}" ] || { error "Usage: ddev tryout worktree use <name>"; return 1; }
             migrate_core_to_worktree_layout || return 1
-            use_core_worktree "${name}" "${force}" || return 1
+            use_core_worktree "${name}" || return 1
             echo ""
             success "Now on Core '${name}' — ${DDEV_PRIMARY_URL:-}"
             ;;

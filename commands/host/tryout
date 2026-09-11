@@ -472,7 +472,7 @@ cmd_worktree() {
             local name="${1:-}"
             shift || true
             [ -n "${name}" ] || name="$(ask_worktree "Point the primary site at which worktree?" nonprimary)" \
-                || { explain_missing "ddev tryout worktree use <name> [--force]"; return 1; }
+                || { explain_missing "ddev tryout worktree use <name>"; return 1; }
             delegate worktree use "${name}" "$@"
             ;;
 
@@ -682,7 +682,7 @@ cmd_worktree() {
             echo ""
             echo -e "  ${BOLD}add <name> [<branch>]${NC}   Create worktrees/<name> on a branch <name>, off origin/<branch>"
             echo -e "  ${BOLD}list${NC}                    List worktrees and served sites"
-            echo -e "  ${BOLD}use <name>${NC}              Point the PRIMARY site at <name>, then rebuild"
+            echo -e "  ${BOLD}use <name>${NC}              Serve that worktree's Core at the project URL"
             echo -e "  ${BOLD}serve <name>${NC}            Give <name> its own URL, PHP version and database"
             echo -e "  ${BOLD}unserve <name>${NC}          Drop the site, keep the worktree"
             echo -e "  ${BOLD}remove <name>${NC}           Delete a worktree and its directory (asks first)"
@@ -693,8 +693,7 @@ cmd_worktree() {
             echo "         --serve     (add: serve it immediately)"
             echo "         --herdr     (add: open it as a herdr workspace)"
             echo "         --php 8.2   (add/serve: run this site on another PHP version)"
-            echo "         --force     (use: switch despite uncommitted changes)"
-            echo "                     (remove: also drop an unmerged branch)"
+            echo "         --force     (remove: also drop an unmerged branch)"
             echo "         --yes       (remove: skip the confirmation)"
             echo "         --drop-db   (unserve: also drop the site's database)"
             echo "         --no-restart (add --serve/serve/unserve/rename: skip the restart)"

@@ -429,8 +429,9 @@ case "${VERB}" in
                 flag --plain "machine-readable columns, for scripts"
                 ;;
             use)
+                # No flags: switching repoints the primary instance's overlay and
+                # touches no checkout, so there is nothing to force past.
                 [ "${POS}" -le 2 ] && ! wants_flag && worktrees nonprimary
-                flag --force "switch despite uncommitted changes"
                 ;;
             remove | rm)
                 [ "${POS}" -le 2 ] && ! wants_flag && worktrees nonprimary

@@ -45,7 +45,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=30
+TRYOUT_VERSION=31
 
 # Core worktrees live INSIDE the clone, under worktrees/<name>. Nested worktrees
 # keep relative metadata on both pointers (worktrees/<n>/.git -> ../../.git/... and
@@ -872,8 +872,32 @@ worktree_name_for_path() {
 # The active Core is the ROOT checkout, always — there is no symlink to move. Its
 # name is its branch, the same answer plain_core_name gives, so the two agree and
 # `worktree use` becomes a checkout rather than a relink.
+# Which checkout the PRIMARY instance serves. Read from the overlay, because that
+# is what `worktree use` moves — the root's branch would answer for the root even
+# after the primary was repointed at a worktree.
+#
+# grep + sed rather than jq: jq is optional (only `ddev tryout herdr` requires it)
+# and this runs on the dashboard path.
 active_worktree_name() {
+    local url name
+    url=$(grep -oE '\.\./\.\./(worktrees/[A-Za-z0-9._-]+/)?typo3/sysext' \
+            "${INSTANCE_DIR}/composer.tryout.json" 2>/dev/null | head -1)
+    case "${url}" in
+        */worktrees/*)
+            name=$(printf '%s' "${url}" | sed -E 's|.*/worktrees/([^/]+)/.*|\1|')
+            [ -n "${name}" ] && { printf '%s' "${name}"; return 0; }
+            ;;
+    esac
+    # No overlay yet, or it names the root checkout: the root is what is served,
+    # and its name is its branch.
     plain_core_name
+}
+
+# The checkout the primary instance currently serves. What anything syncing or
+# reading "the active Core" wants — CORE_DIR is only right while the primary has
+# not been repointed.
+active_core_dir() {
+    herdr_checkout_dir "$(active_worktree_name)"
 }
 
 # The worktree that owns the object store; git lists it first. worktree add must
@@ -883,8 +907,13 @@ main_core_worktree_dir() {
         | awk '/^worktree /{print substr($0,10); exit}'
 }
 
+# Uncommitted changes in a checkout. A path that is not a git checkout is NOT
+# dirty: git fails there, `--quiet` returns non-zero, and the negation below would
+# otherwise turn "cannot look" into "has changes" — which is how `worktree use`
+# came to report a clean project as dirty and could never run at all.
 core_worktree_is_dirty() {
     local dir="$1"
+    git -C "${dir}" rev-parse --git-dir >/dev/null 2>&1 || return 1
     ! git -C "${dir}" diff --quiet 2>/dev/null \
         || ! git -C "${dir}" diff --cached --quiet 2>/dev/null
 }
@@ -993,17 +1022,29 @@ add_core_worktree() {
     success "Worktree '${name}' created"
 }
 
+# Point the PRIMARY instance at a Core checkout. An empty name means the root.
+#
+# NOT a symlink any more. This used to move typo3-core -> typo3-core-<name>, but
+# CORE_DIR is the project root now, and `ln -sfn <target> <existing-dir>` does not
+# replace a directory — it creates a link INSIDE it, which would have quietly
+# littered the Core working tree with a stray symlink and switched nothing.
+# The overlay's sysext path repository is the pointer instead.
 set_active_core() {
-    ln -sfn "$(basename "$(core_worktree_dir "$1")")" "${CORE_DIR}"
+    local name="${1:-}"
+    [ "${name}" = "$(plain_core_name)" ] && [ ! -d "$(core_worktree_dir "${name}")" ] && name=""
+    php "$(tryout_script use-core.php)" "${name}" >/dev/null
 }
 
 # Switch the active Core. The rebuild is mandatory, never optional: Composer
 # binds vendor/ to the resolved real path, so without it the site silently keeps
 # serving the previous Core.
 use_core_worktree() {
-    local name="$1" force="${2:-false}" dir
+    local name="$1" dir
     validate_worktree_name "${name}" || return 1
-    dir=$(core_worktree_dir "${name}")
+    # herdr_checkout_dir, not core_worktree_dir: the ROOT checkout is a valid
+    # target and has no directory under worktrees/, so switching BACK to it would
+    # otherwise be refused as "No worktree".
+    dir=$(herdr_checkout_dir "${name}")
 
     if [ ! -d "${dir}" ]; then
         error "No worktree '${name}'"
@@ -1011,24 +1052,22 @@ use_core_worktree() {
         return 1
     fi
 
+    # No dirty check any more, and --force has nothing left to force. Switching
+    # rewrites the PRIMARY INSTANCE's path repository; it does not touch any
+    # checkout, so there is no working tree to hide and nothing to lose. The old
+    # guard existed because `use` moved the typo3-core symlink out from under the
+    # project root.
     local active
     active=$(active_worktree_name)
-    if [ "${active}" = "${name}" ]; then
-        info "'${name}' is already active — rebuilding anyway"
-    elif [ -n "${active}" ] && [ "${force}" != "true" ] \
-         && core_worktree_is_dirty "$(core_worktree_dir "${active}")"; then
-        error "Active worktree '${active}' has uncommitted changes"
-        error "  Switching would hide them from the project root."
-        error "  → Commit or stash them, or: ddev tryout worktree use ${name} --force"
-        return 1
-    fi
+    [ "${active}" = "${name}" ] && info "'${name}' is already active — rebuilding anyway"
 
     set_active_core "${name}"
     success "Active Core: ${name}"
 
-    # Sysext sets differ between versions, so regenerate before installing.
+    # Sysext sets differ between versions, so regenerate before installing —
+    # against the checkout just switched TO, not the root.
     info "Syncing composer.tryout.json..."
-    env PROJECT_ROOT="${INSTANCE_DIR}" TRYOUT_CORE_DIR="${CORE_DIR}" \
+    env PROJECT_ROOT="${INSTANCE_DIR}" TRYOUT_CORE_DIR="$(active_core_dir)" \
         php "$(tryout_script sync-composer.php)" || warn "composer sync had warnings"
     wipe_site_vendor || return 1
     rebuild_typo3
