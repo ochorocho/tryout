@@ -80,27 +80,20 @@ fi
 success "Composer dependencies installed"
 
 # --- Step 4: TYPO3 setup (first time only) ---
-if [ ! -f "${PROJECT_ROOT}/config/system/settings.php" ]; then
-    # Derive SQL type from DDEV
-    TYPO3_DB_DRIVER="mysqli"
-    db_is_postgres && TYPO3_DB_DRIVER="postgres"
-
-    # Derive server type from DDEV webserver config
-    case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
-        apache*) SERVER_TYPE="apache" ;;
-        *)       SERVER_TYPE="other" ;;
-    esac
-
-    info "[4/5] Running TYPO3 setup (first time, server-type=${SERVER_TYPE})..."
-    # A plain assignment prefix, not `env`: run_typo3 is a shell function.
-    if ! TYPO3_DB_DRIVER="${TYPO3_DB_DRIVER}" run_typo3 setup --no-interaction --force --server-type="${SERVER_TYPE}"; then
-        error "TYPO3 setup failed"
-        error "  → Try: ddev exec env TYPO3_DB_DRIVER=${TYPO3_DB_DRIVER} vendor/bin/typo3 setup --no-interaction --force --server-type=${SERVER_TYPE}"
-        exit 1
-    fi
-    success "TYPO3 setup complete"
-else
-    info "[4/5] TYPO3 already configured"
+# setup_site_typo3 rather than a parallel copy of the same steps. It resolves the
+# instance through site_dir — this block used to test PROJECT_ROOT/config/system,
+# which stopped existing when instances moved under TYPO3-Instances/, so the guard
+# never found settings.php and ran `typo3 setup` on every start. TYPO3 then
+# refused with "The selected database contains already N tables".
+#
+# It also handles the case that error was really reporting: a database holding an
+# install with no settings.php beside it, where it restores the saved file or says
+# what to do instead of leaving TYPO3's bare message.
+info "[4/5] Checking TYPO3 setup..."
+if ! setup_site_typo3 "${PRIMARY_SITE}"; then
+    error "TYPO3 setup failed"
+    error "  → ddev tryout delete   (wipe the database and set up fresh)"
+    exit 1
 fi
 
 # --- Step 5: Extension setup + cache flush ---

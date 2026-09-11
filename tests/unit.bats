@@ -5507,3 +5507,26 @@ FAKE
   printf '%s' "${fn}" | grep -q 'use-core.php' \
     || fail "switching must rewrite the primary overlay"
 }
+
+@test "post-start finds the primary's settings through site_dir, not the project root" {
+  set -eu -o pipefail
+  # The "first time only" guard tested PROJECT_ROOT/config/system/settings.php.
+  # That path stopped existing when instances moved under TYPO3-Instances/, so the
+  # guard never found the file and ran `typo3 setup` on EVERY start — which TYPO3
+  # then refused with "The selected database contains already N tables".
+  local f="${DIR}/tryout/post-start.sh"
+
+  grep -qE '\$\{PROJECT_ROOT\}/config/system' "${f}" \
+    && fail "the instance is not at the project root; resolve it through site_dir"
+
+  # It reuses the function that already knows where an instance lives — and that
+  # already handles the populated-database case the error was really about.
+  grep -q 'setup_site_typo3 "\${PRIMARY_SITE}"' "${f}" \
+    || fail "post-start must set the primary up through setup_site_typo3"
+
+  # No second copy of the setup invocation: one place decides how TYPO3 is set up.
+  local calls
+  calls=$(grep -c 'typo3 setup --no-interaction' "${f}" || true)
+  [ "${calls}" -eq 0 ] \
+    || fail "post-start duplicates the setup call instead of delegating: ${calls}"
+}
