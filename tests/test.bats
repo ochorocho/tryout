@@ -252,7 +252,9 @@ JSON
   assert_success
   run grep -q "getenv('IS_DDEV_PROJECT')" "${TESTDIR}/TYPO3-Instances/primary/config/system/additional.php"
   assert_success
-  # It must read the per-site database name the served-site vhosts inject.
+  # The instance's own settings.php decides its database; TYPO3_DB_DBNAME is only
+  # the fallback for a first run, before that file exists. Precedence itself is
+  # pinned by the unit suite, which runs the resolution rather than grepping it.
   run grep -q "TYPO3_DB_DBNAME" "${TESTDIR}/TYPO3-Instances/primary/config/system/additional.php"
   assert_success
 }

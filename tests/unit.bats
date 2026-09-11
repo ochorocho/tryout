@@ -5386,3 +5386,47 @@ FAKE
   printf '%s' "${fn}" | grep -q 'CS_SSH_REASON="denied"' \
     || fail "a key that Gerrit refuses is a different fix from having none"
 }
+
+@test "an instance's own settings.php decides its database, not the environment" {
+  set -eu -o pipefail
+  command -v php >/dev/null 2>&1 || skip 'php not available'
+  # config.tryout.yaml sets TYPO3_DB_DBNAME=db for the WHOLE container, so taking
+  # the environment first meant every instance reached without a vhost — every CLI
+  # command — silently used the PRIMARY's database while its own settings.php said
+  # otherwise. Served sites only looked right because their vhost injects the
+  # correct name over HTTP; nothing injects it for the CLI.
+  local add="${DIR}/tryout/additional.php"
+  local dir="${FAKEROOT}/dbresolve"
+  mkdir -p "${dir}"
+
+  # Runs additional.php with a given pre-loaded dbname and environment, and prints
+  # what the connection ends up on.
+  resolve() { # <settings-dbname> <env-dbname>
+    IS_DDEV_PROJECT=true TYPO3_DB_DBNAME="${2}" php -r "
+      \$GLOBALS['TYPO3_CONF_VARS'] = ['DB' => ['Connections' => ['Default' => [
+          'dbname' => '${1}',
+      ]]]];
+      include '${add}';
+      echo \$GLOBALS['TYPO3_CONF_VARS']['DB']['Connections']['Default']['dbname'];
+    "
+  }
+
+  # A served worktree keeps its own database even though the container-wide
+  # environment says 'db'. This is the bug.
+  run resolve "db_v13" "db"
+  assert_output "db_v13"
+
+  # The primary is unaffected: its settings.php says db and so does the result.
+  run resolve "db" "db"
+  assert_output "db"
+
+  # No settings yet — the FIRST RUN. site_exec exports the right name for
+  # `typo3 setup`, and it must still win, or serving a new worktree would install
+  # it into the primary's database.
+  run resolve "" "db_new"
+  assert_output "db_new"
+
+  # Nothing anywhere falls back to plain db rather than erroring out.
+  run resolve "" ""
+  assert_output "db"
+}
