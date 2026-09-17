@@ -3011,22 +3011,26 @@ panel_menu() { # $1=worktree $2=approot
     || fail "an unserved panel must offer the way to give it a site"
 }
 
-@test "a new worktree gets a branch of its own, tracking the base" {
+@test "a new worktree gets a branch named after its base, tracking it" {
   set -eu -o pipefail
-  # Named after the WORKTREE, not the base: git allows one worktree per branch,
-  # so a second checkout off main would fail outright. --track is what records
-  # the base — BRANCH reads `branch --show-current`, which returns the worktree's
-  # own name here, so without an upstream `origin/<name>` would be looked up and
-  # does not exist.
+  # Named after the BASE BRANCH, not the worktree. Composer derives a path
+  # repository's version from the branch name and the sysexts alias only the real
+  # ones, so a branch called `v13` becomes dev-v13, matches no alias, and
+  # `worktree use`/`serve` fail to resolve — see the dedicated test below.
+  #
+  # The cost is accepted deliberately: git allows one worktree per branch, so a
+  # SECOND checkout off the same base now collides and is refused with the name of
+  # the worktree holding it plus --detach as the way through. --track still records
+  # the base, which is what anything reading `branch --show-current` needs.
   local fn
   fn=$(sed -n '/^add_core_worktree()/,/^}/p' "${DIR}/tryout/functions.sh")
 
-  printf '%s' "${fn}" | grep -q 'worktree add -B "${name}" --track' \
-    || fail "the branch must be named after the worktree and track its base"
+  printf '%s' "${fn}" | grep -q 'worktree add -B "${wt_branch}" --track' \
+    || fail "the branch must be named after the base and track it"
   printf '%s' "${fn}" | grep -q 'attach="${3:-true}"' \
     || fail "a branch is the default now; --detach opts out"
   # Re-using a name would be silently reset by -B, losing what it pointed at.
-  printf '%s' "${fn}" | grep -q 'refs/heads/${name}' \
+  printf '%s' "${fn}" | grep -q 'refs/heads/${wt_branch}' \
     || fail "an existing branch of that name must be refused, not reset"
 
   # --detach still reaches the detaching path.
@@ -5630,4 +5634,30 @@ FAKE
   printf '%s' "${removal}" | grep -qE 'rm -rf .*TYPO3-Instances/\*[^/]' \
     && fail "an instance tree is user content; removal must not delete it"
   :
+}
+
+@test "a worktree's branch is named after its base, so composer can resolve it" {
+  set -eu -o pipefail
+  # Composer derives a path repository's version from the BRANCH name, and the
+  # sysexts alias only the real ones (dev-main -> 13.4.x-dev on 13.4). A branch
+  # named after the worktree becomes dev-<name>, matches no alias, and `worktree
+  # use`/`serve` then fail with "requires typo3/cms-backend 13.4.*@dev … has higher
+  # repository priority" — three commands after the one that caused it.
+  local fn
+  fn=$(sed -n '/^add_core_worktree()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#')
+
+  printf '%s' "${fn}" | grep -q 'local wt_branch="${branch}"' \
+    || fail "the branch must take the BASE branch's name, not the worktree's"
+  printf '%s' "${fn}" | grep -q 'worktree add -B "${wt_branch}"' \
+    || fail "the checkout must be created on that branch"
+  printf '%s' "${fn}" | grep -qE 'worktree add -B "\$\{name\}"' \
+    && fail "naming the branch after the worktree is what composer cannot resolve"
+
+  # A second worktree off the same base now collides, so the error has to name the
+  # worktree holding it rather than leaving the user to guess.
+  printf '%s' "${fn}" | grep -q 'it is checked out in' \
+    || fail "a collision must name the worktree that holds the branch"
+  printf '%s' "${fn}" | grep -q -- '--detach' \
+    || fail "the collision message must offer a way through"
 }

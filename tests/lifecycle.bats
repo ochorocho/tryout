@@ -167,8 +167,6 @@ addon_start() {
   run ddev tryout worktree add v13 13.4
   assert_success
   assert_dir_exist "${TESTDIR}/worktrees/v13"
-  # The primary becomes a symlink to the active worktree.
-  assert_link_exist "${TESTDIR}"
 
   run ddev tryout worktree serve v13 --php 8.4
   assert_success
@@ -176,15 +174,15 @@ addon_start() {
   assert_success
 
   # Its own tree, its own overlay, its own marker.
-  assert_file_exist "${TESTDIR}/sites/v13/composer.tryout.json"
-  assert_file_exist "${TESTDIR}/sites/v13/.tryout-site"
-  assert_dir_exist "${TESTDIR}/sites/v13/vendor"
+  assert_file_exist "${TESTDIR}/TYPO3-Instances/v13/composer.tryout.json"
+  assert_file_exist "${TESTDIR}/TYPO3-Instances/v13/.tryout-site"
+  assert_dir_exist "${TESTDIR}/TYPO3-Instances/v13/vendor"
 
   # The served site's overlay points at its own worktree and back at the shared
   # packages/ and the project's composer.json.
-  run grep -q '\.\./\.\./worktrees/v13/typo3/sysext/\*' "${TESTDIR}/sites/v13/composer.tryout.json"
+  run grep -q '\.\./\.\./worktrees/v13/typo3/sysext/\*' "${TESTDIR}/TYPO3-Instances/v13/composer.tryout.json"
   assert_success
-  run grep -q '\.\./\.\./packages/\*' "${TESTDIR}/sites/v13/composer.tryout.json"
+  run grep -q '\.\./\.\./packages/\*' "${TESTDIR}/TYPO3-Instances/v13/composer.tryout.json"
   assert_success
 
   # Both sites answer, on different TYPO3 and PHP versions.
@@ -211,7 +209,7 @@ addon_start() {
   # Unserving drops the site but keeps the worktree and its git state.
   run ddev tryout worktree unserve v13
   assert_success
-  assert_dir_not_exist "${TESTDIR}/sites/v13"
+  assert_dir_not_exist "${TESTDIR}/TYPO3-Instances/v13"
   assert_dir_exist "${TESTDIR}/worktrees/v13"
 
   # ...and the hostname stops answering, while the primary is unaffected.
@@ -312,4 +310,89 @@ JSON
   # ...and their file was never written to.
   run grep -q 'typo3/cms-core' "${TESTDIR}/composer.json"
   assert_failure
+}
+
+# bats test_tags=lifecycle
+@test "the whole layout survives add, use, serve and a restart" {
+  set -eu -o pipefail
+  # EVERY bug the layout change produced needed a real project to surface: a glob
+  # that could not see the root checkout, a `cd` on a path that cannot exist, an
+  # `ln -sfn` at the project root, a first-run guard on a moved path, a lister the
+  # fix missed, a panel reading the wrong source, and a cache cleared for the wrong
+  # site. The unit suite cannot build one. This walks the layout end to end and
+  # asserts on `worktree list --plain`, the documented machine-readable contract.
+  addon_start
+
+  # The project root IS the Core clone, and nothing the add-on generates may show
+  # up in `git status` — a Gerrit patch from here must carry none of it.
+  run git -C "${TESTDIR}" rev-parse --abbrev-ref HEAD
+  assert_success
+  run bash -c "git -C '${TESTDIR}' status --porcelain | head -5"
+  assert_output ""
+
+  # The instance is in TYPO3-Instances/primary, and Core's own Build/ is untouched.
+  assert_dir_exist "${TESTDIR}/TYPO3-Instances/primary/public"
+  assert_dir_exist "${TESTDIR}/TYPO3-Instances/primary/vendor"
+  run bash -c "ls '${TESTDIR}/Build' | grep -cE '^(public|vendor)$' || true"
+  assert_output "0"
+
+  # A fresh project lists exactly its root checkout, marked primary.
+  run ddev tryout worktree list --plain
+  assert_success
+  assert_output --partial "← primary"
+
+  run ddev tryout worktree add v13 13.4
+  assert_success
+  assert_dir_exist "${TESTDIR}/worktrees/v13"
+  # Nested worktrees record RELATIVE metadata, which is what makes host and
+  # container paths interchangeable.
+  run cat "${TESTDIR}/worktrees/v13/.git"
+  assert_output --partial "gitdir: ../../.git/worktrees/v13"
+
+  # Both checkouts are listed — the root does not live under worktrees/, so a bare
+  # glob loses it, and that is the bug this pins.
+  run ddev tryout worktree list --plain
+  assert_success
+  assert_output --partial "v13"
+  assert_output --partial "← primary"
+
+  # `use` repoints the primary instance's overlay. It must not create a symlink:
+  # CORE_DIR is the project root, and `ln -sfn` there links INSIDE the checkout.
+  run ddev tryout worktree use v13
+  assert_success
+  run grep -q '\.\./\.\./worktrees/v13/typo3/sysext/\*' \
+      "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
+  assert_success
+  run bash -c "find '${TESTDIR}' -maxdepth 1 -type l | head -1"
+  assert_output ""
+
+  # And back again, to the root checkout.
+  run ddev tryout worktree use main
+  assert_success
+  run grep -q '\.\./\.\./typo3/sysext/\*' \
+      "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
+  assert_success
+
+  # Each instance owns its database, and says so in its own settings.php — the
+  # container-wide TYPO3_DB_DBNAME must not override it.
+  run ddev tryout worktree serve v13
+  assert_success
+  run grep -q "'dbname' => 'db_v13'" \
+      "${TESTDIR}/TYPO3-Instances/v13/config/system/settings.php"
+  assert_success
+  run ddev exec "cd /var/www/html/TYPO3-Instances/v13 && php -r '
+    \$GLOBALS[\"TYPO3_CONF_VARS\"] = include \"config/system/settings.php\";
+    include \"config/system/additional.php\";
+    echo \$GLOBALS[\"TYPO3_CONF_VARS\"][\"DB\"][\"Connections\"][\"Default\"][\"dbname\"];'"
+  assert_success
+  assert_output --partial "db_v13"
+
+  # A restart must not re-run `typo3 setup` against a populated database.
+  run ddev restart -y
+  assert_success
+  refute_output --partial "contains already"
+
+  # Still clean, after all of it.
+  run bash -c "git -C '${TESTDIR}' status --porcelain | head -5"
+  assert_output ""
 }

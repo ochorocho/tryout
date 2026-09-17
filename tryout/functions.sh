@@ -45,7 +45,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=33
+TRYOUT_VERSION=34
 
 # Core worktrees live INSIDE the clone, under worktrees/<name>. Nested worktrees
 # keep relative metadata on both pointers (worktrees/<n>/.git -> ../../.git/... and
@@ -1009,29 +1009,47 @@ add_core_worktree() {
 
     info "Creating worktree '${name}' at origin/${branch}..."
     if [ "${attach}" = "true" ]; then
+        # The branch is named after the BASE BRANCH, not the worktree. Composer
+        # derives a path repository's version from the branch name, and the sysexts
+        # alias only the real ones (dev-main -> 13.4.x-dev on 13.4): a branch called
+        # `v13` becomes dev-v13, matches no alias, and `worktree use`/`serve` then
+        # fail with "requires typo3/cms-backend 13.4.*@dev … has higher repository
+        # priority". The directory still goes by the name the user chose.
+        local wt_branch="${branch}"
         # A name already taken would be silently reset by -B, losing whatever it
         # pointed at.
-        if git -C "${main_dir}" show-ref -q --verify "refs/heads/${name}"; then
-            error "A branch '${name}' already exists"
+        if git -C "${main_dir}" show-ref -q --verify "refs/heads/${wt_branch}"; then
+            error "A branch '${wt_branch}' already exists"
             # Say WHICH case this is, but change nothing: a command that failed
             # must not quietly delete a ref on the way out. A branch left over
             # from a removed worktree looks like nothing at all — the folder is
             # gone — so the bare message sends people hunting for a directory that
             # is not there. Name the one command that clears it.
+            # Most often this is simply a second worktree off the same base, now
+            # that the branch is named after the base: the first one holds it.
+            local holder
+            holder=$(git -C "${main_dir}" worktree list --porcelain 2>/dev/null \
+                | awk -v b="refs/heads/${wt_branch}" '
+                    /^worktree /{w=substr($0,10)} $0=="branch "b{print w; exit}')
+            if [ -n "${holder}" ]; then
+                error "  it is checked out in $(basename "${holder}")"
+                error "  → ddev tryout worktree add ${name} ${branch} --detach"
+                error "  → or work in that worktree: ddev tryout herdr $(basename "${holder}")"
+                return 1
+            fi
             if [ ! -d "${dir}" ]; then
                 error "  (its worktree is gone; the branch outlived it)"
                 if git -C "${main_dir}" merge-base --is-ancestor \
-                     "refs/heads/${name}" "origin/${branch}" 2>/dev/null; then
-                    error "  → nothing unmerged on it: git -C ${main_dir} branch -d ${name}"
+                     "refs/heads/${wt_branch}" "origin/${branch}" 2>/dev/null; then
+                    error "  → nothing unmerged on it: git -C ${main_dir} branch -d ${wt_branch}"
                 else
-                    error "  → it has unmerged commits: git -C ${main_dir} branch -D ${name}"
+                    error "  → it has unmerged commits: git -C ${main_dir} branch -D ${wt_branch}"
                 fi
             fi
-            error "  → ddev tryout worktree add ${name}-2 ${branch}"
-            error "  → or: ddev tryout worktree use ${name}   (if it is already a worktree)"
+            error "  → ddev tryout worktree add ${name} ${branch} --detach"
             return 1
         fi
-        git -C "${main_dir}" worktree add -B "${name}" --track \
+        git -C "${main_dir}" worktree add -B "${wt_branch}" --track \
             "${dir}" "origin/${branch}" || return 1
     else
         git -C "${main_dir}" worktree add --detach "${dir}" "origin/${branch}" || return 1
