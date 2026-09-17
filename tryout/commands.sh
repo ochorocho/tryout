@@ -475,7 +475,11 @@ ctr_checkout() {
         || git -C "${CORE_DIR}" checkout -b "${target_branch}" "origin/${target_branch}"
     git -C "${CORE_DIR}" reset --hard "origin/${target_branch}"
     git -C "${CORE_DIR}" clean -fd
-    rm -rf "${INSTANCE_DIR}/var/cache"/*
+    # The site's OWN cache: this runs on the non-primary arm too, where CORE_DIR
+    # was repointed at that site's worktree. INSTANCE_DIR is always the primary,
+    # so `checkout <branch> --site v13` used to wipe the primary's cache and leave
+    # v13's stale. reset_core_to_main does it this way already.
+    rm -rf "$(site_dir "${site}")/var/cache"/*
 
     success "Core switched to ${target_branch}"
 

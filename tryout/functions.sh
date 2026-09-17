@@ -45,7 +45,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=32
+TRYOUT_VERSION=33
 
 # Core worktrees live INSIDE the clone, under worktrees/<name>. Nested worktrees
 # keep relative metadata on both pointers (worktrees/<n>/.git -> ../../.git/... and
@@ -304,11 +304,28 @@ explain_missing() {
 # the helper for anything that must be instant — completion. The
 # picker wants detail instead and uses worktree_labels below.
 core_worktree_names() {
-    local mode="${1:-all}" d name primary
+    local mode="${1:-all}" d name primary names=""
     primary="$(active_worktree_name 2>/dev/null)"
+
+    # The ROOT checkout first: it is a checkout too and does not live under
+    # worktrees/, so the glob below cannot see it. Leaving it out is what made
+    # `ddev tryout herdr` skip its workspace while `worktree list` showed it — the
+    # same omission already fixed in the two row listers (emit_root_worktree_row).
+    #
+    # plain_core_name, NOT the primary: `primary` here means "which Core the
+    # instance serves", which after `worktree use v13` is a nested worktree the
+    # glob already finds. The root is present either way, and its name is its
+    # branch.
+    local root_name; root_name="$(plain_core_name 2>/dev/null)"
+    if [ -n "${root_name}" ] && [ ! -d "$(core_worktree_dir "${root_name}")" ]; then
+        names="${root_name}"
+    fi
     for d in "${CORE_WORKTREE_PREFIX}"*; do
         [ -d "${d}" ] || continue
-        name="${d#"${CORE_WORKTREE_PREFIX}"}"
+        names="${names}${names:+ }${d#"${CORE_WORKTREE_PREFIX}"}"
+    done
+
+    for name in ${names}; do
         case "${mode}" in
             nonprimary) [ "${name}" = "${primary}" ] && continue ;;
             served)     [ -f "$(site_dir "${name}")/.tryout-site" ] || continue ;;
@@ -918,12 +935,12 @@ core_worktree_is_dirty() {
         || ! git -C "${dir}" diff --cached --quiet 2>/dev/null
 }
 
-# One-time move to the symlink layout: the real clone becomes typo3-core-<branch>
-# and typo3-core becomes a symlink to it. Idempotent; never runs unless a
-# worktree command asks for it, so existing installs stay untouched.
-# The name a plain typo3-core/ clone goes by before there are worktrees: its
-# branch, falling back to the default. It is what migrate_core_to_worktree_layout
-# renames it to, so anything keyed on it — a herdr workspace label — survives the
+# Nothing to migrate: the root clone IS the primary checkout and worktrees hang
+# off it, so there is no plain-clone-to-symlink step left. Kept as a no-op because
+# `worktree add` calls it; it only ensures worktrees/ exists.
+# The name the ROOT checkout goes by: its branch, falling back to the default.
+# There is no directory under worktrees/ naming it, so anything keyed on that name
+# — a herdr workspace label — has to come from here. It survives the
 # move to the worktree layout. Empty on the symlink layout.
 plain_core_name() {
     local name
@@ -1150,9 +1167,8 @@ remove_core_worktree() {
 # derived from a branch — which is all herdr's own New-worktree action can give us —
 # is a starting point, not a commitment.
 #
-# The name reaches further than the checkout, so all of it moves together: the
-# typo3-core symlink when this is the active worktree, and a served site's tree,
-# vhost and database name.
+# The name reaches further than the checkout, so all of it moves together: a
+# served site's tree, its vhost and its database name.
 rename_core_worktree() {
     local old="$1" new="$2" old_dir new_dir was_active="false" was_served="false" php=""
     validate_worktree_name "${old}" || return 1
@@ -1420,8 +1436,8 @@ herdr_agent_name() {
         | cut -c1-32
 }
 
-# Where a checkout name lives: typo3-core-<name> on the worktree layout, and the
-# plain typo3-core/ clone itself when that is all a fresh project has yet.
+# Where a checkout name lives: worktrees/<name>, or the project root itself for
+# the primary, which has no directory under worktrees/.
 # Where a worktree's workspace is rooted. The primary is the ROOT checkout, which
 # does not live under worktrees/ — so it is named after its branch and answered
 # separately.
@@ -1755,8 +1771,8 @@ herdr_orphan_workspaces() {
             *)      continue ;;
         esac
         [ -n "${name}" ] || continue
-        # herdr_checkout_dir knows both layouts: typo3-core-<name>, and the plain
-        # typo3-core/ clone a project has before its first worktree.
+        # herdr_checkout_dir knows both shapes: worktrees/<name>, and the root
+        # checkout itself for the primary.
         [ -d "$(herdr_checkout_dir "${name}")" ] && continue
         printf '%s\t%s\t%s\n' "${id}" "${label}" "${name}"
     done < <(herdr_cli workspace list 2>/dev/null \
@@ -2112,10 +2128,12 @@ site_dir() {
 site_docroot() { echo "$(site_dir "${1:-}")/public"; }
 site_vendor()  { echo "$(site_dir "${1:-}")/vendor"; }
 
-# The Core checkout a site serves: the symlink for the primary, the named worktree
-# otherwise — so the primary keeps following `worktree use`.
+# The Core checkout a site serves. For the PRIMARY that is whatever its overlay
+# points at, which `worktree use` moves — not CORE_DIR, which is only the root and
+# would answer "the root" after a switch. A served site is nailed to its own
+# worktree, so it cannot follow `use`.
 site_core_dir() {
-    if site_is_primary "${1:-}"; then echo "${CORE_DIR}"; else core_worktree_dir "$1"; fi
+    if site_is_primary "${1:-}"; then active_core_dir; else core_worktree_dir "$1"; fi
 }
 
 # Hostname: <name>.<project>.ddev.site for extras, the bare project URL for primary.
@@ -2766,7 +2784,8 @@ serve_worktree() {
     # served site would otherwise miss the DDEV overrides — including
     # trustedHostsPattern, without which its hostname is rejected outright.
     # Symlink rather than copy so there stays one source of truth.
-    # Four levels up: system -> config -> <name> -> sites -> project root.
+    # Three levels up: system -> config -> <name>, then into primary/. The count
+    # is load-bearing — it was four in the old sites/<name>/ layout.
     ln -sfn ../../../primary/config/system/additional.php "${dir}/config/system/additional.php"
 
     generate_site_composer "${name}" "${php}" || return 1

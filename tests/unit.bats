@@ -5530,3 +5530,104 @@ FAKE
   [ "${calls}" -eq 0 ] \
     || fail "post-start duplicates the setup call instead of delegating: ${calls}"
 }
+
+@test "core_worktree_names includes the root checkout, like the row listers do" {
+  set -eu -o pipefail
+  # The root checkout does not live under worktrees/, so a bare glob cannot see it.
+  # list_core_worktrees and list_core_worktrees_fast were fixed for this
+  # (emit_root_worktree_row); this third lister was missed, and `ddev tryout herdr`
+  # iterates THIS one — so the primary's workspace was silently skipped while
+  # `worktree list` showed it.
+  local root="${FAKEROOT}/wtnames"
+  mkdir -p "${root}/worktrees/v13" "${root}/TYPO3-Instances/primary"
+
+  names() { # <mode>
+    ( export DDEV_APPROOT="${root}"
+      helper_eval "plain_core_name() { echo main; }
+                   active_worktree_name() { echo ${2:-main}; }
+                   core_worktree_names ${1:-all}" ) | tr '\n' ' '
+  }
+
+  # Both checkouts, the root named by its branch.
+  run names all
+  assert_output "main v13 "
+
+  # It must not be double-listed when a worktrees/<name> of that name also exists.
+  mkdir -p "${root}/worktrees/main"
+  run names all
+  [ "$(printf '%s' "${output}" | grep -o 'main' | wc -l | tr -d ' ')" -eq 1 ] \
+    || fail "the root must be listed once, not once per source: ${output}"
+}
+
+@test "the panel reads the served Core from the overlay, not the root's branch" {
+  set -eu -o pipefail
+  # `worktree use` repoints the primary instance's overlay and leaves the root
+  # checkout where it was, so the root's branch keeps answering "the root". The
+  # panel used to ask git for that branch, which made it call the wrong checkout
+  # primary — offering `composer`, which rewrites the overlay against a Core the
+  # root no longer serves.
+  local script="${DIR}/tryout/herdr-panel.sh"
+  local fn
+  fn=$(sed -n '/^worktree_state()/,/^}/p' "${script}" | grep -v '^[[:space:]]*#')
+
+  printf '%s' "${fn}" | grep -q 'TYPO3-Instances/primary/composer.tryout.json' \
+    || fail "the panel must read which Core is served from the primary overlay"
+
+  # The branch is still the fallback for a root-pointing overlay, and only that.
+  local branch_line overlay_line
+  overlay_line=$(printf '%s' "${fn}" | grep -n 'composer.tryout.json' | head -1 | cut -d: -f1)
+  branch_line=$(printf '%s' "${fn}" | grep -n 'branch --show-current' | head -1 | cut -d: -f1)
+  [ -n "${branch_line}" ] || fail "the root's branch is still the fallback"
+  [ "${overlay_line}" -lt "${branch_line}" ] \
+    || fail "asking git first is the bug: the overlay decides"
+}
+
+@test "a site's cache is cleared per site, never always the primary's" {
+  set -eu -o pipefail
+  # INSTANCE_DIR is always TYPO3-Instances/primary, but ctr_checkout runs this on
+  # the served-site arm too — so `checkout <branch> --site v13` wiped the PRIMARY's
+  # cache and left v13's stale. reset_core_to_main already does it per site.
+  local fn
+  fn=$(sed -n '/^ctr_checkout()/,/^}/p' "${DIR}/tryout/commands.sh" \
+       | grep -v '^[[:space:]]*#')
+
+  printf '%s' "${fn}" | grep -qE 'rm -rf "\$\{INSTANCE_DIR\}/var/cache"' \
+    && fail "checkout must clear the cache of the site it switched, not the primary's"
+  printf '%s' "${fn}" | grep -q 'site_dir "${site}")/var/cache' \
+    || fail "the cache path must be resolved through site_dir"
+}
+
+@test "site_core_dir follows worktree use for the primary" {
+  set -eu -o pipefail
+  # The primary serves whatever its overlay points at, which `worktree use` moves.
+  # Returning CORE_DIR answers "the root" after a switch — latent today, since every
+  # caller happens to be on a non-primary branch, and a trap for the first one that
+  # is not.
+  local fn
+  fn=$(sed -n '/^site_core_dir()/,/^}/p' "${DIR}/tryout/functions.sh")
+  printf '%s' "${fn}" | grep -q 'active_core_dir' \
+    || fail "the primary's Core is the active one, not CORE_DIR"
+  printf '%s' "${fn}" | grep -qE 'echo "\$\{CORE_DIR\}"' \
+    && fail "CORE_DIR is only the root; it does not follow worktree use"
+  :
+}
+
+@test "uninstalling takes the served-site markers with it" {
+  set -eu -o pipefail
+  # .tryout-site IS the definition of "served" (site_is_served), so a marker left
+  # behind makes a reinstalled add-on believe a site is served that has no vhost,
+  # no grant and no daemon: worktree list prints a URL that 404s.
+  local removal
+  removal=$(sed -n '/^removal_actions:/,$p' "${DIR}/install.yaml")
+
+  printf '%s' "${removal}" | grep -q 'TYPO3-Instances/\*/.tryout-site' \
+    || fail "removal must take the served-site markers"
+  printf '%s' "${removal}" | grep -q 'TYPO3-Instances/\..*settings.php' \
+    || fail "removal must take the settings unserve saved"
+
+  # The instance TREES stay: they hold a site's public/, vendor/ and content, which
+  # is the user's, exactly as packages/ is.
+  printf '%s' "${removal}" | grep -qE 'rm -rf .*TYPO3-Instances/\*[^/]' \
+    && fail "an instance tree is user content; removal must not delete it"
+  :
+}

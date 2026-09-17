@@ -191,6 +191,19 @@ removal_actions:
     fi
 
   - |
+    #ddev-description:Remove the served-site markers
+    # The .tryout-site markers ARE the definition of "served" (site_is_served), so
+    # leaving them behind makes a reinstalled add-on believe sites are served that
+    # have no vhost, no database grant and no daemon: `worktree list` prints URLs
+    # that 404 and write_worktree_config regenerates hostnames for them.
+    #
+    # The instance TREES stay, deliberately: each holds a site's public/, vendor/
+    # and settings.php, which is user content like packages/. Only the add-on's own
+    # state goes — the markers, and the settings unserve saved beside them.
+    rm -f ../TYPO3-Instances/*/.tryout-site 2>/dev/null || true
+    rm -f ../TYPO3-Instances/.*.settings.php 2>/dev/null || true
+
+  - |
     #ddev-description:Remove the generated git excludes
     # Only our own lines, and only from info/exclude — the repo's tracked
     # .gitignore is Core's and was never touched.

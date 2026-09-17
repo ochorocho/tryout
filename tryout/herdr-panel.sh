@@ -115,13 +115,25 @@ refresh_git_info() {
 
 worktree_state() {
     [ -n "${WORKTREE}" ] && [ -n "${APPROOT}" ] || { echo "unserved"; return 0; }
-    # The PRIMARY is the root checkout, named after its branch — there is no
-    # symlink to read any more. A checkout with no branch (detached, or not a repo
-    # at all) falls back to "main", the same default plain_core_name uses, so the
-    # panel and the command agree on which worktree is primary.
-    local active=""
-    active="$(git -C "${APPROOT}" branch --show-current 2>/dev/null)"
-    [ -n "${active}" ] || active="main"
+    # Which checkout the PRIMARY serves, read the same way functions.sh's
+    # active_worktree_name does: from the primary instance's overlay. NOT the root's
+    # branch — `worktree use` repoints the overlay at a worktree and leaves the root
+    # where it was, so the branch keeps answering "the root" and the panel would
+    # then call the wrong checkout primary, offering `composer` against a Core the
+    # root no longer serves. The panel cannot source functions.sh, so this is the
+    # one read it has to duplicate.
+    local active="" url
+    url=$(grep -oE '\.\./\.\./(worktrees/[A-Za-z0-9._-]+/)?typo3/sysext' \
+            "${APPROOT}/TYPO3-Instances/primary/composer.tryout.json" 2>/dev/null | head -1)
+    case "${url}" in
+        */worktrees/*) active=$(printf '%s' "${url}" | sed -E 's|.*/worktrees/([^/]+)/.*|\1|') ;;
+    esac
+    # No overlay, or it names the root: the root is served, and its name is its
+    # branch — falling back to "main" as plain_core_name does.
+    if [ -z "${active}" ]; then
+        active="$(git -C "${APPROOT}" branch --show-current 2>/dev/null)"
+        [ -n "${active}" ] || active="main"
+    fi
     if [ "${WORKTREE}" = "${active}" ]; then
         echo "primary"
     elif [ -f "${APPROOT}/TYPO3-Instances/${WORKTREE}/.tryout-site" ]; then
