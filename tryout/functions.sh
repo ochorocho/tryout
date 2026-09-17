@@ -45,7 +45,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=34
+TRYOUT_VERSION=35
 
 # Core worktrees live INSIDE the clone, under worktrees/<name>. Nested worktrees
 # keep relative metadata on both pointers (worktrees/<n>/.git -> ../../.git/... and
@@ -525,6 +525,8 @@ persist_patches() {
 
 ask_branch() {
     local prompt="$1" branches=(main) b
+    # The list has to exist before it can be offered.
+    ensure_core_branch_refs || true
     while IFS= read -r b; do
         [ -n "${b}" ] && [ "${b}" != "main" ] && branches+=("${b}")
     done < <(list_local_core_branches | sort -rV | awk '/^[0-9]/{print; next}{l=l $0 "\n"} END{printf "%s", l}')
@@ -1311,6 +1313,37 @@ list_local_core_branches() {
     git -C "${CORE_DIR}" for-each-ref --format='%(refname:strip=3)' refs/remotes/origin 2>/dev/null \
         | grep -vx 'HEAD' \
         | sort -V
+}
+
+# Make sure the branch LIST is on disk before something offers it to the user.
+#
+# The clone fetches one branch (`fetch --depth 1 origin <branch>`), because that is
+# all a working instance needs and it keeps the first start quick. But a
+# single-branch fetch writes a single remote-tracking ref, so `refs/remotes/origin/`
+# holds only `main` and every picker built on list_local_core_branches could offer
+# nothing else.
+#
+# So fetch the tips on FIRST NEED instead of at install: ~70s and ~180MB once, for
+# users who actually switch branches, rather than on every `ddev start`. Detected by
+# the ref count rather than a marker file — the refs are the thing we need, so
+# counting them cannot go stale.
+#
+# NEVER call this from the completion script: a TAB must not wait on the network.
+ensure_core_branch_refs() {
+    local n
+    n=$(git -C "${CORE_DIR}" for-each-ref refs/remotes/origin 2>/dev/null | wc -l | tr -d ' ')
+    [ "${n:-0}" -gt 1 ] && return 0
+
+    # stderr: ask_branch returns the picked branch on STDOUT, so a notice there
+    # would be read back as part of the answer — the same reason ui_confirm prompts
+    # to stderr.
+    info "Fetching the branch list (once; the clone only carried one branch)..." >&2
+    if ! git -C "${CORE_DIR}" fetch --depth 1 origin '+refs/heads/*:refs/remotes/origin/*' \
+           >/dev/null 2>&1; then
+        warn "Could not fetch the branch list — only the current branch is offered" >&2
+        return 1
+    fi
+    return 0
 }
 
 # --- herdr integration -----------------------------------------------------

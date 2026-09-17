@@ -346,6 +346,9 @@ cmd_checkout() {
         echo "  ddev tryout checkout 13.4     # v13 LTS"
         echo "  ddev tryout checkout 12.4     # v12 LTS"
         echo ""
+        # Fetch the list first: the clone carries one branch, so without this the
+        # "known locally" list would be that one branch and look broken.
+        ensure_core_branch_refs >/dev/null 2>&1 || true
         echo "Branches known locally:"
         list_local_core_branches | sed 's/^/  /'
         return 1

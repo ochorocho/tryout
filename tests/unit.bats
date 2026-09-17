@@ -1423,6 +1423,7 @@ FAKE
   # A fake list_local_core_branches; ask_branch only orders what it gets.
   run helper_eval '
     list_local_core_branches() { printf "%s\n" 9.5 TYPO3_8-7 13.4 main 14.3 12.4; }
+    ensure_core_branch_refs() { :; }
     ui_choose() { shift; printf "%s\n" "$@"; }
     ask_branch "which?"'
   assert_success
@@ -5660,4 +5661,42 @@ FAKE
     || fail "a collision must name the worktree that holds the branch"
   printf '%s' "${fn}" | grep -q -- '--detach' \
     || fail "the collision message must offer a way through"
+}
+
+@test "the branch picker has a list to offer after a one-branch clone" {
+  set -eu -o pipefail
+  # clone_core_into_root fetches ONE branch (`fetch --depth 1 origin <branch>`),
+  # which writes ONE remote-tracking ref — so refs/remotes/origin/ held only `main`
+  # and every picker built on list_local_core_branches could offer nothing else.
+  # Measured on a clean clone: 1 ref instead of 43.
+  local fn
+  fn=$(sed -n '/^ask_branch()/,/^}/p' "${DIR}/tryout/functions.sh")
+  printf '%s' "${fn}" | grep -q 'ensure_core_branch_refs' \
+    || fail "the picker must make sure the list exists before offering it"
+
+  fn=$(sed -n '/^ensure_core_branch_refs()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#')
+  # All heads, and still shallow: the tips are the list, the history is not wanted.
+  printf '%s' "${fn}" | grep -q "refs/heads/\*:refs/remotes/origin/\*" \
+    || fail "it must fetch every head, not one"
+  printf '%s' "${fn}" | grep -q -- '--depth 1' \
+    || fail "the tips are enough; full history would cost minutes"
+
+  # Gated on the ref COUNT, so it runs once and cannot go stale the way a marker
+  # file would — and so `ddev start` keeps paying only for the one branch it needs.
+  printf '%s' "${fn}" | grep -qE 'for-each-ref refs/remotes/origin' \
+    || fail "the guard must count the refs it is there to provide"
+  printf '%s' "${fn}" | grep -qE '\-gt 1 \] && return 0' \
+    || fail "more than one ref means the list is already there"
+}
+
+@test "completion never waits on the network for branches" {
+  set -eu -o pipefail
+  # DDEV runs the completion script on every TAB and drops all candidates if it
+  # exits non-zero; a network call there would stall the shell. It shares
+  # list_local_core_branches with the picker but must not share the fetch.
+  run grep -q 'ensure_core_branch_refs' "${DIR}/commands/host/autocomplete/tryout"
+  assert_failure
+  run grep -qE '^[^#]*git (ls-remote|fetch)' "${DIR}/commands/host/autocomplete/tryout"
+  assert_failure
 }
