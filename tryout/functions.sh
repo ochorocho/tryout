@@ -45,7 +45,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=35
+TRYOUT_VERSION=36
 
 # Core worktrees live INSIDE the clone, under worktrees/<name>. Nested worktrees
 # keep relative metadata on both pointers (worktrees/<n>/.git -> ../../.git/... and
@@ -109,6 +109,18 @@ db_root_sql() {
         PGPASSWORD=db psql -h db -U db -d postgres -tAc "$1"
     else
         mysql -h db -uroot -proot -e "$1"
+    fi
+}
+
+# Run SQL against a SPECIFIC database, root-owned. db_root_sql connects to the
+# server's default (postgres / no db), which is right for CREATE DATABASE but not
+# for touching a site's own tables — every served site has its own db.
+db_site_sql() {
+    local db="$1" sql="$2"
+    if db_is_postgres; then
+        PGPASSWORD=db psql -h db -U db -d "${db}" -tAc "${sql}"
+    else
+        mysql -h db -uroot -proot -D "${db}" -e "${sql}"
     fi
 }
 
@@ -2619,6 +2631,58 @@ setup_site_typo3() {
         site_exec "${name}" vendor/bin/typo3 setup --no-interaction --force "--server-type=${server_type}" \
         || { error "TYPO3 setup failed for ${name}"; return 1; }
     success "Site '${name}' set up"
+
+    # A bare `typo3 setup` builds only the backend, so / would 404. Give the site a
+    # rendered frontend too — only after a REAL first setup: the early returns above
+    # (already configured, restored from a kept database) skip this, and their
+    # frontend is already there.
+    setup_site_frontend "${name}"
+}
+
+# Give a freshly set-up site a frontend that renders at its URL.
+#
+# EXT:styleguide's `frontend` generator (13.4+) is the richer option — a full demo
+# page tree with content. 12.4's styleguide has no CLI generator, so there it falls
+# back to TYPO3's own `setup --create-site`, a plain Home page. Which one is decided
+# by probing for the command, never by a version number.
+#
+# Best-effort throughout: the backend already works, so a frontend that will not
+# generate is a warning, never a failure of serve/start. Every DB write is gated on
+# the generate having succeeded, so a probe miss cannot touch a working install.
+setup_site_frontend() {
+    local name="$1" db
+    db=$(site_database "${name}")
+
+    # EXT:styleguide's frontend generator (13.4+) builds a full demo page tree with
+    # content and its own site configuration. 12.4's styleguide has no CLI
+    # generator, so there the frontend is left unprovisioned and the backend is all
+    # a bare instance serves — TYPO3's own `setup --create-site` was tried and
+    # produces a site 12.4 renders as "Page Not Found", so it is not a usable
+    # fallback. The choice is made by probing for the command, never a version.
+    #
+    # Best-effort: the backend already works, so a frontend that will not generate
+    # is a note, never a failure of serve/start. Every DB write is gated on the
+    # generate having succeeded, so a probe miss cannot touch a working install.
+    if ! site_exec "${name}" vendor/bin/typo3 help styleguide:generate >/dev/null 2>&1; then
+        info "No frontend generator for this TYPO3 version — '${name}' serves the backend only"
+        return 0
+    fi
+
+    info "Generating a styleguide demo frontend for '${name}'..."
+    if ! site_exec "${name}" vendor/bin/typo3 styleguide:generate frontend --create >/dev/null 2>&1; then
+        warn "styleguide frontend generation failed for '${name}' — backend still works"
+        return 0
+    fi
+
+    # The generator makes the site root HIDDEN (no CLI flag to change that), so an
+    # anonymous visitor gets a 404 until it is unhidden. The marker column
+    # identifies exactly styleguide's own root, so nothing else is touched — and
+    # against the site's OWN database, not the server default.
+    db_site_sql "${db}" \
+        "UPDATE pages SET hidden=0 WHERE is_siteroot=1 AND tx_styleguide_containsdemo='tx_styleguide_frontend_root'" \
+        >/dev/null 2>&1 || warn "Could not reveal the styleguide frontend page for '${name}'"
+    site_exec "${name}" vendor/bin/typo3 cache:flush >/dev/null 2>&1 || true
+    success "Frontend ready for '${name}' (styleguide demo)"
 }
 
 # What `delete` is about to destroy, one line per site. The host prints it before

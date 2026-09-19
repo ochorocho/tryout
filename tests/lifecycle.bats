@@ -34,6 +34,31 @@ assert_backend_loads() {
   assert_output --partial "<title>TYPO3 CMS Login"
 }
 
+# The frontend renders a real TYPO3 page, where the add-on could provision one.
+# On 13.4+ the styleguide generator builds a demo; discover its base from the
+# generated site config and assert the page is TYPO3-rendered. A version without
+# the generator (12.4) has no styleguide config, so this skips rather than fails —
+# the backend is all such an instance serves.
+assert_frontend_renders() {
+  local host="$1" instdir="$2"
+  # The styleguide config is the one naming typo3/styleguide as a dependency; print
+  # its base. grep -l finds that file, sed reads its base — no nested quoting.
+  local cfg base=""
+  cfg="$(grep -lR 'typo3/styleguide' "${instdir}/config/sites" 2>/dev/null | head -1)"
+  [ -n "${cfg}" ] && base="$(sed -n 's/^base: *//p' "${cfg}" | head -1)"
+  [ -n "${base}" ] || skip "no styleguide frontend on this TYPO3 version (backend only)"
+  case "${base}" in */) ;; *) base="${base}/" ;; esac
+
+  local url="https://${host}${base}"
+  curl -sfI --max-time 10 "${url}" >/dev/null 2>&1 || {
+    case "$?" in 6) skip "${url} does not resolve — no /etc/hosts entry (needs sudo)" ;; esac
+  }
+  run curl -sf --max-time 30 "${url}"
+  assert_success
+  # TYPO3 stamps every rendered page with this meta generator.
+  assert_output --partial "TYPO3"
+}
+
 # The inverse: an unserved hostname must stop answering entirely.
 assert_backend_gone() {
   local url="$1"
@@ -68,20 +93,24 @@ addon_start() {
 
   # The overlay was generated from the sysexts actually on disk. It ships empty,
   # so a populated require block proves sync-composer.php ran before install.
-  run bash -c "grep -c 'typo3/cms-' '${TESTDIR}/composer.tryout.json'"
+  run bash -c "grep -c 'typo3/cms-' '${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json'"
   assert_success
   [ "${output}" -gt 20 ]
 
-  # The user's composer.json is still absent — we never created one.
-  assert_file_not_exist "${TESTDIR}/composer.json"
+  # The user's own composer.json is still absent — we never created one. (The
+  # composer.json at the project root is Core's own; the instance's is the overlay.)
+  assert_file_not_exist "${TESTDIR}/TYPO3-Instances/primary/composer.json"
 
   # Dependencies resolved through the path repository, as symlinks into the clone.
-  assert_dir_exist "${TESTDIR}/vendor/typo3/cms-core"
-  assert_file_exist "${TESTDIR}/vendor/bin/typo3"
+  assert_dir_exist "${TESTDIR}/TYPO3-Instances/primary/vendor/typo3/cms-core"
+  assert_file_exist "${TESTDIR}/TYPO3-Instances/primary/vendor/bin/typo3"
 
   # TYPO3 was set up and answers on the backend.
-  assert_file_exist "${TESTDIR}/config/system/settings.php"
+  assert_file_exist "${TESTDIR}/TYPO3-Instances/primary/config/system/settings.php"
   assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
+
+  # The add-on provisions a frontend too (styleguide demo on 13.4+); it renders.
+  assert_frontend_renders "${PROJNAME}.ddev.site" "${TESTDIR}/TYPO3-Instances/primary"
 
   # And the status command reflects all of it.
   run ddev tryout status
@@ -110,11 +139,11 @@ addon_start() {
   assert_output --partial "TYPO3 CMS 13.4"
 
   # theme-camino only exists on main/v14+, so the overlay must have dropped it.
-  run grep -q 'typo3/theme-camino' "${TESTDIR}/composer.tryout.json"
+  run grep -q 'typo3/theme-camino' "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
   assert_failure
 
   # The merge-plugin wiring must survive regeneration.
-  run grep -q 'wikimedia/composer-merge-plugin' "${TESTDIR}/composer.tryout.json"
+  run grep -q 'wikimedia/composer-merge-plugin' "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
   assert_success
 
   assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
@@ -295,7 +324,12 @@ addon_start() {
 # bats test_tags=lifecycle
 @test "an existing project keeps its own dependencies alongside Core" {
   set -eu -o pipefail
-  cat > "${TESTDIR}/composer.json" <<'JSON'
+  # The user's own composer.json lives beside the instance overlay, which merges
+  # it — TYPO3-Instances/primary/composer.json. It must be created before the
+  # add-on runs, so write it after config but the harness's addon_start does both;
+  # create the dir and file here, then start.
+  mkdir -p "${TESTDIR}/TYPO3-Instances/primary"
+  cat > "${TESTDIR}/TYPO3-Instances/primary/composer.json" <<'JSON'
 {
     "name": "acme/site",
     "require": { "psr/log": "^3.0" }
@@ -304,11 +338,11 @@ JSON
   addon_start
 
   # The user's requirement resolved through the merge-plugin include...
-  assert_dir_exist "${TESTDIR}/vendor/psr/log"
+  assert_dir_exist "${TESTDIR}/TYPO3-Instances/primary/vendor/psr/log"
   # ...alongside Core, from the path repository.
-  assert_dir_exist "${TESTDIR}/vendor/typo3/cms-core"
+  assert_dir_exist "${TESTDIR}/TYPO3-Instances/primary/vendor/typo3/cms-core"
   # ...and their file was never written to.
-  run grep -q 'typo3/cms-core' "${TESTDIR}/composer.json"
+  run grep -q 'typo3/cms-core' "${TESTDIR}/TYPO3-Instances/primary/composer.json"
   assert_failure
 }
 

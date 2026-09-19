@@ -5700,3 +5700,51 @@ FAKE
   run grep -qE '^[^#]*git (ls-remote|fetch)' "${DIR}/commands/host/autocomplete/tryout"
   assert_failure
 }
+
+@test "setup_site_frontend probes for styleguide, gates DB writes on the generate, and is version-agnostic" {
+  set -eu -o pipefail
+  # A bare typo3 setup builds only the backend, so the site provisions a frontend
+  # with EXT:styleguide's generator where it exists (13.4+). It must decide by
+  # PROBING for the command, never by matching a version number, and it must never
+  # touch the database unless the generate actually succeeded.
+  local fn
+  fn=$(sed -n '/^setup_site_frontend()/,/^}/p' "${DIR}/tryout/functions.sh" \
+       | grep -v '^[[:space:]]*#')
+
+  # Capability probe, not a version check.
+  printf '%s' "${fn}" | grep -q 'help styleguide:generate' \
+    || fail "the frontend step must probe for the styleguide command"
+  printf '%s' "${fn}" | grep -qE '1[234]\.4|version.*=' \
+    && fail "the choice must be made by probing, not by matching a version"
+
+  # No generator -> return cleanly, no DB write. The early return sits before any
+  # generate or db_site_sql.
+  local skip_line gen_line db_line
+  skip_line=$(printf '%s' "${fn}" | grep -n 'return 0' | head -1 | cut -d: -f1)
+  gen_line=$(printf '%s' "${fn}" | grep -n 'styleguide:generate frontend --create' | head -1 | cut -d: -f1)
+  db_line=$(printf '%s' "${fn}" | grep -n 'db_site_sql' | head -1 | cut -d: -f1)
+  [ -n "${gen_line}" ] || fail "it must run the styleguide frontend generator"
+  [ -n "${db_line}" ] || fail "it must reveal the hidden styleguide root"
+  [ "${skip_line}" -lt "${gen_line}" ] \
+    || fail "a missing generator must return before generating"
+  [ "${gen_line}" -lt "${db_line}" ] \
+    || fail "the DB write must come after — and be gated on — the generate"
+
+  # The unhide targets the site's OWN database and exactly styleguide's own root.
+  printf '%s' "${fn}" | grep -q 'db_site_sql "${db}"' \
+    || fail "the unhide must run against the site's own database, not the default"
+  printf '%s' "${fn}" | grep -q "tx_styleguide_containsdemo='tx_styleguide_frontend_root'" \
+    || fail "the unhide must match styleguide's root marker, nothing broader"
+}
+
+@test "db_site_sql targets a named database on both engines" {
+  set -eu -o pipefail
+  # db_root_sql connects to the server default (postgres / no db), right for CREATE
+  # DATABASE but wrong for a site's own tables — every served site has its own db.
+  local fn
+  fn=$(sed -n '/^db_site_sql()/,/^}/p' "${DIR}/tryout/functions.sh")
+  printf '%s' "${fn}" | grep -q 'psql -h db -U db -d "${db}"' \
+    || fail "postgres must connect to the named database"
+  printf '%s' "${fn}" | grep -q 'mysql -h db -uroot -proot -D "${db}"' \
+    || fail "mysql must select the named database"
+}

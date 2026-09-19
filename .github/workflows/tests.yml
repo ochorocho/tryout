@@ -115,6 +115,51 @@ jobs:
           addon_ref: ${{ env.GITHUB_REF }}
           test_command: bats tests/lifecycle.bats
 
+  # Browser tests: does each served worktree URL really render a frontend and log
+  # into its backend? A URL returning 200 does not prove either. Gated like
+  # lifecycle — scheduled and on demand only — because it clones Core, provisions a
+  # project and downloads a browser. The bats suites are the every-push gate.
+  #
+  # Self-provisioned rather than via the add-on-test action: the browser suite lives
+  # in tests/e2e (not shipped into a project), so the checkout is the working dir
+  # and the project is created here, the same way tests/lifecycle.bats does.
+  e2e:
+    name: browser e2e (${{ matrix.ddev_version }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install DDEV
+        run: |
+          curl -fsSL https://ddev.com/install.sh | bash
+          mkcert -install 2>/dev/null || true
+
+      - name: Provision a project with two served worktrees
+        run: |
+          set -e
+          PROJECT="$RUNNER_TEMP/tryout-e2e"
+          mkdir -p "$PROJECT" && cd "$PROJECT"
+          ddev config --project-name=tryout-e2e --project-tld=ddev.site \
+            --project-type=typo3 --docroot=TYPO3-Instances/primary/public --php-version=8.5
+          ddev add-on get "$GITHUB_WORKSPACE"
+          ddev start -y
+          # A 13.4 secondary: renders a styleguide frontend and logs in, so the
+          # multi-site checks have two real URLs to compare.
+          ddev tryout worktree add v13 13.4
+          ddev tryout worktree serve v13
+          ddev restart -y
+          echo "TRYOUT_PROJECT=$PROJECT" >> "$GITHUB_ENV"
+
+      - name: Run the browser suite
+        working-directory: tests/e2e
+        run: |
+          set -e
+          npm ci || npm install
+          npx playwright install --with-deps chromium
+          npx playwright test
+
   # The published release, checked nightly so a broken tag is caught even when
   # nobody pushes.
   release:

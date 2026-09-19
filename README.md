@@ -28,11 +28,13 @@ On the first run this will:
 
 1. Clone the TYPO3 Core repository into the project root
 2. Resolve every Core system extension through Composer
-3. Set up a TYPO3 instance
+3. Set up a TYPO3 instance, with a rendered frontend
 
-Once finished, open the backend:
+Once finished, open the frontend or the backend:
 
-- **URL:** `https://my-typo3-site.ddev.site/typo3/`
+- **Frontend:** a styleguide demo page (TYPO3 13.4+; a 12.4 instance serves the
+  backend only)
+- **Backend:** `https://my-typo3-site.ddev.site/typo3/`
 - **User:** `admin` / `Password.1`
 
 To update the add-on later, run `ddev add-on get bmack/tryout` again; to remove it,
