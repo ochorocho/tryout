@@ -4190,6 +4190,19 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
   printf '%s' "${fn}" | grep -q 'site_saved_settings' \
     || fail "the preserved settings.php must be restored"
 
+  # Tables but NO saved settings must REFUSE, not fall through to `typo3 setup` —
+  # which is guaranteed to fail on a populated database ("contains already N
+  # tables"). The block that warns and the setup that follows are separated by a
+  # `return 1`, so setup never runs on a database it cannot use.
+  #
+  # Pin it by position: the has-tables block must contain a `return 1` before the
+  # `typo3 setup` line. Strip to the has-tables block and check it returns.
+  local has_tables_block
+  has_tables_block=$(printf '%s' "${fn}" \
+    | sed -n '/site_database_has_tables/,/vendor\/bin\/typo3 setup/p')
+  printf '%s' "${has_tables_block}" | grep -q 'return 1' \
+    || fail "tables with no saved settings must refuse before running setup"
+
 
   # unserve preserves it only when the database survives — dropping the database
   # makes the old settings meaningless.

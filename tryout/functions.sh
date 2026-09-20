@@ -2567,11 +2567,13 @@ setup_site_typo3() {
             fi
         fi
         # Tables but nothing to restore: a site unserved before this existed, or a
-        # database from somewhere else. TYPO3's own setup refuses this, so say why
-        # before it does rather than leaving the user with its bare error.
-        warn "Database $(site_database "${name}") already holds an install, and there is"
-        warn "no saved settings.php for '${name}' to go with it."
-        warn "  → ddev tryout worktree unserve ${name} --drop-db   then serve again"
+        # database from somewhere else. TYPO3's own setup refuses a populated
+        # database ("contains already N tables"), so running it here is guaranteed
+        # to fail — stop with the fix instead of letting setup emit its bare error.
+        error "Database $(site_database "${name}") already holds an install, and there is"
+        error "no saved settings.php for '${name}' to go with it."
+        error "  → ddev tryout worktree unserve ${name} --drop-db   then serve again"
+        return 1
     fi
 
     driver="mysqli"
