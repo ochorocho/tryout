@@ -45,7 +45,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=36
+TRYOUT_VERSION=37
 
 # Core worktrees live INSIDE the clone, under worktrees/<name>. Nested worktrees
 # keep relative metadata on both pointers (worktrees/<n>/.git -> ../../.git/... and
@@ -973,23 +973,21 @@ migrate_core_to_worktree_layout() {
     return 0
 }
 
-# Create a sibling worktree on a branch of its own, named after the worktree.
+# Create a sibling worktree, always DETACHED at origin/<base>.
 #
-# Not named after the base: git allows one worktree per branch, so a second
-# checkout off main would fail with "'main' is already used by worktree at …".
-# The worktree's own name is unique by construction.
+# No local branch is created, deliberately. A branch bought nothing here and cost
+# a great deal: git allows one worktree per branch, so two worktrees off the same
+# base collided ("A branch 'main' already exists"); a removed worktree left its
+# branch behind, blocking re-creation of the same name; and composer derives a
+# path repository's version from the branch name, so the branch HAD to be named
+# after the base (dev-main → 13.4.x-dev), never the worktree. All of that is gone
+# with a detached HEAD: nothing to collide, nothing left behind, and composer
+# resolves the version from the checked-out commit's description against the base.
 #
-# --track records the base as the branch's upstream, which is the only place it
-# survives: BRANCH is read from `branch --show-current`, and that returns the
-# WORKTREE's name here, not the base — so `origin/<name>` does not exist and
-# anything that pulls or resets would fail without it. With the upstream set, a
-# bare `git rebase` finds the base on its own.
-#
-# --detach is still available for a throwaway checkout. Gerrit does not care
-# either way: pushes go to refs/for/<branch> from HEAD, never from a local
-# branch. A branch is for not losing work that has not been pushed yet.
+# Gerrit does not care: pushes go to refs/for/<branch> from HEAD, never from a
+# local branch. Work that must survive is pushed, not kept on a local ref.
 add_core_worktree() {
-    local name="$1" branch="${2:-${BRANCH}}" attach="${3:-true}" dir
+    local name="$1" branch="${2:-${BRANCH}}" dir
     validate_worktree_name "${name}" || return 1
     dir=$(core_worktree_dir "${name}")
 
@@ -1022,52 +1020,7 @@ add_core_worktree() {
     fi
 
     info "Creating worktree '${name}' at origin/${branch}..."
-    if [ "${attach}" = "true" ]; then
-        # The branch is named after the BASE BRANCH, not the worktree. Composer
-        # derives a path repository's version from the branch name, and the sysexts
-        # alias only the real ones (dev-main -> 13.4.x-dev on 13.4): a branch called
-        # `v13` becomes dev-v13, matches no alias, and `worktree use`/`serve` then
-        # fail with "requires typo3/cms-backend 13.4.*@dev … has higher repository
-        # priority". The directory still goes by the name the user chose.
-        local wt_branch="${branch}"
-        # A name already taken would be silently reset by -B, losing whatever it
-        # pointed at.
-        if git -C "${main_dir}" show-ref -q --verify "refs/heads/${wt_branch}"; then
-            error "A branch '${wt_branch}' already exists"
-            # Say WHICH case this is, but change nothing: a command that failed
-            # must not quietly delete a ref on the way out. A branch left over
-            # from a removed worktree looks like nothing at all — the folder is
-            # gone — so the bare message sends people hunting for a directory that
-            # is not there. Name the one command that clears it.
-            # Most often this is simply a second worktree off the same base, now
-            # that the branch is named after the base: the first one holds it.
-            local holder
-            holder=$(git -C "${main_dir}" worktree list --porcelain 2>/dev/null \
-                | awk -v b="refs/heads/${wt_branch}" '
-                    /^worktree /{w=substr($0,10)} $0=="branch "b{print w; exit}')
-            if [ -n "${holder}" ]; then
-                error "  it is checked out in $(basename "${holder}")"
-                error "  → ddev tryout worktree add ${name} ${branch} --detach"
-                error "  → or work in that worktree: ddev tryout herdr $(basename "${holder}")"
-                return 1
-            fi
-            if [ ! -d "${dir}" ]; then
-                error "  (its worktree is gone; the branch outlived it)"
-                if git -C "${main_dir}" merge-base --is-ancestor \
-                     "refs/heads/${wt_branch}" "origin/${branch}" 2>/dev/null; then
-                    error "  → nothing unmerged on it: git -C ${main_dir} branch -d ${wt_branch}"
-                else
-                    error "  → it has unmerged commits: git -C ${main_dir} branch -D ${wt_branch}"
-                fi
-            fi
-            error "  → ddev tryout worktree add ${name} ${branch} --detach"
-            return 1
-        fi
-        git -C "${main_dir}" worktree add -B "${wt_branch}" --track \
-            "${dir}" "origin/${branch}" || return 1
-    else
-        git -C "${main_dir}" worktree add --detach "${dir}" "origin/${branch}" || return 1
-    fi
+    git -C "${main_dir}" worktree add --detach "${dir}" "origin/${branch}" || return 1
     success "Worktree '${name}' created"
 }
 

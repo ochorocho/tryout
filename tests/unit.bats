@@ -3012,32 +3012,33 @@ panel_menu() { # $1=worktree $2=approot
     || fail "an unserved panel must offer the way to give it a site"
 }
 
-@test "a new worktree gets a branch named after its base, tracking it" {
+@test "a new worktree is always created detached, with no local branch" {
   set -eu -o pipefail
-  # Named after the BASE BRANCH, not the worktree. Composer derives a path
-  # repository's version from the branch name and the sysexts alias only the real
-  # ones, so a branch called `v13` becomes dev-v13, matches no alias, and
-  # `worktree use`/`serve` fail to resolve — see the dedicated test below.
-  #
-  # The cost is accepted deliberately: git allows one worktree per branch, so a
-  # SECOND checkout off the same base now collides and is refused with the name of
-  # the worktree holding it plus --detach as the way through. --track still records
-  # the base, which is what anything reading `branch --show-current` needs.
+  # Detached at origin/<base>, always. A local branch bought nothing and cost a
+  # lot: git allows one worktree per branch, so two off the same base collided; a
+  # removed worktree left its branch behind, blocking re-creation; and composer's
+  # branch-alias forced the branch to be named after the base, never the worktree.
+  # A detached HEAD has none of those failure modes, and composer still resolves
+  # the version from the checked-out commit.
   local fn
   fn=$(sed -n '/^add_core_worktree()/,/^}/p' "${DIR}/tryout/functions.sh")
 
-  printf '%s' "${fn}" | grep -q 'worktree add -B "${wt_branch}" --track' \
-    || fail "the branch must be named after the base and track it"
-  printf '%s' "${fn}" | grep -q 'attach="${3:-true}"' \
-    || fail "a branch is the default now; --detach opts out"
-  # Re-using a name would be silently reset by -B, losing what it pointed at.
-  printf '%s' "${fn}" | grep -q 'refs/heads/${wt_branch}' \
-    || fail "an existing branch of that name must be refused, not reset"
+  # Exactly one worktree-add, and it detaches.
+  printf '%s' "${fn}" | grep -q 'worktree add --detach "${dir}" "origin/${branch}"' \
+    || fail "creation must be a detached checkout at origin/<base>"
+  # No branch is ever created or reset.
+  ! printf '%s' "${fn}" | grep -q -- '-B ' \
+    || fail "a detached worktree must never create a branch"
+  ! printf '%s' "${fn}" | grep -q 'attach=' \
+    || fail "there is no attach mode any more"
+  ! printf '%s' "${fn}" | grep -q 'refs/heads/' \
+    || fail "creation must not touch any local branch ref"
 
-  # --detach still reaches the detaching path.
-  printf '%s' "${fn}" | grep -q 'worktree add --detach' \
-    || fail "--detach must still be possible"
-  run grep -q -- '--detach)  attach="false"' "${DIR}/tryout/commands.sh"
+  # --detach on the command line is accepted but does nothing (it is the default).
+  run grep -q -- '--detach)  ;;' "${DIR}/tryout/commands.sh"
+  assert_success
+  # The call site no longer passes an attach argument.
+  run grep -q 'add_core_worktree "${name}" "${branch:-${BRANCH}}" ||' "${DIR}/tryout/commands.sh"
   assert_success
 }
 
@@ -4189,6 +4190,7 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
   printf '%s' "${fn}" | grep -q 'site_saved_settings' \
     || fail "the preserved settings.php must be restored"
 
+
   # unserve preserves it only when the database survives — dropping the database
   # makes the old settings meaningless.
   printf '%s' "${un}" | grep -q 'site_saved_settings' \
@@ -5311,29 +5313,6 @@ FAKE
     || fail "a kept branch must say why it was kept"
 }
 
-@test "a leftover branch explains itself when it blocks a new worktree" {
-  set -eu -o pipefail
-  # The folder is gone, so "A branch 'x' already exists" sends people hunting for
-  # a directory that is not there. Name the case and the command that clears it —
-  # but change nothing: a command that FAILED must not delete a ref on its way out.
-  local fn
-  fn=$(sed -n '/^add_core_worktree()/,/^}/p' "${DIR}/tryout/functions.sh")
-
-  printf '%s' "${fn}" | grep -q 'its worktree is gone; the branch outlived it' \
-    || fail "the message must say the worktree is gone, not just that a branch exists"
-  printf '%s' "${fn}" | grep -qE 'branch -d \$\{name\}|branch -d \$\{name\}' \
-    || printf '%s' "${fn}" | grep -q 'branch -d' \
-    || fail "it must name the command that clears a spent branch"
-
-  # Advisory only. `branch -d` inside this error path would mutate state on a
-  # failed command; only merge-base (a read) may be used to pick the wording.
-  local acts
-  acts=$(printf '%s' "${fn}" | grep -E '^\s*(if )?git -C .* branch (-d|-D) ' \
-         | grep -v 'error ' || true)
-  [ -z "${acts}" ] \
-    || fail "add must not delete a branch while failing: ${acts}"
-}
-
 @test "the Gerrit port probe does not use bash /dev/tcp" {
   set -eu -o pipefail
   # macOS SIGKILLs a shell that opens /dev/tcp to an EXTERNAL host — verified:
@@ -5637,30 +5616,23 @@ FAKE
   :
 }
 
-@test "a worktree's branch is named after its base, so composer can resolve it" {
+@test "a detached worktree still resolves against composer's branch alias" {
   set -eu -o pipefail
-  # Composer derives a path repository's version from the BRANCH name, and the
-  # sysexts alias only the real ones (dev-main -> 13.4.x-dev on 13.4). A branch
-  # named after the worktree becomes dev-<name>, matches no alias, and `worktree
-  # use`/`serve` then fail with "requires typo3/cms-backend 13.4.*@dev … has higher
-  # repository priority" — three commands after the one that caused it.
+  # This used to require a local branch named after the BASE (dev-main → 13.4.x-dev),
+  # because composer derives a path repository's version from the branch name. A
+  # detached HEAD at origin/<base> resolves the same way — composer describes the
+  # checked-out commit against the base — so no branch is created, and the whole
+  # class of branch-name collisions is gone with it.
   local fn
   fn=$(sed -n '/^add_core_worktree()/,/^}/p' "${DIR}/tryout/functions.sh" \
        | grep -v '^[[:space:]]*#')
 
-  printf '%s' "${fn}" | grep -q 'local wt_branch="${branch}"' \
-    || fail "the branch must take the BASE branch's name, not the worktree's"
-  printf '%s' "${fn}" | grep -q 'worktree add -B "${wt_branch}"' \
-    || fail "the checkout must be created on that branch"
-  printf '%s' "${fn}" | grep -qE 'worktree add -B "\$\{name\}"' \
-    && fail "naming the branch after the worktree is what composer cannot resolve"
-
-  # A second worktree off the same base now collides, so the error has to name the
-  # worktree holding it rather than leaving the user to guess.
-  printf '%s' "${fn}" | grep -q 'it is checked out in' \
-    || fail "a collision must name the worktree that holds the branch"
-  printf '%s' "${fn}" | grep -q -- '--detach' \
-    || fail "the collision message must offer a way through"
+  printf '%s' "${fn}" | grep -q 'worktree add --detach "${dir}" "origin/${branch}"' \
+    || fail "creation must detach at origin/<base>, which composer can resolve"
+  ! printf '%s' "${fn}" | grep -q -- '-B ' \
+    || fail "no local branch may be created"
+  ! printf '%s' "${fn}" | grep -q 'it is checked out in' \
+    || fail "there is no branch to collide, so no collision message"
 }
 
 @test "the branch picker has a list to offer after a one-branch clone" {

@@ -425,8 +425,10 @@ cmd_worktree() {
             while [ $# -gt 0 ]; do
                 case "$1" in
                     --herdr)   in_herdr="true" ;;
-                    # --branch is the old spelling of the default; still taken so
-                    # an existing habit or script does not start erroring.
+                    # --detach and --branch are both no-ops now: worktrees are
+                    # always detached. Still accepted so an existing habit or
+                    # script does not start erroring. --detach is forwarded (the
+                    # container swallows it); --branch is dropped here.
                     --branch)  ;;
                     --detach|--serve) flags+=("$1") ;;
                     --no-restart) TRYOUT_NO_RESTART=1 ;;
@@ -442,7 +444,7 @@ cmd_worktree() {
             # Guided: no name means ask for it.
             if [ -z "${name}" ]; then
                 name="$(ask_text "Name for the new worktree (becomes worktrees/<name>)" "e.g. bugfix-12345")" \
-                    || { explain_missing "ddev tryout worktree add <name> [<branch>] [--branch] [--serve] [--php 8.2] [--herdr]"; return 1; }
+                    || { explain_missing "ddev tryout worktree add <name> [<branch>] [--serve] [--php 8.2] [--herdr]"; return 1; }
             fi
             validate_worktree_name "${name}" || return 1
             # The branch is asked for whether or not the name came from the command
@@ -692,8 +694,7 @@ cmd_worktree() {
             echo -e "  ${BOLD}adopt [<path> [<name>]]${NC} Move stray checkouts in (bare: pick from a list)"
             echo -e "  ${BOLD}rename <old> <new>${NC}      Rename a checkout (the branch is untouched)"
             echo ""
-            echo "  Flags: --detach    (add: no branch, just a checkout)"
-            echo "         --serve     (add: serve it immediately)"
+            echo "  Flags: --serve     (add: serve it immediately)"
             echo "         --herdr     (add: open it as a herdr workspace)"
             echo "         --php 8.2   (add/serve: run this site on another PHP version)"
             echo "         --force     (remove: also drop an unmerged branch)"

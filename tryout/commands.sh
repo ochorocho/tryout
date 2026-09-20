@@ -176,14 +176,15 @@ ctr_download() {
             return 1
         fi
         CORE_DIR="$(site_core_dir "${site}")"
-        # An attached worktree carries its own branch name; the base it tracks is
-        # what to update from. A detached one, or one made before tracking was
-        # recorded, has to have its base detected instead.
+        # Worktrees are detached, so there is no upstream to read the base from —
+        # detect_detached_base_branch does it. The upstream read stays first for a
+        # legacy worktree created attached (before detach-only), which still tracks
+        # a base; a detached HEAD simply has none and falls through.
         #
         # `|| true` is load-bearing: rev-parse EXITS 128 when there is no
         # upstream, and under `set -e` that killed the command before the
-        # fallback below could run — the failure a worktree created earlier hits
-        # every time.
+        # fallback below could run — the failure a detached worktree hits every
+        # time.
         BRANCH="$(git -C "${CORE_DIR}" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)"
         BRANCH="${BRANCH#origin/}"
         [ -n "${BRANCH}" ] || BRANCH="$(detect_detached_base_branch)"
@@ -225,13 +226,16 @@ ctr_download() {
 
     local current_branch
     current_branch=$(git -C "${CORE_DIR}" branch --show-current)
-    # A worktree branch is named after the WORKTREE and tracks the base, so its
-    # name does not match BRANCH and must not be expected to. What matters is
-    # that there is a branch at all: a detached checkout has nothing to rebase.
+    # Worktrees are detached, so update mode (a rebase onto the base) has no local
+    # branch to rebase — which is by design. Updating a detached checkout means
+    # resetting it to origin/<base>, and `--reset` does exactly that; refusing
+    # here rather than resetting silently protects an unpushed commit sitting on
+    # the detached HEAD. (The primary and any legacy attached worktree still
+    # rebase below.)
     if [ -z "${current_branch}" ]; then
-        error "Detached checkout — nothing to update from"
-        error "  → ddev tryout checkout <branch>${site_arg:+ --site ${site}}"
-        error "  → or start over: ddev tryout download${site_arg} --reset"
+        error "Detached checkout — update means resetting it to origin/${BRANCH}"
+        error "  → ddev tryout download${site_arg} --reset   (discards local changes)"
+        error "  → or switch version: ddev tryout checkout <branch>${site_arg:+ --site ${site}}"
         exit 1
     fi
 
@@ -539,12 +543,11 @@ ctr_worktree() {
 
     case "${sub}" in
         add)
-            local name="${1:-}" branch="" attach="true" serve="false" php=""
+            local name="${1:-}" branch="" serve="false" php=""
             shift || true
             while [ $# -gt 0 ]; do
                 case "$1" in
-                    --detach)  attach="false" ;;
-                    --branch)  ;;   # the default now; accepted, does nothing
+                    --detach)  ;;   # the only mode now; accepted, does nothing
                     --serve)   serve="true" ;;
                     --php)     php="${2:-}"; shift ;;
                     --php=*)   php="${1#--php=}" ;;
@@ -556,7 +559,7 @@ ctr_worktree() {
             # A named PHP version only takes effect on a served site.
             [ -n "${php}" ] && serve="true"
             migrate_core_to_worktree_layout || return 1
-            add_core_worktree "${name}" "${branch:-${BRANCH}}" "${attach}" || return 1
+            add_core_worktree "${name}" "${branch:-${BRANCH}}" || return 1
             if [ "${serve}" = "true" ]; then
                 echo ""
                 serve_worktree "${name}" "${php}" || return 1
