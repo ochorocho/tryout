@@ -1621,6 +1621,69 @@ LINES
   assert_failure
 }
 
+# A stand-in for tryout-php-fpm.sh: records the launch, writes its pid the way an
+# FPM master does once its socket is bound, and stays alive like one.
+fake_fpm_launcher() { # $1=root
+  mkdir -p "$1/.ddev/tryout" "$1/run"
+  cat > "$1/.ddev/tryout/tryout-php-fpm.sh" <<EOF
+echo "launched \$1" >> "$1/launches"
+echo \$\$ > "$1/run/php-fpm-\$1.pid"
+exec sleep 30
+EOF
+}
+
+@test "a --php switch starts its FPM master at once, not on the next restart" {
+  set -eu -o pipefail
+  # DDEV bakes web_extra_daemons into the web IMAGE, so a version that was not
+  # declared when the container started has no master until a restart rebuilds
+  # it — and the vhost, reloaded in place, passes requests to a dead socket.
+  local root="${FAKEROOT}/fpm"
+  fake_fpm_launcher "${root}"
+  fpm_eval() {
+    helper_eval "PROJECT_ROOT='${root}'; TRYOUT_FPM_RUN_DIR='${root}/run'
+      DDEV_PHP_VERSION=8.5; $1" 2>&1
+  }
+
+  run fpm_eval "ensure_php_fpm_running 8.3"
+  assert_success
+  run cat "${root}/launches"
+  assert_output "launched 8.3"
+
+  # Already running: no second master, which would steal the first one's socket.
+  run fpm_eval "ensure_php_fpm_running 8.3"
+  assert_success
+  run grep -c launched "${root}/launches"
+  assert_output "1"
+
+  # The project's own version is DDEV's php-fpm; never start one for it.
+  run fpm_eval "ensure_php_fpm_running 8.5"
+  assert_success
+  run grep -c "launched 8.5" "${root}/launches"
+  assert_output "0"
+
+  # A pid file left by a dead master is not a running one.
+  kill "$(cat "${root}/run/php-fpm-8.3.pid")"
+  echo 999999 > "${root}/run/php-fpm-8.3.pid"
+  run fpm_eval "ensure_php_fpm_running 8.3"
+  assert_success
+  run grep -c "launched 8.3" "${root}/launches"
+  assert_output "2"
+  kill "$(cat "${root}/run/php-fpm-8.3.pid")" 2>/dev/null || true
+}
+
+@test "serve starts the site's FPM master before it reloads the webserver" {
+  set -eu -o pipefail
+  local fn
+  fn=$(sed -n '/^serve_worktree()/,/^}/p' "${DIR}/tryout/functions.sh" | grep -v '^[[:space:]]*#')
+  printf '%s' "${fn}" | grep -q 'ensure_php_fpm_running "\${php}"' \
+    || fail "serve_worktree never starts the FPM master for its PHP"
+  # Before the reload: a reload that routes to a socket nobody listens on is a 502.
+  local start apply
+  start=$(printf '%s\n' "${fn}" | grep -n 'ensure_php_fpm_running' | head -1 | cut -d: -f1)
+  apply=$(printf '%s\n' "${fn}" | grep -n 'apply_site_config' | head -1 | cut -d: -f1)
+  [ "${start}" -lt "${apply}" ] || fail "the master must be up before the reload"
+}
+
 @test "switching Core drops vendor/ before the rebuild" {
   # Composer loads the plugins already in vendor/ before resolving, so a Core
   # switch across majors (class-alias-loader v2 -> v1) dies in the loaded
@@ -5220,6 +5283,22 @@ FAKE
   printf '%s' "${fn}" | grep -q "ddev restart" \
     && fail "the container must not ask for a restart the host already runs"
   :
+}
+
+@test "the reload copies the vhost the generator just wrote, not the host's copy" {
+  set -eu -o pipefail
+  # The generator writes under PROJECT_ROOT/.ddev — on a Mutagen project the
+  # container's volume. /mnt/ddev_config is a bind mount of the HOST's .ddev, which
+  # has it only once Mutagen has synced back, so a reload from there applied the
+  # PREVIOUS vhost: `serve x --php 8.3` reported success while nginx kept passing
+  # to the 8.4 socket. Observed on a real project.
+  local t
+  for t in nginx-fpm apache-fpm; do
+    run helper_eval "PROJECT_ROOT=/p; DDEV_WEBSERVER_TYPE=${t}; site_conf_source_dir"
+    assert_output --partial "/p/.ddev/"
+  done
+  run grep -n '/mnt/ddev_config/' "${DIR}/tryout/functions.sh"
+  refute_output --regexp 'echo "/mnt/ddev_config'
 }
 
 @test "the vhosts are copied back by name, never by globbing the source" {

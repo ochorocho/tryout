@@ -45,7 +45,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=38
+TRYOUT_VERSION=39
 
 # Core worktrees live INSIDE the clone, under worktrees/<name>. Nested worktrees
 # keep relative metadata on both pointers (worktrees/<n>/.git -> ../../.git/... and
@@ -2308,16 +2308,67 @@ site_hash_config_file() {
     echo "${PROJECT_ROOT}/.ddev/nginx_full/tryout-server-names-hash.conf"
 }
 
+# Where the FPM master for a PHP version listens: DDEV's own for the project's
+# version, ours otherwise. Must match tryout-php-fpm.sh, which binds under
+# /run/php/ because /run is root-owned on some providers.
+site_fpm_socket() {
+    local php="$1" sock
+    sock="/run/php/php-fpm-${php}.sock"
+    [ "${php}" = "${DDEV_PHP_VERSION:-}" ] && sock="/run/php-fpm.sock"
+    echo "${sock}"
+}
+
+# Start the FPM master for a non-default PHP version unless one is running.
+#
+# config.worktrees.yaml declares one per version as a web_extra_daemon, but DDEV
+# bakes those into the web IMAGE: a version that was not declared when the
+# container started has no master until `ddev restart` rebuilds it, and a vhost
+# reloaded in place would pass every request to a socket nobody listens on. So
+# start it here, detached — it outlives `ddev exec`, reparented to PID 1 — and
+# let the next restart hand it to supervisord. Never a second master beside a
+# live one: tryout-php-fpm.sh removes the socket before binding, so it would
+# steal the first one's.
+#
+# "Running" is a live pid in the pid file, which FPM writes only once its socket
+# is bound — so it doubles as the readiness signal. Container-side only.
+ensure_php_fpm_running() {
+    local php="$1" run_dir="${TRYOUT_FPM_RUN_DIR:-/run/php}" pid_file pid log i
+    [ "${php}" = "${DDEV_PHP_VERSION:-}" ] && return 0
+    pid_file="${run_dir}/php-fpm-${php}.pid"
+    fpm_pid_alive() {
+        pid="$(cat "${pid_file}" 2>/dev/null || true)"
+        [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null
+    }
+    fpm_pid_alive && return 0
+
+    rm -f "${pid_file}"
+    log="${TMPDIR:-/tmp}/tryout-php-fpm-${php}.log"
+    info "Starting PHP ${php} FPM..."
+    # setsid detaches it from the exec's session; nohup alone covers a system
+    # without it (the unit suite runs on macOS).
+    local detach=()
+    command -v setsid >/dev/null 2>&1 && detach=(setsid)
+    ${detach[@]+"${detach[@]}"} nohup bash "$(tryout_script tryout-php-fpm.sh)" "${php}" \
+        >"${log}" 2>&1 </dev/null &
+    # Whole seconds: bash 3.2 rejects a fractional sleep-by-read, and FPM is up in
+    # about two.
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        fpm_pid_alive && return 0
+        sleep 1
+    done
+    error "PHP ${php} FPM did not start:"
+    tail -5 "${log}" >&2 2>/dev/null || true
+    error "  → ddev restart"
+    return 1
+}
+
 generate_site_vhost() {
     local name="$1" php="$2" file docroot host db sock
     file=$(site_vhost_file "${name}")
     docroot="/var/www/html/TYPO3-Instances/${name}/public"
     host=$(site_hostname "${name}")
     db=$(site_database "${name}")
-    # Must match tryout-php-fpm.sh, which binds under /run/php/ because /run is
-    # root-owned on some providers.
-    sock="/run/php/php-fpm-${php}.sock"
-    [ "${php}" = "${DDEV_PHP_VERSION:-}" ] && sock="/run/php-fpm.sock"
+    sock="$(site_fpm_socket "${php}")"
 
     mkdir -p "$(dirname "${file}")"
     if [ "${DDEV_WEBSERVER_TYPE:-apache-fpm}" = "nginx-fpm" ]; then
@@ -2492,10 +2543,15 @@ served_hostname_set() {
 # /start.sh copies /mnt/ddev_config/{nginx_full,apache} into these at container
 # start — a COPY, not a mount, which is why a freshly written vhost is visible in
 # the container yet not in effect.
+#
+# The reload copies from the container's OWN .ddev, not /mnt/ddev_config: that is
+# a bind mount of the host's .ddev, and on a Mutagen project the vhost the
+# generator just wrote reaches it only after a sync back — so a reload from there
+# applied the PREVIOUS vhost. Without Mutagen both are the same directory.
 site_conf_source_dir() {
     case "${DDEV_WEBSERVER_TYPE:-apache-fpm}" in
-        nginx*) echo "/mnt/ddev_config/nginx_full" ;;
-        *)      echo "/mnt/ddev_config/apache" ;;
+        nginx*) echo "${PROJECT_ROOT}/.ddev/nginx_full" ;;
+        *)      echo "${PROJECT_ROOT}/.ddev/apache" ;;
     esac
 }
 
@@ -2549,12 +2605,11 @@ sync_and_reload_webserver() {
     rm -f "${dst}"/tryout-site-*.conf 2>/dev/null || true
     rm -f "${dst}"/tryout-server-names-hash.conf 2>/dev/null || true
 
-    # Copy back per served site, by name — never a glob over the source. On a
-    # Mutagen project the host's deletion of a vhost has not necessarily reached
-    # /mnt/ddev_config by the time unserve calls this, so a glob would faithfully
-    # restore the file that was just removed and the dead site would keep serving.
-    # served_site_names reads the markers, which are the actual definition of
-    # "served" and are correct in here regardless of what the sync has caught up on.
+    # Copy back per served site, by name — never a glob over the source. The
+    # source used to be /mnt/ddev_config, where a deletion made on the host had
+    # not necessarily arrived yet, so a glob restored the vhost unserve had just
+    # removed. It reads the container's own copy now, but the markers are still
+    # the definition of "served", so they drive the copy.
     local name f
     for name in $(served_site_names); do
         f="${src}/tryout-site-${name}.conf"
@@ -2970,6 +3025,10 @@ serve_worktree() {
 
     trap - RETURN    # got to the end: the marker stands
     success "Site '${name}' prepared — PHP ${php}, db $(site_database "${name}")"
+    # Before the reload, which would otherwise route to a socket nobody listens on.
+    if in_container; then
+        ensure_php_fpm_running "${php}" || return 1
+    fi
     # The HOST restarts when the hostname set changed — it can see the same
     # markers and `ddev` only works out there. So report what happened here and
     # leave the next step to it, rather than telling the user to do a thing that
