@@ -45,7 +45,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=37
+TRYOUT_VERSION=38
 
 # Core worktrees live INSIDE the clone, under worktrees/<name>. Nested worktrees
 # keep relative metadata on both pointers (worktrees/<n>/.git -> ../../.git/... and
@@ -159,12 +159,23 @@ ui_box() {
 }
 
 # A table. CSV on stdin, first line the header.
+# stdin is read once up front: a fallback chained with `||` would otherwise get a
+# stream the failed attempt already drained — which is how the web image, with
+# neither gum nor column, printed an empty table.
 ui_table() {
+    local csv
+    csv="$(cat)"
     if have_gum; then
-        gum table --print --separator "," 2>/dev/null && return 0
+        printf '%s\n' "${csv}" | gum table --print --separator "," 2>/dev/null && return 0
     fi
     # Fallback: readable columns without the borders.
-    sed 's/,/	/g' | column -t -s $'	' 2>/dev/null || cat
+    printf '%s\n' "${csv}" | column -t -s ',' 2>/dev/null && return 0
+    printf '%s\n' "${csv}" | awk -F, '
+        { for (i = 1; i <= NF; i++) { cell[NR, i] = $i; if (length($i) > w[i]) w[i] = length($i) }
+          if (NF > nf) nf = NF }
+        END { for (r = 1; r <= NR; r++) { line = ""
+                for (i = 1; i <= nf; i++) line = line sprintf("%-" w[i] + 2 "s", cell[r, i])
+                sub(/ +$/, "", line); print line } }'
 }
 
 # Pick one of the arguments. Echoes the choice; empty means cancelled.
@@ -594,11 +605,11 @@ fi
 # For a detached HEAD, derive the base branch from the remote branches containing
 # it. A release branch wins over main: when a commit sits on both, it is the more
 # specific answer, and the newest release branch is the likeliest base. Only when
-# nothing but main contains it do we say main.
+# nothing but main contains it do we say main. Answers for <dir>, default the root.
 detect_detached_base_branch() {
-    local refs found
+    local dir="${1:-${CORE_DIR}}" refs found
     # Drop origin/HEAD, which for-each-ref reports as a bare "origin".
-    refs=$(git -C "${CORE_DIR}" for-each-ref --format='%(refname:short)' \
+    refs=$(git -C "${dir}" for-each-ref --format='%(refname:short)' \
                --contains HEAD refs/remotes/origin 2>/dev/null \
            | sed 's|^origin/||' \
            | grep -Ex 'main|[0-9]+\.[0-9]+')
@@ -1263,6 +1274,83 @@ list_core_worktrees() {
         printf '%s\t%s\t%s\t%s\t%s\n' "${name}" "${head}" "${branch}" "${dirty}" \
             "$([ "${name}" = "${active}" ] && echo active || echo "")"
     done
+}
+
+# Uncommitted work in a checkout, in words: "clean", "3 modified", "1 untracked",
+# or both. Like core_worktree_is_dirty, a path that is not a checkout is clean —
+# "cannot look" must never read as "has changes".
+worktree_change_summary() {
+    local dir="$1" status modified untracked out=""
+    git -C "${dir}" rev-parse --git-dir >/dev/null 2>&1 || { echo "clean"; return 0; }
+    status="$(git -C "${dir}" status --porcelain 2>/dev/null || true)"
+    untracked=$(printf '%s\n' "${status}" | grep -c '^??' || true)
+    modified=$(printf '%s\n' "${status}" | grep -c '^[^?]' || true)
+    [ "${modified}" -gt 0 ] && out="${modified} modified"
+    [ "${untracked}" -gt 0 ] && out="${out:+${out}, }${untracked} untracked"
+    echo "${out:-clean}"
+}
+
+# One `worktree list` card: where the checkout stands, what is on it, what it
+# serves. Takes a list_core_worktrees_fast row. Every git read here is per
+# worktree, which is fine for a command run by hand and wrong anywhere else.
+worktree_card() {
+    local name="$1" head="$2" branch="$3" active="$4"
+    local dir base upstream count subject age changes url php db
+    dir="$(herdr_checkout_dir "${name}")"
+
+    if [ -n "${active}" ]; then
+        echo -e "${CYAN}●${NC} ${BOLD}${TEXT}${name}${NC}  ${CYAN}← primary${NC}"
+    else
+        echo -e "${TEXT}○${NC} ${BOLD}${TEXT}${name}${NC}"
+    fi
+
+    # Worktrees are created detached, so the base comes from the remote branches
+    # that contain HEAD; an attached checkout is its own answer.
+    if [ "${branch}" = "(detached)" ]; then
+        base="$(detect_detached_base_branch "${dir}")"
+        upstream="origin/${base}"
+        branch="detached from ${base}"
+    else
+        upstream="$(git -C "${dir}" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)"
+        [ -n "${upstream}" ] || upstream="origin/${branch}"
+    fi
+    age="$(git -C "${dir}" log -1 --format=%cr 2>/dev/null || true)"
+    echo -e "  ${TEXT}${branch} ${DIM}${TEXT}@${NC} ${TEXT}${head}${age:+ ${DIM}${TEXT}· ${age}}${NC}"
+
+    # Commits on top of the base ARE the applied patches — the measure `status`
+    # and the panel report.
+    count="$(git -C "${dir}" rev-list --count "${upstream}..HEAD" 2>/dev/null || echo 0)"
+    subject="$(git -C "${dir}" log -1 --format=%s 2>/dev/null || true)"
+    # DDEV exports COLUMNS=0, so there is no width to fit; 70 keeps it on a line.
+    [ "${#subject}" -gt 70 ] && subject="${subject:0:69}…"
+    if [ "${count}" -gt 0 ] 2>/dev/null; then
+        local noun="patches"
+        [ "${count}" -eq 1 ] && noun="patch"
+        echo -e "  ${YELLOW}${count} ${noun} on top${NC} ${DIM}${TEXT}·${NC} ${TEXT}${subject}${NC}"
+    elif [ -n "${subject}" ]; then
+        echo -e "  ${DIM}${TEXT}${subject}${NC}"
+    fi
+
+    changes="$(worktree_change_summary "${dir}")"
+    if [ "${changes}" = "clean" ]; then changes="${GREEN}clean${NC}"; else changes="${YELLOW}${changes}${NC}"; fi
+
+    if site_is_served "${name}"; then
+        url="https://$(site_hostname "${name}")"
+        php="$(site_php_version "${name}")"
+        db="$(site_database "${name}")"
+    elif [ -n "${active}" ]; then
+        url="${DDEV_PRIMARY_URL:-}"
+        php="${DDEV_PHP_VERSION:-}"
+        db="db"
+    fi
+    if [ -n "${url:-}${php:-}" ]; then
+        echo -e "  ${changes}"
+        [ -n "${url:-}" ] && echo -e "  ${CYAN}${url}${NC}"
+        echo -e "  ${DIM}${TEXT}PHP ${php:--} · ${db}${NC}"
+    else
+        echo -e "  ${changes} ${DIM}${TEXT}· not served${NC}"
+        echo -e "    ${DIM}${TEXT}→ ddev tryout worktree serve ${name}${NC}"
+    fi
 }
 
 # Branch names on origin, one per line, version-sorted. The remote form asks

@@ -573,44 +573,54 @@ ctr_worktree() {
         list)
             local plain="false" _wt_rows=""
             if [ "${1:-}" = "--plain" ]; then plain="true"; fi
-            echo ""
-            echo -e "${BOLD}Core worktrees${NC}"
             # No early return: the project root is a checkout, so there is always
-            # at least one row — the primary. Hiding the table when no NESTED
+            # at least one row — the primary. Hiding the list when no NESTED
             # worktree exists yet would leave the one row the user most expects
             # missing, and `--plain` is a parsed contract that must not go empty.
-            # --plain is the machine-readable contract: the padded columns other
-            # tools already parse (tests/e2e discovers served sites from it). The
-            # default is a real table for humans.
-            _wt_rows="$(mktemp "${TMPDIR:-/tmp}/tryout-wt.XXXXXX")"
-            {
-                printf "NAME,HEAD,BRANCH,STATE,PHP,DB,URL\n"
-                list_core_worktrees | while IFS=$'\t' read -r name head branch dirty active; do
-                    local php="-" db="-" url="" marker=""
-                    if site_is_served "${name}"; then
-                        php=$(site_php_version "${name}")
-                        db=$(site_database "${name}")
-                        url="https://$(site_hostname "${name}")"
-                    elif [ -n "${active}" ]; then
-                        php="${DDEV_PHP_VERSION:-}"
-                        db="db"
-                        url="${DDEV_PRIMARY_URL:-}"
-                    fi
-                    if [ -n "${active}" ]; then marker=" ← primary"; fi
-                    printf "%s,%s,%s,%s,%s,%s,%s\n" \
-                        "${name}" "${head}" "${branch}" "${dirty}" "${php}" "${db}" \
-                        "${url}${marker}"
-                done
-            } > "${_wt_rows}"
-
             if [ "${plain}" = "true" ]; then
+                echo ""
+                echo -e "${BOLD}Core worktrees${NC}"
+                # --plain is the machine-readable contract: the padded columns other
+                # tools already parse (tests/e2e discovers served sites from it).
+                _wt_rows="$(mktemp "${TMPDIR:-/tmp}/tryout-wt.XXXXXX")"
+                {
+                    printf "NAME,HEAD,BRANCH,STATE,PHP,DB,URL\n"
+                    list_core_worktrees | while IFS=$'\t' read -r name head branch dirty active; do
+                        local php="-" db="-" url="" marker=""
+                        if site_is_served "${name}"; then
+                            php=$(site_php_version "${name}")
+                            db=$(site_database "${name}")
+                            url="https://$(site_hostname "${name}")"
+                        elif [ -n "${active}" ]; then
+                            php="${DDEV_PHP_VERSION:-}"
+                            db="db"
+                            url="${DDEV_PRIMARY_URL:-}"
+                        fi
+                        if [ -n "${active}" ]; then marker=" ← primary"; fi
+                        printf "%s,%s,%s,%s,%s,%s,%s\n" \
+                            "${name}" "${head}" "${branch}" "${dirty}" "${php}" "${db}" \
+                            "${url}${marker}"
+                    done
+                } > "${_wt_rows}"
                 # Same shape as before: two leading spaces, padded columns.
                 awk -F, '{ printf "  %-12s %-12s %-12s %-6s %-5s %-10s %s\n", \
                              $1,$2,$3,$4,$5,$6,$7 }' "${_wt_rows}"
+                rm -f "${_wt_rows}"
             else
-                ui_table < "${_wt_rows}"
+                # For humans: one card per worktree, in plain ANSI — the web image
+                # has no gum, so nothing here may depend on it. The fast lister:
+                # the card reads the changes itself, in more detail than STATE.
+                local rows count
+                rows="$(list_core_worktrees_fast)"
+                count=$(printf '%s\n' "${rows}" | grep -c . || true)
+                echo ""
+                echo -e "${BOLD}${TEXT}Core worktrees${NC} ${DIM}${TEXT}· ${count}${NC}"
+                while IFS=$'\t' read -r name head branch active; do
+                    [ -n "${name}" ] || continue
+                    echo ""
+                    worktree_card "${name}" "${head}" "${branch}" "${active}"
+                done <<< "${rows}"
             fi
-            rm -f "${_wt_rows}"
             echo ""
             echo -e "  ${DIM}served sites have their own URL, PHP and database;${NC}"
             echo -e "  ${DIM}the primary is whichever worktree 'use' points at${NC}"

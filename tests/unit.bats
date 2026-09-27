@@ -1120,11 +1120,11 @@ FAKE
   assert_output --partial "main"
 }
 
-@test "worktree list --plain is the parseable contract, the default is a table" {
+@test "worktree list --plain is the parseable contract, the default is cards" {
   set -eu -o pipefail
 
   # tests/e2e/login.spec.ts discovers served sites by regex over --plain. The
-  # bordered default table does not match it, so the flag must keep working.
+  # default card layout does not match it, so the flag must keep working.
   run grep -n "worktree', 'list', '--plain'" "${DIR}/tests/e2e/login.spec.ts"
   assert_success
 
@@ -4352,6 +4352,111 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
   # The active marker is the LAST field in both — 5th vs 4th.
   [ "$(printf '%s\n' "${slow}" | cut -f5)" = "$(printf '%s\n' "${fast}" | cut -f4)" ] \
     || fail "both must mark the active worktree in their last field"
+}
+
+# A Core-shaped fixture: a bare origin with main, a root clone on main, and a
+# detached worktree under worktrees/<name> carrying commits on top of origin/main.
+make_card_fixture() { # $1=root
+  local root="$1" seed="$1/seed"
+  git init -q -b main "${seed}"
+  git -C "${seed}" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "[TASK] Base"
+  git clone -q --bare "${seed}" "${root}/origin.git"
+  git clone -q "${root}/origin.git" "${root}/core"
+  # As install does: nested worktrees are kept out of the root's status.
+  echo "/worktrees/" >> "${root}/core/.git/info/exclude"
+  git -C "${root}/core" worktree add -q --detach "${root}/core/worktrees/feat" origin/main
+  local wt="${root}/core/worktrees/feat"
+  git -C "${wt}" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "[BUGFIX] One"
+  echo x > "${wt}/tracked"
+  git -C "${wt}" add tracked
+  git -C "${wt}" -c user.name=t -c user.email=t@t commit -q -m "[BUGFIX] Fix page tree drag"
+  echo y > "${wt}/tracked"
+  echo z > "${wt}/new"
+}
+
+card_eval() { # $1=root $2=code
+  helper_eval "
+    PROJECT_ROOT='$1/core'
+    CORE_DIR='$1/core'
+    CORE_WORKTREE_PREFIX='$1/core/worktrees/'
+    SITES_DIR='$1/sites'
+    $2
+  " 2>/dev/null
+}
+
+@test "worktree_change_summary counts changes and calls a non-checkout clean" {
+  set -eu -o pipefail
+  command -v git >/dev/null || skip "git not available"
+  local root="${FAKEROOT}/summary"
+  make_card_fixture "${root}"
+
+  run card_eval "${root}" "worktree_change_summary '${root}/core'"
+  assert_output "clean"
+  run card_eval "${root}" "worktree_change_summary '${root}/core/worktrees/feat'"
+  assert_output "1 modified, 1 untracked"
+  # "Cannot look" is not "has changes" — see core_worktree_is_dirty.
+  mkdir -p "${root}/not-a-repo"
+  run card_eval "${root}" "worktree_change_summary '${root}/not-a-repo'"
+  assert_output "clean"
+}
+
+@test "detect_detached_base_branch answers for the checkout it is given" {
+  set -eu -o pipefail
+  command -v git >/dev/null || skip "git not available"
+  local root="${FAKEROOT}/base"
+  make_card_fixture "${root}"
+  # A release branch that contains only the root's HEAD, not the worktree's.
+  git -C "${root}/core" push -q origin HEAD:refs/heads/14.3
+  git -C "${root}/core" fetch -q origin
+
+  run card_eval "${root}" "detect_detached_base_branch '${root}/core/worktrees/feat'"
+  assert_output "main"
+  run card_eval "${root}" "detect_detached_base_branch"
+  assert_output "14.3"
+}
+
+@test "worktree list renders a card per worktree with base, patches and changes" {
+  set -eu -o pipefail
+  command -v git >/dev/null || skip "git not available"
+  local root="${FAKEROOT}/card"
+  make_card_fixture "${root}"
+  local strip='s/\x1b\[[0-9;]*m//g'
+
+  run card_eval "${root}" "worktree_card feat \"\$(git -C '${root}/core/worktrees/feat' rev-parse --short HEAD)\" '(detached)' ''"
+  assert_success
+  output="$(printf '%s' "${output}" | sed "${strip}")"
+  assert_output --partial "○ feat"
+  assert_output --partial "detached from main @"
+  assert_output --partial "2 patches on top · [BUGFIX] Fix page tree drag"
+  assert_output --partial "1 modified, 1 untracked"
+  assert_output --partial "not served"
+  assert_output --partial "→ ddev tryout worktree serve feat"
+  refute_output --partial "primary"
+
+  # The active row is the primary: marked, and given the project URL.
+  run card_eval "${root}" "DDEV_PRIMARY_URL=https://p.ddev.site DDEV_PHP_VERSION=8.4
+    worktree_card main \"\$(git -C '${root}/core' rev-parse --short HEAD)\" main active"
+  output="$(printf '%s' "${output}" | sed "${strip}")"
+  assert_output --partial "● main"
+  assert_output --partial "← primary"
+  assert_output --partial "main @"
+  assert_output --partial "[TASK] Base"
+  assert_output --partial "clean"
+  assert_output --partial "https://p.ddev.site"
+  assert_output --partial "PHP 8.4 · db"
+  refute_output --partial "patches on top"
+}
+
+@test "ui_table keeps its rows where neither gum nor column exists" {
+  set -eu -o pipefail
+  # The web image has neither. `column … || cat` used to hand cat a stdin the
+  # pipeline had already drained, so worktree list printed an empty table.
+  run helper_eval 'have_gum() { return 1; }; column() { return 127; }
+    printf "NAME,STATE\nmain,clean\n" | ui_table'
+  assert_success
+  assert_output --partial "NAME"
+  assert_output --partial "main"
+  assert_output --partial "clean"
 }
 
 @test "a pane labelled tryout counts as a panel only if it runs one" {

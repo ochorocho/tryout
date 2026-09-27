@@ -47,7 +47,7 @@ add-on, and **everything works without them** — install them because they impr
 experience, not because anything depends on them.
 
 **[gum](https://github.com/charmbracelet/gum)** — draws the tables, prompts and
-spinners. With it, `ddev tryout worktree list` is a real table, `ddev tryout status` a
+spinners. With it, `ddev tryout status` is a
 bordered report, and any command missing an argument offers a pick-from-a-list chooser
 instead of asking you to type the answer. Without it every command prints the same
 information as plain text with a typed prompt; the unit suite runs both ways in CI, so
@@ -686,7 +686,7 @@ no second clone.
 
 ```bash
 ddev tryout worktree add v13 13.4   # create worktrees/v13 at origin/13.4
-ddev tryout worktree list           # show all, marking the active one
+ddev tryout worktree list           # one card each: base, patches, changes, site
 ddev tryout worktree use v13        # make it the active Core, then rebuild (drops vendor/)
 ddev tryout worktree serve v13      # give it its own URL, PHP and database
 ddev tryout worktree unserve v13    # drop that site, keep the worktree
@@ -1028,8 +1028,9 @@ where both the host and the container can see it.
 Both are covered with a little more context under
 [Optional but recommended](#optional-but-recommended).
 
-Output is meant to be read by people: with gum installed,
-`ddev tryout worktree list` draws a table and `ddev tryout status` a bordered
+Output is meant to be read by people: `ddev tryout worktree list` draws one card
+per worktree — its base branch, the patches on top, uncommitted changes and the
+site it serves — and with gum installed `ddev tryout status` is a bordered
 report; without it, the same content in plain columns. **For scripting, use
 `ddev tryout worktree list --plain`** — space-padded columns
 (`NAME HEAD BRANCH STATE PHP DB URL`), which is the format the Playwright suite
