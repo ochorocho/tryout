@@ -21,7 +21,7 @@ Stage 8 is done.
 **Goal**: verb table, `Argv` parser, `ctr` entry, `help`, `status`, `worktree list` (cards/--plain/--json), `worktree branches`, `patch --list` (ureq), `launch`, `__complete`; TUI loads in-process.
 **Success Criteria**: parity cases for each verb pass; completion corpus identical.
 **Tests**: parity cases; ported completion tests (unit.bats L284–400, L608–812).
-**Status**: Not Started
+**Status**: Complete — 28 parity cases (help, status, launch, worktree list/branches, patch --list, completion corpus); the TUI reads worktrees, branches and Gerrit in-process (listing runs per worktree in parallel, ~1.2s warm for 8); jobs still run `ddev tryout …` until Stage 6.
 
 ## Stage 3: Generators
 **Goal**: composer overlays (sync/site/use-core), vhosts (nginx/apache), hash conf, config.worktrees.yaml (`__fpm`).
@@ -66,8 +66,8 @@ Stage 8 is done.
 - [ ] rename via `worktree move`, re-serves keeping the DB
 - [ ] `use` rewrites only the primary overlay's sysext repo; never `ln -sfn`; rebuild mandatory
 - [x] dirty / change counts on a non-checkout = clean
-- [ ] only `worktree list` pays for the dirty check; completion never runs git status or the network
-- [ ] `--plain` columns and `--json` keys unchanged (add-only)
+- [x] only `worktree list` pays for the dirty check; completion never runs git status or the network
+- [x] `--plain` columns and `--json` keys unchanged (add-only)
 - [ ] sync-composer: sysexts on disk only, `@dev`, non-managed entries kept, lock unlinked
 - [ ] site overlay; `wipe_site_vendor` before a Core switch; PHP check before every composer install
 - [ ] serve: hostname snapshot before marker; marker removed on failure; relative additional.php link; FPM master before reload
@@ -84,7 +84,7 @@ Stage 8 is done.
 - [x] `site_for_name` maps the active worktree to `@primary`
 - [ ] `ctr` never prompts; ask-then-`explain_missing`; no TTY → BRANCH fallback
 - [ ] every error states a next step; `reject_args` for no-arg verbs
-- [ ] completion: `value<TAB>desc` / `_activeHelp_`, flags once and after `-`, `''` = empty, root from `$0`, exit 0, no stderr
-- [ ] `addon_is_stale` ignores a missing stamp
+- [x] completion: `value<TAB>desc` / `_activeHelp_`, flags once and after `-`, `''` = empty, root from `$0`, exit 0, no stderr
+- [x] `addon_is_stale` ignores a missing stamp
 - [ ] `ui stop` never downloads or starts a session; session protocol VERSION bumped on wire changes
 - [x] event twin `@@tryout {"level","msg"}` on the same stream, colours stripped

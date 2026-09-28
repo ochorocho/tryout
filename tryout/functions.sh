@@ -29,7 +29,8 @@ INSTANCE_DIR="${INSTANCES_DIR}/${PRIMARY_INSTANCE}"
 # shellcheck disable=SC2034 # used by post-start.sh and commands/host/tryout
 CORE_REPO="https://github.com/typo3/typo3.git"
 GERRIT_REMOTE="https://review.typo3.org/Packages/TYPO3.CMS"
-GERRIT_API="https://review.typo3.org"
+# TRYOUT_GERRIT_API points the REST calls elsewhere — the parity tests use it.
+GERRIT_API="${TRYOUT_GERRIT_API:-https://review.typo3.org}"
 GERRIT_URL="https://review.typo3.org/c/Packages/TYPO3.CMS/+/"
 GERRIT_SSH_HOST="review.typo3.org"
 GERRIT_SSH_PORT="29418"

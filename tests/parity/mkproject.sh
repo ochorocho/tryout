@@ -24,7 +24,15 @@ for ext in core backend frontend; do
     printf '{\n    "name": "typo3/cms-%s"\n}\n' "${ext}" > "typo3/sysext/${ext}/composer.json"
 done
 g add -A && g commit -qm "[TASK] Initial"
-for b in 13.4 12.4 TYPO3_4-5; do g branch "${b}"; done
+g branch TYPO3_4-5
+# Release branches each carry a commit of their own, so the base a detached
+# checkout reports is the branch it really came from.
+for b in 12.4 13.4; do
+    g checkout -q -b "${b}"
+    [ "${b}" = 12.4 ] && printf '{\n    "name": "typo3/cms",\n    "require": {\n        "php": ">=8.1 <8.4"\n    }\n}\n' > composer.json
+    echo "${b}" > VERSION && g add -A && g commit -qm "[RELEASE] ${b}"
+    g checkout -q main
+done
 g clone -q --bare . "${dir}/origin.git"
 
 mkdir -p "${dir}/project"
@@ -39,5 +47,6 @@ cp -R "${repo}/tryout" .ddev/tryout
 cp "${repo}/commands/host/tryout" .ddev/commands/host/tryout
 cp "${repo}/commands/host/autocomplete/tryout" .ddev/commands/host/autocomplete/tryout
 cp "${repo}/config.tryout.yaml" .ddev/
-mkdir -p TYPO3-Instances/primary/config/system
+# What install.yaml's post_install_actions create.
+mkdir -p TYPO3-Instances/primary/config/system packages
 cp "${repo}/tryout/composer.tryout.json" TYPO3-Instances/primary/

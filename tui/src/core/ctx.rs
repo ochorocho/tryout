@@ -1,8 +1,8 @@
 //! Where everything is: the project root (which IS the TYPO3 Core clone), its
 //! instances and worktrees, the DDEV environment, and the branch in play.
 
-use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use super::{git, vsort, worktree};
 
@@ -60,7 +60,7 @@ pub struct Ctx {
     pub in_container: bool,
     /// TRYOUT_BRANCH, when the caller set one.
     pub branch_override: Option<String>,
-    branch: OnceCell<String>,
+    branch: OnceLock<String>,
 }
 
 impl Ctx {
@@ -70,7 +70,7 @@ impl Ctx {
             env,
             in_container: false,
             branch_override: None,
-            branch: OnceCell::new(),
+            branch: OnceLock::new(),
         }
     }
 

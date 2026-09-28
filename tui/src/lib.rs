@@ -1,6 +1,7 @@
 //! tryout: the DDEV add-on's command line, container side and terminal UI in one
 //! binary. `ddev tryout …` on the host, `tryout ctr …` inside the web container.
 
+pub mod cli;
 pub mod core;
 pub mod tui;
 

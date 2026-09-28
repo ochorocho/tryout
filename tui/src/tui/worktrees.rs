@@ -1,38 +1,15 @@
-//! The worktrees tryout knows about, read from `ddev tryout worktree list --json`.
-//!
-//! `--json` is the add-on's machine-readable contract for tools (pinned by its
-//! unit suite), so the TUI never re-implements how tryout finds its checkouts.
-
-use std::path::{Path, PathBuf};
-use std::process::Command;
+//! The worktrees tryout knows about — read with the add-on's own code, the same
+//! the `worktree list --json` contract is written from.
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Worktree {
-    pub name: String,
-    /// Relative to the project root; "." for the root checkout.
-    pub dir: String,
-    pub head: String,
-    /// None when detached — which every worktree tryout creates is.
-    pub branch: Option<String>,
-    /// What it is compared against: the branch it came from.
-    pub base: Option<String>,
-    /// Commits on top of the base: the applied patches.
-    pub patches: u32,
-    pub modified: u32,
-    pub untracked: u32,
-    pub primary: bool,
-    pub url: Option<String>,
-    pub php: Option<String>,
-    pub db: Option<String>,
-    pub subject: Option<String>,
-    /// PHP versions this site could run on (installed, and accepted by its
-    /// Core). Absent from an older add-on, which then offers no PHP menu.
-    #[serde(default)]
-    pub php_versions: Vec<String>,
-}
+use crate::core::ctx::Ctx;
+use crate::core::{gerrit, site, worktree};
+
+/// One checkout, as the add-on's `worktree list --json` reports it — the same
+/// type, so the TUI and the contract cannot drift apart.
+pub type Worktree = crate::core::worktree::Info;
 
 impl Worktree {
     /// Served means it has a site of its own — the primary always does.
@@ -77,66 +54,73 @@ pub fn parse_json(output: &str) -> Result<Vec<Worktree>> {
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     start
         .ancestors()
-        .find(|p| p.join(".ddev/tryout/functions.sh").is_file())
+        .find(|p| p.join(".ddev/tryout").is_dir())
         .map(Path::to_path_buf)
 }
 
-/// Run the listing. Blocking and slow (a `ddev exec`), so callers run it off the
-/// UI thread.
+/// The project's context as the TUI sees it: the environment `ddev tryout ui`
+/// was started with carries DDEV's values for the project.
+fn context(root: &Path) -> Ctx {
+    Ctx::from_env(root)
+}
+
+/// The PHP versions the web image provides. Only the container can look, so
+/// post-start leaves them in .ddev/tryout/.state/php-versions; before it has,
+/// DDEV's 8.x line-up stands in.
+fn php_versions(root: &Path) -> Vec<String> {
+    let snapshot =
+        std::fs::read_to_string(root.join(".ddev/tryout/.state/php-versions")).unwrap_or_default();
+    let v: Vec<String> = snapshot.split_whitespace().map(String::from).collect();
+    if v.is_empty() {
+        ["8.1", "8.2", "8.3", "8.4", "8.5"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        v
+    }
+}
+
+/// Every checkout with its state, read in-process with the host's git. A few
+/// git calls per worktree, so callers run it off the UI thread.
 pub fn load(root: &Path) -> Result<Vec<Worktree>> {
-    let out = Command::new("ddev")
-        .args(["tryout", "worktree", "list", "--json"])
-        .current_dir(root)
-        .output()
-        .context("could not run ddev — is it installed and on PATH?")?;
-    if !out.status.success() {
-        let err = strip_ansi(&String::from_utf8_lossy(&out.stderr));
-        let reason = err
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("no output");
-        bail!("ddev tryout worktree list failed: {}", reason.trim());
+    let ctx = context(root);
+    if !ctx.has_core() {
+        bail!("TYPO3 Core is not cloned yet — ddev tryout download");
     }
-    parse_json(&String::from_utf8_lossy(&out.stdout))
+    Ok(worktree::infos(&ctx, &php_versions(root)))
 }
 
-/// The branches a worktree can be based on: `ddev tryout worktree branches
-/// --json`. Slow (a `ddev exec`, and a fetch the first time), so off-thread.
+/// The branches a worktree can be based on. Fetches the branch list the first
+/// time (the clone carries one branch), so off-thread.
 pub fn load_branches(root: &Path) -> Result<Vec<String>> {
-    let out = Command::new("ddev")
-        .args(["tryout", "worktree", "branches", "--json"])
-        .current_dir(root)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .context("could not run ddev")?;
-    if !out.status.success() {
-        bail!("ddev tryout worktree branches failed");
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let start = text
-        .find('[')
-        .context("no JSON array — is the add-on older than the TUI?")?;
-    serde_json::from_str(&text[start..]).context("the branch list is not the JSON expected")
+    let ctx = context(root);
+    worktree::ensure_branch_refs_quiet(&ctx);
+    Ok(ctx.local_core_branches())
 }
 
-/// The open Gerrit changes for a worktree's branch: `ddev tryout patch --list
-/// --json --site <name>`. Asks Gerrit, so off-thread.
-pub fn load_patches(root: &Path, site: &str) -> Result<Vec<crate::tui::forms::Change>> {
-    let out = Command::new("ddev")
-        .args(["tryout", "patch", "--list", "--json", "--site", site])
-        .current_dir(root)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .context("could not run ddev")?;
-    if !out.status.success() {
-        bail!("Gerrit could not be reached, or there are no open changes");
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let start = text
-        .find('[')
-        .context("no JSON array — is the add-on older than the TUI?")?;
-    serde_json::from_str(&text[start..]).context("the change list is not the JSON expected")
+/// The open Gerrit changes for a site's branch. Asks Gerrit, so off-thread.
+pub fn load_patches(root: &Path, name: &str) -> Result<Vec<crate::tui::forms::Change>> {
+    let ctx = context(root);
+    let target = site::for_name(&ctx, name);
+    let branch = if !target.is_empty() && !site::is_primary(&target) {
+        worktree::detect_detached_base_branch(&site::core_dir(&ctx, &target))
+    } else {
+        ctx.branch().to_string()
+    };
+    let changes = gerrit::list_open(&branch, 50)
+        .ok()
+        .filter(|c| !c.is_empty())
+        .context("Gerrit could not be reached, or there are no open changes")?;
+    Ok(changes
+        .into_iter()
+        .map(|c| crate::tui::forms::Change {
+            number: c.number,
+            subject: c.subject,
+            owner: c.owner,
+            scores: c.scores,
+        })
+        .collect())
 }
 
 /// Drop CSI escape sequences: ddev colours its messages even when piped.

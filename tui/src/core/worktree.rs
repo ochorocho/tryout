@@ -200,3 +200,276 @@ mod tests {
         assert_eq!(change_summary(d.path()), "1 modified, 1 untracked");
     }
 }
+
+// ─── Listing ────────────────────────────────────────────────────────────────
+
+/// One row of the fast lister: what `git` says about a checkout, without the
+/// dirty check (two `git diff` per worktree — seconds on a cold Mutagen tree).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub name: String,
+    pub head: String,
+    /// The branch, or "(detached)".
+    pub branch: String,
+    pub active: bool,
+}
+
+/// Every checkout: the root first (unless a worktrees/<its name> shadows it),
+/// then worktrees/* in name order.
+pub fn rows(ctx: &Ctx) -> Vec<Row> {
+    let active = ctx.active_worktree_name();
+    let row = |name: String, dir: &Path| {
+        let head =
+            git::out(dir, &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into());
+        let branch = match git::out(dir, &["branch", "--show-current"]) {
+            Some(b) if !b.is_empty() => b,
+            _ => "(detached)".into(),
+        };
+        let active = name == active;
+        Row {
+            name,
+            head,
+            branch,
+            active,
+        }
+    };
+    let mut out = Vec::new();
+    let root_name = ctx.plain_core_name();
+    if !ctx.core_worktree_dir(&root_name).is_dir() {
+        out.push(row(root_name, &ctx.root));
+    }
+    for name in worktree_names(ctx) {
+        let dir = ctx.core_worktree_dir(&name);
+        out.push(row(name, &dir));
+    }
+    out
+}
+
+/// The directories under worktrees/, sorted — the glob the listers walk.
+pub fn worktree_names(ctx: &Ctx) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(ctx.worktrees_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    v.sort();
+    v
+}
+
+/// What a checkout is based on, and how many commits sit on top of it — the
+/// applied patches. Detached checkouts answer from the remote branches that
+/// contain HEAD, attached ones from their upstream.
+pub fn base_info(dir: &Path, branch: &str) -> (String, u32) {
+    let (base, upstream) = if branch == "(detached)" {
+        let base = detect_detached_base_branch(dir);
+        let up = format!("origin/{base}");
+        (base, up)
+    } else {
+        let up = git::out(dir, &["rev-parse", "--abbrev-ref", "@{upstream}"])
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| format!("origin/{branch}"));
+        (up.strip_prefix("origin/").unwrap_or(&up).to_string(), up)
+    };
+    let count = git::out(dir, &["rev-list", "--count", &format!("{upstream}..HEAD")])
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
+    (base, count)
+}
+
+/// What a worktree serves: (url, php, db), all empty when nothing.
+pub fn site_info(ctx: &Ctx, name: &str, active: bool) -> (String, String, String) {
+    use super::site;
+    if site::is_served(ctx, name) {
+        (
+            format!("https://{}", site::hostname(ctx, name)),
+            site::php_version(ctx, name),
+            site::database(name),
+        )
+    } else if active {
+        (
+            ctx.env.primary_url.clone(),
+            ctx.env.php_version.clone(),
+            "db".into(),
+        )
+    } else {
+        Default::default()
+    }
+}
+
+/// One checkout, as `worktree list --json` reports it and the TUI reads it. The
+/// keys are a contract a released TUI parses: add, never rename.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Info {
+    pub name: String,
+    /// Relative to the project root; "." for the root checkout.
+    pub dir: String,
+    pub head: String,
+    /// None when detached — which every worktree tryout creates is.
+    pub branch: Option<String>,
+    /// What it is compared against: the branch it came from.
+    pub base: Option<String>,
+    /// Commits on top of the base: the applied patches.
+    pub patches: u32,
+    pub modified: u32,
+    pub untracked: u32,
+    pub primary: bool,
+    pub url: Option<String>,
+    pub php: Option<String>,
+    pub db: Option<String>,
+    pub subject: Option<String>,
+    /// PHP versions this site could run on (installed, and accepted by its
+    /// Core). Absent from an older add-on.
+    #[serde(default)]
+    pub php_versions: Vec<String>,
+}
+
+/// Every checkout with its state. `available` is the PHP versions the web image
+/// provides, which only the container can see.
+pub fn infos(ctx: &Ctx, available: &[String]) -> Vec<Info> {
+    // Each checkout costs a `git status` — about two seconds on a cold Core tree
+    // — so they are read side by side, not one after another.
+    let rows = rows(ctx);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = rows
+            .into_iter()
+            .map(|r| scope.spawn(move || info(ctx, r, available)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a worktree read panicked"))
+            .collect()
+    })
+}
+
+fn info(ctx: &Ctx, r: Row, available: &[String]) -> Info {
+    let some = |s: String| (!s.is_empty()).then_some(s);
+    let dir = ctx.core_checkout_dir(&r.name);
+    let rel = match dir.strip_prefix(&ctx.root) {
+        Ok(p) if p.as_os_str().is_empty() => ".".to_string(),
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => dir.to_string_lossy().into_owned(),
+    };
+    let (base, patches) = base_info(&dir, &r.branch);
+    let (modified, untracked) = change_counts(&dir);
+    let (url, php, db) = site_info(ctx, &r.name, r.active);
+    let subject = git::out(&dir, &["log", "-1", "--format=%s"]).unwrap_or_default();
+    let constraint = super::php::core_constraint(&dir.join("composer.json")).unwrap_or_default();
+    Info {
+        name: r.name,
+        dir: rel,
+        head: r.head,
+        branch: some(r.branch).filter(|b| b != "(detached)"),
+        base: some(base),
+        patches,
+        modified: modified as u32,
+        untracked: untracked as u32,
+        primary: r.active,
+        url: some(url),
+        php: some(php),
+        db: some(db),
+        subject: some(subject),
+        php_versions: super::php::matching(&constraint, available),
+    }
+}
+
+/// `worktree list --json`, laid out exactly as the bash wrote it: one object per
+/// line inside the array.
+pub fn infos_json(infos: &[Info]) -> String {
+    use super::out::{json_str, json_str_or_null};
+    let opt = |o: &Option<String>| json_str_or_null(o.as_deref().unwrap_or(""));
+    let mut s = String::from("[");
+    for (i, w) in infos.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        let phps: Vec<String> = w.php_versions.iter().map(|v| json_str(v)).collect();
+        s.push_str(&format!(
+            "\n  {{\"name\":{},\"dir\":{},\"head\":{},\"branch\":{},\"base\":{},\"patches\":{},\"modified\":{},\"untracked\":{},\"primary\":{},\"url\":{},\"php\":{},\"db\":{},\"subject\":{},\"php_versions\":[{}]}}",
+            json_str(&w.name),
+            json_str(&w.dir),
+            json_str(&w.head),
+            opt(&w.branch),
+            opt(&w.base),
+            w.patches,
+            w.modified,
+            w.untracked,
+            w.primary,
+            opt(&w.url),
+            opt(&w.php),
+            opt(&w.db),
+            opt(&w.subject),
+            phps.join(","),
+        ));
+    }
+    s.push_str("\n]\n");
+    s
+}
+
+/// `worktree branches --json`: the branches a new worktree can be based on.
+pub fn branches_json(branches: &[String]) -> String {
+    let items: Vec<String> = branches.iter().map(|b| super::out::json_str(b)).collect();
+    format!("[{}]\n", items.join(","))
+}
+
+/// Fetch the branch tips once when the clone carried only one branch, so a
+/// picker has something to offer. Never from completion: it hits the network.
+pub fn ensure_branch_refs(ctx: &Ctx) -> bool {
+    let n = git::lines(&ctx.root, &["for-each-ref", "refs/remotes/origin"]).len();
+    if n > 1 {
+        return true;
+    }
+    super::out::notice(
+        super::out::Level::Info,
+        "Fetching the branch list (once; the clone only carried one branch)...",
+    );
+    if !git::ok(
+        &ctx.root,
+        &[
+            "fetch",
+            "--depth",
+            "1",
+            "origin",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+    ) {
+        super::out::notice(
+            super::out::Level::Warn,
+            "Could not fetch the branch list — only the current branch is offered",
+        );
+        return false;
+    }
+    true
+}
+
+/// `ensure_branch_refs` with its notices silenced, for output a tool parses.
+pub fn ensure_branch_refs_quiet(ctx: &Ctx) {
+    let n = git::lines(&ctx.root, &["for-each-ref", "refs/remotes/origin"]).len();
+    if n <= 1 {
+        git::ok(
+            &ctx.root,
+            &[
+                "fetch",
+                "--depth",
+                "1",
+                "origin",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+        );
+    }
+}
+
+/// True when the primary's vendor/ was built from another Core than the one it
+/// now serves — a switch without a rebuild.
+pub fn vendor_core_mismatch(ctx: &Ctx) -> bool {
+    let link = ctx.instance_dir().join("vendor/typo3/cms-core");
+    if !link.is_symlink() {
+        return false;
+    }
+    let (Ok(resolved), Ok(expected)) = (link.canonicalize(), ctx.active_core_dir().canonicalize())
+    else {
+        return false;
+    };
+    !resolved.starts_with(&expected) || resolved == expected
+}
