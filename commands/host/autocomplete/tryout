@@ -275,12 +275,13 @@ case "${VERB}" in
         c cs       "Prepare this instance for Core contribution"
         c exec     "Run a command in a site's PHP/root/database"
         c launch   "Open a site in the browser"
+        c ui       "Terminal UI: worktrees, and a live shell in each"
         c reset    "Reset Core to current branch + rebuild"
         c delete   "Wipe DB + fileadmin, fresh setup"
         c help     "Show help"
         ;;
 
-    status | composer | help)
+    status | composer | ui | help)
         hint "${VERB} takes no arguments"
         ;;
 
@@ -385,6 +386,7 @@ case "${VERB}" in
                 ;;
             list)
                 flag --plain "machine-readable columns, for scripts"
+                flag --json  "one JSON array, for tools"
                 ;;
             use)
                 # No flags: switching repoints the primary instance's overlay and

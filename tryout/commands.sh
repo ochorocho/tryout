@@ -564,7 +564,16 @@ ctr_worktree() {
 
         list)
             local plain="false" _wt_rows=""
-            if [ "${1:-}" = "--plain" ]; then plain="true"; fi
+            case "${1:-}" in
+                --plain) plain="true" ;;
+                # The TUI's contract: the JSON and nothing else on stdout, so no
+                # title and no footer.
+                --json)  worktrees_json; return 0 ;;
+                "")      ;;
+                *)       error "Unknown option: $1"
+                         error "  → ddev tryout worktree list [--plain|--json]"
+                         return 1 ;;
+            esac
             # No early return: the project root is a checkout, so there is always
             # at least one row — the primary. Hiding the list when no NESTED
             # worktree exists yet would leave the one row the user most expects

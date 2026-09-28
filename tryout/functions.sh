@@ -45,7 +45,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=40
+TRYOUT_VERSION=43
 
 # Core worktrees live INSIDE the clone, under worktrees/<name>. Nested worktrees
 # keep relative metadata on both pointers (worktrees/<n>/.git -> ../../.git/... and
@@ -1238,18 +1238,61 @@ list_core_worktrees() {
     done
 }
 
-# Uncommitted work in a checkout, in words: "clean", "3 modified", "1 untracked",
-# or both. Like core_worktree_is_dirty, a path that is not a checkout is clean —
-# "cannot look" must never read as "has changes".
-worktree_change_summary() {
-    local dir="$1" status modified untracked out=""
-    git -C "${dir}" rev-parse --git-dir >/dev/null 2>&1 || { echo "clean"; return 0; }
+# Field separator for the helpers below. Not a tab: IFS whitespace collapses
+# empty fields on `read`, so an unserved worktree's empty URL would shift PHP
+# into its place. \037 (unit separator) is never whitespace.
+FIELD_SEP=$'\037'
+
+# Uncommitted work in a checkout: "<modified><SEP><untracked>". A path that is not
+# a checkout counts as clean, like core_worktree_is_dirty — "cannot look" must
+# never read as "has changes".
+worktree_change_counts() {
+    local dir="$1" status modified untracked
+    git -C "${dir}" rev-parse --git-dir >/dev/null 2>&1 || { printf '0%s0\n' "${FIELD_SEP}"; return 0; }
     status="$(git -C "${dir}" status --porcelain 2>/dev/null || true)"
     untracked=$(printf '%s\n' "${status}" | grep -c '^??' || true)
     modified=$(printf '%s\n' "${status}" | grep -c '^[^?]' || true)
+    printf '%s%s%s\n' "${modified}" "${FIELD_SEP}" "${untracked}"
+}
+
+# The same, in words: "clean", "3 modified", "1 untracked", or both.
+worktree_change_summary() {
+    local modified untracked out=""
+    IFS="${FIELD_SEP}" read -r modified untracked < <(worktree_change_counts "$1")
     [ "${modified}" -gt 0 ] && out="${modified} modified"
     [ "${untracked}" -gt 0 ] && out="${out:+${out}, }${untracked} untracked"
     echo "${out:-clean}"
+}
+
+# What a checkout is based on and how far it has moved: "<base><SEP><patches>".
+# Worktrees are created detached, so the base comes from the remote branches that
+# contain HEAD; an attached checkout answers from its upstream. Commits on top of
+# the base ARE the applied patches — the measure `status` reports.
+worktree_base_info() {
+    local dir="$1" branch="$2" base upstream count
+    if [ "${branch}" = "(detached)" ]; then
+        base="$(detect_detached_base_branch "${dir}")"
+        upstream="origin/${base}"
+    else
+        upstream="$(git -C "${dir}" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)"
+        [ -n "${upstream}" ] || upstream="origin/${branch}"
+        base="${upstream#origin/}"
+    fi
+    count="$(git -C "${dir}" rev-list --count "${upstream}..HEAD" 2>/dev/null || echo 0)"
+    printf '%s%s%s\n' "${base}" "${FIELD_SEP}" "${count}"
+}
+
+# What a worktree serves: "<url><SEP><php><SEP><db>", all empty when nothing.
+worktree_site_info() {
+    local name="$1" active="$2"
+    if site_is_served "${name}"; then
+        printf 'https://%s%s%s%s%s\n' "$(site_hostname "${name}")" "${FIELD_SEP}" \
+            "$(site_php_version "${name}")" "${FIELD_SEP}" "$(site_database "${name}")"
+    elif [ -n "${active}" ]; then
+        printf '%s%s%s%sdb\n' "${DDEV_PRIMARY_URL:-}" "${FIELD_SEP}" "${DDEV_PHP_VERSION:-}" "${FIELD_SEP}"
+    else
+        printf '%s%s\n' "${FIELD_SEP}" "${FIELD_SEP}"
+    fi
 }
 
 # One `worktree list` card: where the checkout stands, what is on it, what it
@@ -1257,7 +1300,7 @@ worktree_change_summary() {
 # worktree, which is fine for a command run by hand and wrong anywhere else.
 worktree_card() {
     local name="$1" head="$2" branch="$3" active="$4"
-    local dir base upstream count subject age changes url php db
+    local dir base count subject age changes url php db
     dir="$(core_checkout_dir "${name}")"
 
     if [ -n "${active}" ]; then
@@ -1266,22 +1309,11 @@ worktree_card() {
         echo -e "${TEXT}○${NC} ${BOLD}${TEXT}${name}${NC}"
     fi
 
-    # Worktrees are created detached, so the base comes from the remote branches
-    # that contain HEAD; an attached checkout is its own answer.
-    if [ "${branch}" = "(detached)" ]; then
-        base="$(detect_detached_base_branch "${dir}")"
-        upstream="origin/${base}"
-        branch="detached from ${base}"
-    else
-        upstream="$(git -C "${dir}" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)"
-        [ -n "${upstream}" ] || upstream="origin/${branch}"
-    fi
+    IFS="${FIELD_SEP}" read -r base count < <(worktree_base_info "${dir}" "${branch}")
+    [ "${branch}" = "(detached)" ] && branch="detached from ${base}"
     age="$(git -C "${dir}" log -1 --format=%cr 2>/dev/null || true)"
     echo -e "  ${TEXT}${branch} ${DIM}${TEXT}@${NC} ${TEXT}${head}${age:+ ${DIM}${TEXT}· ${age}}${NC}"
 
-    # Commits on top of the base ARE the applied patches — the measure `status`
-    # reports.
-    count="$(git -C "${dir}" rev-list --count "${upstream}..HEAD" 2>/dev/null || echo 0)"
     subject="$(git -C "${dir}" log -1 --format=%s 2>/dev/null || true)"
     # DDEV exports COLUMNS=0, so there is no width to fit; 70 keeps it on a line.
     [ "${#subject}" -gt 70 ] && subject="${subject:0:69}…"
@@ -1296,23 +1328,65 @@ worktree_card() {
     changes="$(worktree_change_summary "${dir}")"
     if [ "${changes}" = "clean" ]; then changes="${GREEN}clean${NC}"; else changes="${YELLOW}${changes}${NC}"; fi
 
-    if site_is_served "${name}"; then
-        url="https://$(site_hostname "${name}")"
-        php="$(site_php_version "${name}")"
-        db="$(site_database "${name}")"
-    elif [ -n "${active}" ]; then
-        url="${DDEV_PRIMARY_URL:-}"
-        php="${DDEV_PHP_VERSION:-}"
-        db="db"
-    fi
-    if [ -n "${url:-}${php:-}" ]; then
+    IFS="${FIELD_SEP}" read -r url php db < <(worktree_site_info "${name}" "${active}")
+    if [ -n "${url}${php}" ]; then
         echo -e "  ${changes}"
-        [ -n "${url:-}" ] && echo -e "  ${CYAN}${url}${NC}"
+        [ -n "${url}" ] && echo -e "  ${CYAN}${url}${NC}"
         echo -e "  ${DIM}${TEXT}PHP ${php:--} · ${db}${NC}"
     else
         echo -e "  ${changes} ${DIM}${TEXT}· not served${NC}"
         echo -e "    ${DIM}${TEXT}→ ddev tryout worktree serve ${name}${NC}"
     fi
+}
+
+# A JSON string literal. Worktree names are validated, but a branch, a URL and
+# above all a commit subject can hold anything.
+json_str() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\t'/\\t}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    # Any other control character has no business in these values; drop it.
+    s="$(printf '%s' "${s}" | tr -d '\000-\010\013\014\016-\037')"
+    printf '"%s"' "${s}"
+}
+
+json_str_or_null() {
+    if [ -n "$1" ]; then json_str "$1"; else printf 'null'; fi
+}
+
+# `worktree list --json`: an array with one object per worktree, and nothing else
+# on stdout. The machine-readable contract the TUI reads — keys are stable, types
+# are real (bool, number, null), and `dir` is relative to the project root.
+worktrees_json() {
+    local name head branch active dir rel base count modified untracked url php db subject
+    local first="true"
+    printf '['
+    while IFS=$'\t' read -r name head branch active; do
+        [ -n "${name}" ] || continue
+        dir="$(core_checkout_dir "${name}")"
+        rel="${dir#"${PROJECT_ROOT}"/}"
+        [ "${dir}" = "${PROJECT_ROOT}" ] && rel="."
+        IFS="${FIELD_SEP}" read -r base count < <(worktree_base_info "${dir}" "${branch}")
+        IFS="${FIELD_SEP}" read -r modified untracked < <(worktree_change_counts "${dir}")
+        IFS="${FIELD_SEP}" read -r url php db < <(worktree_site_info "${name}" "${active}")
+        subject="$(git -C "${dir}" log -1 --format=%s 2>/dev/null || true)"
+        [ "${branch}" = "(detached)" ] && branch=""
+        [ "${first}" = "true" ] || printf ','
+        first="false"
+        printf '\n  {"name":%s,"dir":%s,"head":%s,"branch":%s,"base":%s,' \
+            "$(json_str "${name}")" "$(json_str "${rel}")" "$(json_str "${head}")" \
+            "$(json_str_or_null "${branch}")" "$(json_str_or_null "${base}")"
+        printf '"patches":%d,"modified":%d,"untracked":%d,"primary":%s,' \
+            "${count:-0}" "${modified:-0}" "${untracked:-0}" \
+            "$([ -n "${active}" ] && echo true || echo false)"
+        printf '"url":%s,"php":%s,"db":%s,"subject":%s}' \
+            "$(json_str_or_null "${url}")" "$(json_str_or_null "${php}")" \
+            "$(json_str_or_null "${db}")" "$(json_str_or_null "${subject}")"
+    done < <(list_core_worktrees_fast)
+    printf '\n]\n'
 }
 
 # Branch names on origin, one per line, version-sorted. The remote form asks
@@ -1361,6 +1435,95 @@ ensure_core_branch_refs() {
     return 0
 }
 
+# --- tryout-tui ----------------------------------------------------------------
+# The terminal UI (tui/ in the add-on's repo) ships as release binaries, not in
+# the payload: one universal file for macOS, a static one per Linux arch. It is
+# fetched the first time `ddev tryout ui` runs, never at install, so a project
+# that does not use it never touches the network for it. Host-side only.
+
+TRYOUT_TUI_VERSION="0.1.0"
+
+# The release asset for a platform, from `uname -s`/`uname -m` by default.
+tui_asset_name() {
+    local os="${1:-$(uname -s 2>/dev/null || echo "${OSTYPE:-}")}" arch="${2:-$(uname -m 2>/dev/null)}"
+    case "${os}" in
+        Darwin|darwin*) echo "tryout-tui-macos-universal" ;;
+        Linux|linux*)
+            case "${arch}" in
+                x86_64|amd64)  echo "tryout-tui-linux-x86_64" ;;
+                aarch64|arm64) echo "tryout-tui-linux-aarch64" ;;
+                *) return 1 ;;
+            esac ;;
+        *) return 1 ;;
+    esac
+}
+
+# Versioned, so updating the add-on to a newer TUI fetches it instead of running
+# a cached older one against a newer contract.
+tui_bin_path() { echo "${PROJECT_ROOT}/.ddev/tryout/bin/tryout-tui-${TRYOUT_TUI_VERSION}"; }
+
+tui_download_base() {
+    echo "${TRYOUT_TUI_BASE_URL:-https://github.com/ochorocho/tryout/releases/download/tui-v${TRYOUT_TUI_VERSION}}"
+}
+
+# SHA-256 of a file: shasum on macOS, sha256sum on Linux.
+sha256_of() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    else
+        sha256sum "$1" | cut -d' ' -f1
+    fi
+}
+
+# Download the TUI for this platform and verify it against the published
+# checksum. Nothing lands at its final path unless it matched.
+fetch_tui() {
+    local asset base dest part want got
+    asset="$(tui_asset_name)" || {
+        error "No tryout-tui build for $(uname -sm 2>/dev/null)"
+        error "  → build it from tui/ and set TRYOUT_TUI_BIN"
+        return 1
+    }
+    base="$(tui_download_base)"
+    dest="$(tui_bin_path)"
+    part="${dest}.part"
+    mkdir -p "$(dirname "${dest}")"
+    info "Downloading tryout-tui ${TRYOUT_TUI_VERSION} (once)..."
+    if ! curl -fsSL -o "${part}" "${base}/${asset}"; then
+        rm -f "${part}"
+        error "Could not download ${base}/${asset}"
+        error "  → build it from tui/ (cargo build --release) and set TRYOUT_TUI_BIN"
+        return 1
+    fi
+    want="$(curl -fsSL "${base}/${asset}.sha256" 2>/dev/null | cut -d' ' -f1)"
+    got="$(sha256_of "${part}")"
+    if [ -z "${want}" ] || [ "${want}" != "${got}" ]; then
+        rm -f "${part}"
+        error "tryout-tui failed its checksum — not installed"
+        error "  expected ${want:-<none published>}, got ${got}"
+        return 1
+    fi
+    chmod +x "${part}"
+    mv "${part}" "${dest}"
+}
+
+# The TUI binary to run, on stdout: TRYOUT_TUI_BIN (a local build), else the
+# cached download, else a fresh one. Messages go to stderr — stdout is the path.
+resolve_tui_bin() {
+    if [ -n "${TRYOUT_TUI_BIN:-}" ]; then
+        [ -x "${TRYOUT_TUI_BIN}" ] || {
+            error "TRYOUT_TUI_BIN is not an executable: ${TRYOUT_TUI_BIN}" >&2
+            return 1
+        }
+        echo "${TRYOUT_TUI_BIN}"
+        return 0
+    fi
+    local bin
+    bin="$(tui_bin_path)"
+    [ -x "${bin}" ] || fetch_tui >&2 || return 1
+    echo "${bin}"
+}
+
 # True when the installed payload is not the one this code came from. Runs on the
 # host, cheaply: two file reads and a string compare.
 #
@@ -1406,6 +1569,21 @@ vendor_core_mismatch() {
 # ─────────────────────────────────────────────────────────────────────
 
 site_is_primary() { [ "${1:-}" = "${PRIMARY_SITE}" ] || [ -z "${1:-}" ]; }
+
+# A worktree's name works wherever a site is asked for. The active worktree IS
+# the primary and has no site under its own name, so `exec main` — the name
+# `worktree list` shows — read as "No served site 'main'". Host entry points
+# translate it here. site_is_primary stays literal on purpose: `worktree remove`
+# must never read the active worktree as a site to unserve first.
+site_for_name() {
+    local n="${1:-}"
+    if [ -n "${n}" ] && [ "${n}" != "${PRIMARY_SITE}" ] && ! site_is_served "${n}" \
+       && [ "${n}" = "$(active_worktree_name 2>/dev/null)" ]; then
+        echo "${PRIMARY_SITE}"
+    else
+        echo "${n}"
+    fi
+}
 
 # Root of a site's TYPO3 instance (composer root).
 # The PRIMARY site is TYPO3-Instances/primary — the root is Core's source, and the

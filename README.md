@@ -164,11 +164,16 @@ ddev tryout worktree            Manage side-by-side Core checkouts (own help)
 ddev tryout exec <site> <cmd>   Run a command in a site's PHP, root and database
 ddev tryout launch              Open the worktree you are in, in the browser
 ddev tryout launch <worktree>   Open that worktree's site (--backend for /typo3/)
+ddev tryout ui                  Terminal UI: worktrees, a live shell in each, and
+                                every command above one keypress away
 
 ddev tryout cs                  Prepare instance for Core contribution
 ddev tryout cs doctor           Check hooks, template, and push URL
 ddev tryout cs uninstall        Remove hooks and reset push URL
 ```
+
+Wherever a site is asked for, a worktree's name works too — including the name the
+primary goes by in `worktree list`, so `ddev tryout exec main …` means the primary.
 
 Once you serve more than one site, `patch`, `reset`, `checkout` and `delete` take an
 optional site name and `delete` takes `--all` — see
@@ -855,7 +860,33 @@ site it serves — and with gum installed `ddev tryout status` is a bordered
 report; without it, the same content in plain columns. **For scripting, use
 `ddev tryout worktree list --plain`** — space-padded columns
 (`NAME HEAD BRANCH STATE PHP DB URL`), which is the format the Playwright suite
-parses and the one that stays stable.
+parses and the one that stays stable — or **`--json`**, one array with a fixed set
+of keys (`name dir head branch base patches modified untracked primary url php db
+subject`; `branch` is `null` for a detached checkout, `dir` is relative to the
+project root). `--json` prints nothing but the JSON, and is what `ddev tryout ui`
+reads.
+
+### The terminal UI
+
+`ddev tryout ui` opens a full-screen workspace: the worktrees on the left, a live
+shell in the selected one on the right — one per worktree, kept running while you
+look at another — and every tryout command for the selected worktree behind `a`.
+A command runs in a popup terminal, so its prompts work; it closes by itself when
+it succeeds and stays open with its output when it fails.
+
+| Key | |
+|---|---|
+| `↑` `↓` | select a worktree |
+| `Enter` | open (or return to) its shell |
+| `Ctrl-G` | leave the shell for the list |
+| `a` | the commands for this worktree |
+| `r` / `q` | reload / quit |
+
+It is a separate program (Rust, in `tui/`), one self-contained file per platform.
+The first run downloads the right one for your machine from this repository's
+releases, verifies its checksum and keeps it in `.ddev/tryout/bin/`; nothing is
+downloaded until you use it. To run a local build instead, point
+`TRYOUT_TUI_BIN` at it.
 
 The host scripts are POSIX-minded bash and run on **macOS and Linux alike**: no
 GNU-only utilities (`readlink -f`, `grep -P`, `stat -c`, `date -d`), and nothing that

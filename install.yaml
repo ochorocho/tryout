@@ -216,6 +216,11 @@ removal_actions:
     rm -f tryout/.version
 
   - |
+    #ddev-description:Remove the downloaded terminal UI
+    # Fetched by `ddev tryout ui` on first use, so it is not a project file.
+    rm -rf tryout/bin
+
+  - |
     #ddev-description:Remove generated worktree config and vhosts
     rm -f config.worktrees.yaml apache/tryout-site-*.conf nginx_full/tryout-site-*.conf \
           nginx_full/tryout-server-names-hash.conf

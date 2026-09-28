@@ -1531,7 +1531,7 @@ EOF
   [ -n "${ctr_verbs}" ]
   for verb in ${host_verbs}; do
     case "${verb}" in
-      launch|help) continue ;;  # host by nature: a browser, static text
+      launch|ui|help) continue ;;  # host by nature: a browser, a terminal, static text
     esac
     printf '%s\n' "${ctr_verbs}" | grep -qx "${verb}" || fail "container dispatcher lacks '${verb}'"
   done
@@ -2253,7 +2253,7 @@ YAML
   # in `worktree list` and types.
   local fn
   fn=$(sed -n '/^cmd_launch()/,/^}/p' "${DIR}/commands/host/tryout")
-  printf '%s' "${fn}" | grep -q 'active_worktree_name 2>/dev/null.*site="${PRIMARY_SITE}"' \
+  printf '%s' "${fn}" | grep -q 'site="$(site_for_name "${site}")"' \
     || fail "the active worktree's name must resolve to the primary site"
 }
 
@@ -2678,6 +2678,158 @@ card_eval() { # $1=root $2=code
   assert_output --partial "https://p.ddev.site"
   assert_output --partial "PHP 8.4 · db"
   refute_output --partial "patches on top"
+}
+
+@test "worktree list --json is one parseable array with every field" {
+  set -eu -o pipefail
+  command -v git >/dev/null || skip "git not available"
+  command -v python3 >/dev/null || skip "python3 not available"
+  # The TUI reads this, so it is a contract like --plain: nothing but the JSON
+  # on stdout, a stable set of keys, real types (bools, numbers, null).
+  local root="${FAKEROOT}/json"
+  make_card_fixture "${root}"
+  local out
+  out="$(card_eval "${root}" "DDEV_PRIMARY_URL=https://p.ddev.site DDEV_PHP_VERSION=8.4
+    active_worktree_name() { echo main; }
+    worktrees_json")"
+  run python3 -c '
+import json, sys
+rows = {w["name"]: w for w in json.loads(sys.argv[1])}
+keys = {"name","dir","head","branch","base","patches","modified","untracked",
+        "primary","url","php","db","subject"}
+for w in rows.values():
+    assert set(w) == keys, sorted(set(w) ^ keys)
+main, feat = rows["main"], rows["feat"]
+assert main["primary"] is True and main["dir"] == "." and main["branch"] == "main"
+assert main["url"] == "https://p.ddev.site" and main["php"] == "8.4" and main["db"] == "db"
+assert feat["primary"] is False and feat["dir"] == "worktrees/feat"
+assert feat["branch"] is None and feat["base"] == "main"
+assert feat["patches"] == 2 and feat["modified"] == 1 and feat["untracked"] == 1
+assert feat["url"] is None and feat["php"] is None
+assert feat["subject"] == "[BUGFIX] Fix page tree drag"
+print("ok")' "${out}"
+  assert_success
+  assert_output "ok"
+}
+
+@test "a JSON string survives quotes, backslashes and control characters" {
+  set -eu -o pipefail
+  command -v python3 >/dev/null || skip "python3 not available"
+  # printf turns \\ into one backslash and \t into a tab.
+  printf 'say "hi" \\ tab\there' > "${FAKEROOT}/raw"
+  run helper_eval 'json_str "$(cat "'"${FAKEROOT}"'/raw")"'
+  assert_success
+  run python3 -c '
+import json, sys
+assert json.loads(sys.argv[1]) == open(sys.argv[2]).read()
+print("ok")' "${output}" "${FAKEROOT}/raw"
+  assert_output "ok"
+}
+
+@test "the TUI asset is picked per platform, and refused where there is none" {
+  set -eu -o pipefail
+  run helper_eval 'tui_asset_name Darwin arm64';  assert_output "tryout-tui-macos-universal"
+  run helper_eval 'tui_asset_name Darwin x86_64'; assert_output "tryout-tui-macos-universal"
+  run helper_eval 'tui_asset_name Linux x86_64';  assert_output "tryout-tui-linux-x86_64"
+  run helper_eval 'tui_asset_name Linux aarch64'; assert_output "tryout-tui-linux-aarch64"
+  run helper_eval 'tui_asset_name Linux arm64';   assert_output "tryout-tui-linux-aarch64"
+  run helper_eval 'tui_asset_name FreeBSD amd64'
+  assert_failure
+}
+
+# A release served from disk: the asset and its .sha256, as the workflow uploads them.
+fake_tui_release() { # $1=content of the "binary" $2=checksum to publish (default: the real one)
+  local rel="${FAKEROOT}/release" asset sum
+  mkdir -p "${rel}"
+  asset="$(helper_eval 'tui_asset_name')"
+  printf '%s' "$1" > "${rel}/${asset}"
+  sum="${2:-$(shasum -a 256 "${rel}/${asset}" 2>/dev/null | cut -d' ' -f1 || sha256sum "${rel}/${asset}" | cut -d' ' -f1)}"
+  printf '%s  %s\n' "${sum}" "${asset}" > "${rel}/${asset}.sha256"
+  echo "file://${rel}"
+}
+
+@test "the TUI is fetched once, checksum-verified, and made executable" {
+  set -eu -o pipefail
+  command -v curl >/dev/null || skip "curl not available"
+  local base
+  base="$(fake_tui_release '#!/bin/sh')"
+  run helper_eval "TRYOUT_TUI_BASE_URL='${base}' resolve_tui_bin 2>/dev/null"
+  assert_success
+  assert_output "${FAKEROOT}/.ddev/tryout/bin/tryout-tui-$(helper_eval 'echo ${TRYOUT_TUI_VERSION}')"
+  [ -x "${output}" ] || fail "not executable"
+  # Cached: a second resolve does not download, so a dead URL does not matter.
+  run helper_eval "TRYOUT_TUI_BASE_URL='file:///nonexistent' resolve_tui_bin 2>/dev/null"
+  assert_success
+}
+
+@test "a TUI download that fails its checksum is thrown away" {
+  set -eu -o pipefail
+  command -v curl >/dev/null || skip "curl not available"
+  local base
+  base="$(fake_tui_release 'tampered' 0000000000000000000000000000000000000000000000000000000000000000)"
+  run helper_eval "TRYOUT_TUI_BASE_URL='${base}' resolve_tui_bin"
+  assert_failure
+  assert_output --partial "checksum"
+  run bash -c "ls '${FAKEROOT}/.ddev/tryout/bin/' 2>/dev/null"
+  refute_output --partial "tryout-tui"
+}
+
+@test "TRYOUT_TUI_BIN runs a local build and is never downloaded over" {
+  set -eu -o pipefail
+  printf '#!/bin/sh\n' > "${FAKEROOT}/mytui"; chmod +x "${FAKEROOT}/mytui"
+  run helper_eval "TRYOUT_TUI_BIN='${FAKEROOT}/mytui' TRYOUT_TUI_BASE_URL=file:///nonexistent resolve_tui_bin"
+  assert_success
+  assert_output "${FAKEROOT}/mytui"
+  run helper_eval "TRYOUT_TUI_BIN='${FAKEROOT}/missing' resolve_tui_bin"
+  assert_failure
+  assert_output --partial "TRYOUT_TUI_BIN"
+}
+
+@test "every TUI asset the add-on asks for is one the release uploads" {
+  set -eu -o pipefail
+  # fetch_tui builds its URL from tui_asset_name and TRYOUT_TUI_VERSION; the
+  # release workflow names the files and the tag. A drift is a 404 for users.
+  local wf="${DIR}/.github/workflows/tui-release.yml" platform asset
+  for platform in "Darwin arm64" "Linux x86_64" "Linux aarch64"; do
+    asset="$(helper_eval "tui_asset_name ${platform}")"
+    grep -q "${asset}" "${wf}" || fail "${asset} is never built by the release"
+  done
+  local pinned crate
+  pinned="$(helper_eval 'echo ${TRYOUT_TUI_VERSION}')"
+  crate="$(sed -n 's/^version = "\(.*\)"$/\1/p' "${DIR}/tui/Cargo.toml" | head -1)"
+  [ "${pinned}" = "${crate}" ] || fail "TRYOUT_TUI_VERSION ${pinned} != tui/Cargo.toml ${crate}"
+}
+
+@test "ddev tryout ui talks to the real terminal, not DDEV's pipes" {
+  set -eu -o pipefail
+  # A DDEV host command has no tty on stdin/stdout; the TUI would start blind.
+  local fn
+  fn=$(sed -n '/^cmd_ui()/,/^}/p' "${DIR}/commands/host/tryout" | grep -v '^[[:space:]]*#')
+  printf '%s' "${fn}" | grep -q '</dev/tty >/dev/tty 2>/dev/tty' \
+    || fail "the TUI must be attached to /dev/tty"
+  printf '%s' "${fn}" | grep -q 'resolve_tui_bin' || fail "cmd_ui must resolve the binary"
+}
+
+@test "the active worktree's name works wherever a site is asked for" {
+  set -eu -o pipefail
+  # `worktree list` shows the primary under its worktree name, and the TUI
+  # passes that name — `exec main` said "No served site 'main'". The name is
+  # translated at the host entry points; site_is_primary stays literal, because
+  # `worktree remove` must never read the active worktree as a site to unserve.
+  run helper_eval 'active_worktree_name() { echo main; }; site_for_name main'
+  assert_output "@primary"
+  run helper_eval 'active_worktree_name() { echo main; }; site_for_name v13'
+  assert_output "v13"
+  run helper_eval 'active_worktree_name() { echo main; }; site_for_name ""'
+  assert_output ""
+  run helper_eval 'active_worktree_name() { echo main; }; site_is_primary main'
+  assert_failure
+
+  local fn
+  for fn in cmd_exec cmd_reset cmd_download cmd_checkout cmd_patch cmd_delete cmd_launch; do
+    sed -n "/^${fn}() {/,/^}/p" "${DIR}/commands/host/tryout" | grep -v '^[[:space:]]*#' \
+      | grep -q 'site_for_name' || fail "${fn} does not accept the active worktree's name"
+  done
 }
 
 @test "ui_table keeps its rows where neither gum nor column exists" {

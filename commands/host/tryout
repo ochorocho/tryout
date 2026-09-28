@@ -134,7 +134,14 @@ cmd_status() {
 # download — Clone or update TYPO3 Core
 # ─────────────────────────────────────────────────────────────────────
 cmd_download() {
-    delegate download "$@"
+    local args=() a
+    for a in "$@"; do
+        case "${a}" in
+            -*) args+=("${a}") ;;
+            *)  args+=("$(site_for_name "${a}")") ;;
+        esac
+    done
+    delegate download ${args[@]+"${args[@]}"}
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -168,11 +175,13 @@ cmd_patch() {
         local id="$1"; shift
         # A --site flag wins; otherwise the old `patch <id> <site>` form still works.
         [ -n "${site}" ] || site="${1:-}"
+        site="$(site_for_name "${site}")"
         delegate patch ${site:+--site "${site}"} "${id}"
         return $?
     fi
 
     [ -n "${site}" ] || site="${1:-}"
+    site="$(site_for_name "${site}")"
     # A configured list is a deliberate choice: apply it rather than asking.
     if [ -n "$(echo "${TRYOUT_PATCHES:-}" | tr -d '[:space:]')" ] || ! have_tty; then
         delegate patch ${site:+--site "${site}"}
@@ -248,6 +257,7 @@ cmd_reset() {
         site="$(ask_site "Reset which site?")" \
             || { explain_missing "ddev tryout reset [<site>]"; have_tty && return 1; }
     fi
+    site="$(site_for_name "${site}")"
     delegate reset ${site:+"${site}"}
 }
 
@@ -281,7 +291,7 @@ cmd_delete() {
         sites=("${PRIMARY_SITE}")
         local s
         while IFS= read -r s; do [ -n "${s}" ] && sites+=("${s}"); done < <(served_site_names)
-    elif [ -n "${target}" ] && ! site_is_primary "${target}"; then
+    elif [ -n "${target}" ] && ! site_is_primary "$(site_for_name "${target}")"; then
         if ! site_is_served "${target}"; then
             error "No served site '${target}'"
             error "  → ddev tryout worktree list"
@@ -353,6 +363,7 @@ cmd_checkout() {
         return 1
     fi
 
+    site="$(site_for_name "${site}")"
     delegate checkout "${target_branch}" ${site:+"${site}"}
 }
 
@@ -397,6 +408,7 @@ cmd_exec() {
         echo "  Sites: primary$(served_site_names | sed 's/^/, /' | tr -d '\n')"
         return 1
     fi
+    site="$(site_for_name "${site}")"
     if ! site_is_primary "${site}" && ! site_is_served "${site}"; then
         error "No served site '${site}'"
         error "  → ddev tryout worktree list"
@@ -660,7 +672,7 @@ cmd_launch() {
     # The active worktree IS the primary and has no sites/<name>/ marker of its
     # own, so it would read as "not served" by name — yet that is exactly what
     # anyone typing the name they see in `worktree list` passes.
-    if [ "${site}" = "$(active_worktree_name 2>/dev/null)" ]; then site="${PRIMARY_SITE}"; fi
+    site="$(site_for_name "${site}")"
 
     if ! site_is_served "${site}"; then
         error "No served site '${site}'"
@@ -689,6 +701,25 @@ cmd_launch_help() {
     echo ""
     echo "  Flags: --backend   open /typo3/ instead of the frontend"
     echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# ui — The terminal UI: worktrees and a live shell in each
+# ─────────────────────────────────────────────────────────────────────
+# Host-only: the TUI draws on the user's terminal and runs shells there.
+cmd_ui() {
+    reject_args ui "$@" || return 1
+    require_core
+    # A DDEV host command gets pipes, not the terminal, on stdin and stdout —
+    # but /dev/tty still reaches it. Without one there is nothing to draw on.
+    if ! { : </dev/tty; } 2>/dev/null; then
+        error "ddev tryout ui needs a terminal"
+        error "  → run it from an interactive shell"
+        return 1
+    fi
+    local bin
+    bin="$(resolve_tui_bin)" || return 1
+    "${bin}" "${PROJECT_ROOT}" </dev/tty >/dev/tty 2>/dev/tty
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -746,6 +777,7 @@ cmd_help() {
     echo -e "  ${BOLD}cs [setup|doctor]${NC}         Prepare this instance for Core contribution"
     echo -e "  ${BOLD}exec <site> <cmd>${NC}         Run a command in a site's PHP/root/database"
     echo -e "  ${BOLD}launch [<worktree>]${NC}       Open a site in the browser (--backend for /typo3/)"
+    echo -e "  ${BOLD}ui${NC}                        Terminal UI: worktrees, and a live shell in each"
     echo -e "  ${BOLD}reset [<site>]${NC}            Reset Core to current branch + rebuild"
     echo -e "  ${BOLD}delete [<site>]${NC}           Wipe DB + fileadmin, fresh setup (--all for every site)"
     echo -e "  ${BOLD}help${NC}                      Show this help"
@@ -775,6 +807,7 @@ case "${ACTION}" in
     cs)       cmd_cs "$@" ;;
     exec)     cmd_exec "$@" ;;
     launch)   cmd_launch "$@" ;;
+    ui)       cmd_ui "$@" ;;
     reset)    cmd_reset "$@" ;;
     delete)   cmd_delete "$@" ;;
     help)     cmd_help "$@" ;;
