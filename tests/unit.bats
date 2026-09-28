@@ -2807,7 +2807,7 @@ fake_tui_release() { # $1=content of the "binary" $2=checksum to publish (defaul
   local fn
   fn=$(sed -n '/^cmd_ui()/,/^}/p' "${DIR}/commands/host/tryout" | grep -v '^[[:space:]]*#')
   printf '%s' "${fn}" | grep -q 'stop)' || fail "cmd_ui has no stop"
-  printf '%s' "${fn}" | grep -q '"${bin}" stop "${PROJECT_ROOT}"' \
+  printf '%s' "${fn}" | grep -q '"${bin}" ui stop "${PROJECT_ROOT}"' \
     || fail "stop must hand the project to the binary's own stop"
   # With no binary there can be no session: stop must not fetch one to find out.
   local stop

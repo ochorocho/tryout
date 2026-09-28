@@ -14,7 +14,7 @@ explicitly and `tui/` is not in it. Users get a release binary, fetched by
 
 ```bash
 cargo run -- /path/to/tryout-project     # or run it from inside the project
-TRYOUT_TUI_BIN=$PWD/target/release/tryout-tui ddev tryout ui   # through the add-on
+TRYOUT_TUI_BIN=$PWD/target/release/tryout ddev tryout ui   # through the add-on
 ```
 
 In a shell every key is the shell's except **Ctrl-G**, which returns to the
@@ -159,7 +159,7 @@ cargo zigbuild --release --target x86_64-apple-darwin
 cargo zigbuild --release --target x86_64-unknown-linux-musl     # static ELF
 cargo zigbuild --release --target aarch64-unknown-linux-musl    # static ELF
 lipo -create -output tryout-tui-macos-universal \
-  target/release/tryout-tui target/x86_64-apple-darwin/release/tryout-tui
+  target/release/tryout target/x86_64-apple-darwin/release/tryout
 ```
 
 Verified: the universal file runs natively on arm64 and under Rosetta; the arm64

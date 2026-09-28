@@ -28,8 +28,8 @@ jobs:
           cargo build --release --target x86_64-apple-darwin
           mkdir -p ../dist
           lipo -create -output ../dist/tryout-tui-macos-universal \
-            target/aarch64-apple-darwin/release/tryout-tui \
-            target/x86_64-apple-darwin/release/tryout-tui
+            target/aarch64-apple-darwin/release/tryout \
+            target/x86_64-apple-darwin/release/tryout
           file ../dist/tryout-tui-macos-universal
       - uses: actions/upload-artifact@v4
         with:
@@ -57,7 +57,7 @@ jobs:
         run: |
           cargo zigbuild --release --target ${{ matrix.target }}
           mkdir -p ../dist
-          cp target/${{ matrix.target }}/release/tryout-tui ../dist/${{ matrix.asset }}
+          cp target/${{ matrix.target }}/release/tryout ../dist/${{ matrix.asset }}
           file ../dist/${{ matrix.asset }} | tee /dev/stderr | grep -q 'statically linked'
       - uses: actions/upload-artifact@v4
         with:

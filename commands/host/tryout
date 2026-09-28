@@ -755,7 +755,7 @@ cmd_ui() {
                 info "No session running."
                 return 0
             fi
-            "${bin}" stop "${PROJECT_ROOT}"
+            "${bin}" ui stop "${PROJECT_ROOT}"
             return $?
             ;;
         "") ;;
@@ -776,7 +776,7 @@ cmd_ui() {
     fi
     local bin
     bin="$(resolve_tui_bin)" || return 1
-    "${bin}" "${PROJECT_ROOT}" </dev/tty >/dev/tty 2>/dev/tty
+    "${bin}" ui "${PROJECT_ROOT}" </dev/tty >/dev/tty 2>/dev/tty
 }
 
 # ─────────────────────────────────────────────────────────────────────

@@ -46,3 +46,7 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Release binaries: built by tui/scripts/stage-bins.sh, committed only on a
+# release commit by the release workflow.
+/tryout/bin/
