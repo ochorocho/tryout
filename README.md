@@ -864,23 +864,46 @@ parses and the one that stays stable — or **`--json`**, one array with a fixed
 of keys (`name dir head branch base patches modified untracked primary url php db
 subject`; `branch` is `null` for a detached checkout, `dir` is relative to the
 project root). `--json` prints nothing but the JSON, and is what `ddev tryout ui`
-reads.
+reads — as are `ddev tryout worktree branches --json` and `ddev tryout patch
+--list --json`. With `TRYOUT_EVENTS=1` any command also prints its progress as
+`@@tryout {"level":…,"msg":…}` lines, which is how the TUI shows its steps.
 
 ### The terminal UI
 
-`ddev tryout ui` opens a full-screen workspace: the worktrees on the left, a live
-shell in the selected one on the right — one per worktree, kept running while you
-look at another — and every tryout command for the selected worktree behind `a`.
-A command runs in a popup terminal, so its prompts work; it closes by itself when
-it succeeds and stays open with its output when it fails.
+`ddev tryout ui` opens a full-screen workspace: the worktrees on the left, and on
+the right the selected worktree's tabs — as many shells as you open, kept running
+while you look at another worktree. Below the worktrees, an **agents pane** lists
+every tab running a coding agent (claude, codex, …) as working, waiting for you,
+or idle. Every tryout command for the selected worktree is behind `a` or a
+right-click: the TUI asks what it needs itself (names, branches, Gerrit changes,
+a confirmation naming what a destructive command removes) and runs it as a job
+in the **Activity** panel — one at a time, with its current step, then ✓ or ✗;
+select a row (or press `L`) for its log.
 
 | Key | |
 |---|---|
-| `↑` `↓` | select a worktree |
-| `Enter` | open (or return to) its shell |
-| `Ctrl-G` | leave the shell for the list |
+| `↑` `↓`, or a click | select a worktree |
+| `Enter` | open (or return to) its active tab |
+| `t`, or click `+` | a new shell tab |
+| `1`–`9`, `[` `]`, or click a tab | switch tab · `w` closes one |
+| `,`, or double-click a tab | rename it (empty: back to its program's title) |
+| `<` `>`, or drag a tab | move it |
+| click the URL in the title | open that site in the browser |
+| `+`, or click **+ new** above the list | create a worktree (asks name, then branch) |
+| right-click a worktree | serve/unserve, use, rename or remove it |
+| `n`, or click an agent | jump to the next agent that needs you |
+| `Ctrl-G` | leave the shell for the list — then any key above |
 | `a` | the commands for this worktree |
-| `r` / `q` | reload / quit |
+| `r` | reload the list |
+| `q` | detach — everything keeps running, jobs included |
+| `L`, or click an Activity row | a command's log |
+| drag the border between list and pane, or `{` `}` | resize them (double-click the border resets) |
+| `Q` | close the session (asks first) |
+
+**It runs as a session, like herdr or tmux.** `q` detaches and leaves every
+shell, agent and running command going; the next `ddev tryout ui` picks the
+session up exactly as you left it. Only `Q` or `ddev tryout ui stop` ends it. One
+terminal is attached at a time — attaching elsewhere takes the session over.
 
 It is a separate program (Rust, in `tui/`), one self-contained file per platform.
 The first run downloads the right one for your machine from this repository's

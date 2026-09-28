@@ -28,6 +28,10 @@ pub struct Worktree {
     pub php: Option<String>,
     pub db: Option<String>,
     pub subject: Option<String>,
+    /// PHP versions this site could run on (installed, and accepted by its
+    /// Core). Absent from an older add-on, which then offers no PHP menu.
+    #[serde(default)]
+    pub php_versions: Vec<String>,
 }
 
 impl Worktree {
@@ -95,6 +99,44 @@ pub fn load(root: &Path) -> Result<Vec<Worktree>> {
         bail!("ddev tryout worktree list failed: {}", reason.trim());
     }
     parse_json(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The branches a worktree can be based on: `ddev tryout worktree branches
+/// --json`. Slow (a `ddev exec`, and a fetch the first time), so off-thread.
+pub fn load_branches(root: &Path) -> Result<Vec<String>> {
+    let out = Command::new("ddev")
+        .args(["tryout", "worktree", "branches", "--json"])
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("could not run ddev")?;
+    if !out.status.success() {
+        bail!("ddev tryout worktree branches failed");
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let start = text
+        .find('[')
+        .context("no JSON array — is the add-on older than the TUI?")?;
+    serde_json::from_str(&text[start..]).context("the branch list is not the JSON expected")
+}
+
+/// The open Gerrit changes for a worktree's branch: `ddev tryout patch --list
+/// --json --site <name>`. Asks Gerrit, so off-thread.
+pub fn load_patches(root: &Path, site: &str) -> Result<Vec<crate::forms::Change>> {
+    let out = Command::new("ddev")
+        .args(["tryout", "patch", "--list", "--json", "--site", site])
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("could not run ddev")?;
+    if !out.status.success() {
+        bail!("Gerrit could not be reached, or there are no open changes");
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let start = text
+        .find('[')
+        .context("no JSON array — is the add-on older than the TUI?")?;
+    serde_json::from_str(&text[start..]).context("the change list is not the JSON expected")
 }
 
 /// Drop CSI escape sequences: ddev colours its messages even when piped.

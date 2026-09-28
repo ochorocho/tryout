@@ -19,6 +19,13 @@ web_environment:
   # Composer runs against the tryout overlay, never your own composer.json.
   # See .ddev/tryout/composer.tryout.json.
   - COMPOSER=composer.tryout.json
+  # Composer refuses packages with known advisories while resolving. Older and
+  # dev Cores pin such versions (13.3: enshrined/svg-sanitize ^0.20.0), so they
+  # could not be installed at all — and running them is what tryout is for. This
+  # lifts the advisories policy only: malware stays blocked, and `composer audit`
+  # still reports every advisory. Not COMPOSER_NO_SECURITY_BLOCKING — that one
+  # lifts all blocking, malware included.
+  - COMPOSER_POLICY_ADVISORIES_BLOCK=0
 
 hooks:
   post-start:

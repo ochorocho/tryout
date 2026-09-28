@@ -45,7 +45,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=43
+TRYOUT_VERSION=48
 
 # Core worktrees live INSIDE the clone, under worktrees/<name>. Nested worktrees
 # keep relative metadata on both pointers (worktrees/<n>/.git -> ../../.git/... and
@@ -77,10 +77,24 @@ TEXT='\033[37m'
 NC='\033[0m'
 
 # --- Output helpers ---
-info()    { echo -e "${CYAN}==>${NC} $*"; }
-success() { echo -e "${GREEN}==>${NC} $*"; }
-warn()    { echo -e "${YELLOW}==>${NC} $*"; }
-error()   { echo -e "${RED}✗${NC} $*" >&2; }
+info()    { echo -e "${CYAN}==>${NC} $*"; tryout_event info "$*"; }
+success() { echo -e "${GREEN}==>${NC} $*"; tryout_event success "$*"; }
+warn()    { echo -e "${YELLOW}==>${NC} $*"; tryout_event warn "$*"; }
+error()   { echo -e "${RED}✗${NC} $*" >&2; tryout_event error "$*" >&2; }
+
+# With TRYOUT_EVENTS=1 each line above gets a machine-readable twin on the same
+# stream: `@@tryout {"level":"info","msg":"…"}`. The TUI shows a command's
+# progress from these, and keeps the prose as its log. In band, because `ddev
+# exec` carries nothing but stdout and stderr. Colour codes are stripped; and a
+# message from before json_str exists (an error while this file is still being
+# sourced) simply has no twin.
+tryout_event() {
+    [ "${TRYOUT_EVENTS:-}" = "1" ] || return 0
+    declare -F json_str >/dev/null || return 0
+    local msg
+    msg="$(printf '%s' "$2" | sed -e 's/\\033\[[0-9;]*m//g' -e $'s/\033\[[0-9;]*m//g')"
+    printf '@@tryout {"level":"%s","msg":%s}\n' "$1" "$(json_str "${msg}")"
+}
 
 # --- host / container split ---------------------------------------------------
 # The work of every container-safe verb runs INSIDE the web container: the host
@@ -1353,6 +1367,44 @@ json_str() {
     printf '"%s"' "${s}"
 }
 
+# Arguments as one string a shell splits back into exactly them. `ddev exec`
+# joins its arguments with spaces and hands them to a shell unquoted, so an
+# argument with ( ) ; or a quote in it broke the command outright.
+quote_for_exec() {
+    printf '%q ' "$@"
+}
+
+# `worktree branches --json`: the branches a new worktree can be based on, as
+# one JSON array. Fetches the branch list first when the clone only carried one.
+branches_json() {
+    ensure_core_branch_refs >/dev/null 2>&1 || true
+    local b first="true"
+    printf '['
+    while IFS= read -r b; do
+        [ -n "${b}" ] || continue
+        [ "${first}" = "true" ] || printf ','
+        first="false"
+        json_str "${b}"
+    done < <(list_local_core_branches)
+    printf ']\n'
+}
+
+# `patch --list --json`: list-patches.sh's TSV rows (number, subject, owner,
+# scores) on stdin, as one JSON array of objects. A row without a numeric change
+# number is not a change and is skipped.
+patches_json() {
+    local n subject owner scores first="true"
+    printf '['
+    while IFS=$'\t' read -r n subject owner scores; do
+        case "${n}" in ''|*[!0-9]*) continue ;; esac
+        [ "${first}" = "true" ] || printf ','
+        first="false"
+        printf '{"number":%s,"subject":%s,"owner":%s,"scores":%s}' "${n}" \
+            "$(json_str "${subject}")" "$(json_str "${owner}")" "$(json_str "${scores}")"
+    done
+    printf ']\n'
+}
+
 json_str_or_null() {
     if [ -n "$1" ]; then json_str "$1"; else printf 'null'; fi
 }
@@ -1361,7 +1413,7 @@ json_str_or_null() {
 # on stdout. The machine-readable contract the TUI reads — keys are stable, types
 # are real (bool, number, null), and `dir` is relative to the project root.
 worktrees_json() {
-    local name head branch active dir rel base count modified untracked url php db subject
+    local name head branch active dir rel base count modified untracked url php db subject phps v
     local first="true"
     printf '['
     while IFS=$'\t' read -r name head branch active; do
@@ -1374,6 +1426,13 @@ worktrees_json() {
         IFS="${FIELD_SEP}" read -r url php db < <(worktree_site_info "${name}" "${active}")
         subject="$(git -C "${dir}" log -1 --format=%s 2>/dev/null || true)"
         [ "${branch}" = "(detached)" ] && branch=""
+        # The PHP versions this site could run on: installed in the image AND
+        # accepted by this Core's composer.json — so a menu offering them cannot
+        # offer one the serve would refuse.
+        phps=""
+        while IFS= read -r v; do
+            [ -n "${v}" ] && phps="${phps:+${phps},}$(json_str "${v}")"
+        done < <(matching_php_versions "$(core_php_constraint "${dir}/composer.json")")
         [ "${first}" = "true" ] || printf ','
         first="false"
         printf '\n  {"name":%s,"dir":%s,"head":%s,"branch":%s,"base":%s,' \
@@ -1382,9 +1441,9 @@ worktrees_json() {
         printf '"patches":%d,"modified":%d,"untracked":%d,"primary":%s,' \
             "${count:-0}" "${modified:-0}" "${untracked:-0}" \
             "$([ -n "${active}" ] && echo true || echo false)"
-        printf '"url":%s,"php":%s,"db":%s,"subject":%s}' \
+        printf '"url":%s,"php":%s,"db":%s,"subject":%s,"php_versions":[%s]}' \
             "$(json_str_or_null "${url}")" "$(json_str_or_null "${php}")" \
-            "$(json_str_or_null "${db}")" "$(json_str_or_null "${subject}")"
+            "$(json_str_or_null "${db}")" "$(json_str_or_null "${subject}")" "${phps}"
     done < <(list_core_worktrees_fast)
     printf '\n]\n'
 }
@@ -1441,7 +1500,7 @@ ensure_core_branch_refs() {
 # fetched the first time `ddev tryout ui` runs, never at install, so a project
 # that does not use it never touches the network for it. Host-side only.
 
-TRYOUT_TUI_VERSION="0.1.0"
+TRYOUT_TUI_VERSION="0.5.0"
 
 # The release asset for a platform, from `uname -s`/`uname -m` by default.
 tui_asset_name() {

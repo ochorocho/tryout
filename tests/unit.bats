@@ -2691,12 +2691,13 @@ card_eval() { # $1=root $2=code
   local out
   out="$(card_eval "${root}" "DDEV_PRIMARY_URL=https://p.ddev.site DDEV_PHP_VERSION=8.4
     active_worktree_name() { echo main; }
+    matching_php_versions() { echo 8.2; echo 8.4; }
     worktrees_json")"
   run python3 -c '
 import json, sys
 rows = {w["name"]: w for w in json.loads(sys.argv[1])}
 keys = {"name","dir","head","branch","base","patches","modified","untracked",
-        "primary","url","php","db","subject"}
+        "primary","url","php","db","subject","php_versions"}
 for w in rows.values():
     assert set(w) == keys, sorted(set(w) ^ keys)
 main, feat = rows["main"], rows["feat"]
@@ -2707,6 +2708,7 @@ assert feat["branch"] is None and feat["base"] == "main"
 assert feat["patches"] == 2 and feat["modified"] == 1 and feat["untracked"] == 1
 assert feat["url"] is None and feat["php"] is None
 assert feat["subject"] == "[BUGFIX] Fix page tree drag"
+assert feat["php_versions"] == ["8.2", "8.4"], feat["php_versions"]
 print("ok")' "${out}"
   assert_success
   assert_output "ok"
@@ -2800,6 +2802,23 @@ fake_tui_release() { # $1=content of the "binary" $2=checksum to publish (defaul
   [ "${pinned}" = "${crate}" ] || fail "TRYOUT_TUI_VERSION ${pinned} != tui/Cargo.toml ${crate}"
 }
 
+@test "ddev tryout ui stop closes the session, and never downloads to do it" {
+  set -eu -o pipefail
+  local fn
+  fn=$(sed -n '/^cmd_ui()/,/^}/p' "${DIR}/commands/host/tryout" | grep -v '^[[:space:]]*#')
+  printf '%s' "${fn}" | grep -q 'stop)' || fail "cmd_ui has no stop"
+  printf '%s' "${fn}" | grep -q '"${bin}" stop "${PROJECT_ROOT}"' \
+    || fail "stop must hand the project to the binary's own stop"
+  # With no binary there can be no session: stop must not fetch one to find out.
+  local stop
+  stop=$(printf '%s' "${fn}" | sed -n '/stop)/,/;;/p')
+  printf '%s' "${stop}" | grep -q 'resolve_tui_bin' \
+    && fail "stop resolves (and so may download) the binary"
+  # Completion offers it.
+  run names ui "''"
+  assert_line "stop"
+}
+
 @test "ddev tryout ui talks to the real terminal, not DDEV's pipes" {
   set -eu -o pipefail
   # A DDEV host command has no tty on stdin/stdout; the TUI would start blind.
@@ -2830,6 +2849,84 @@ fake_tui_release() { # $1=content of the "binary" $2=checksum to publish (defaul
     sed -n "/^${fn}() {/,/^}/p" "${DIR}/commands/host/tryout" | grep -v '^[[:space:]]*#' \
       | grep -q 'site_for_name' || fail "${fn} does not accept the active worktree's name"
   done
+}
+
+@test "composer installs a Core whose pinned packages have advisories, but never malware" {
+  set -eu -o pipefail
+  # Composer (2.9+) refuses packages with known advisories while RESOLVING. Older
+  # and dev Cores pin such versions — 13.3 pins enshrined/svg-sanitize ^0.20.0 —
+  # so serving one failed outright. tryout exists to run those Cores locally.
+  run grep -xF '  - COMPOSER_POLICY_ADVISORIES_BLOCK=0' "${DIR}/config.tryout.yaml"
+  assert_success
+  # Only the advisories policy. The blanket switches also stop blocking malware.
+  run bash -c "grep -v '^[[:space:]]*#' '${DIR}/config.tryout.yaml' \
+    | grep -E 'COMPOSER_NO_(SECURITY_)?BLOCKING|COMPOSER_POLICY_MALWARE_BLOCK'"
+  assert_failure
+}
+
+@test "with TRYOUT_EVENTS every progress line has a machine-readable twin" {
+  set -eu -o pipefail
+  command -v python3 >/dev/null || skip "python3 not available"
+  # The TUI shows a command's progress as steps: it reads these, not the prose.
+  run helper_eval 'TRYOUT_EVENTS=1; info "Syncing ${DIM}the overlay${NC}"; success "done"; warn "careful"'
+  assert_success
+  assert_line --partial "Syncing"
+  local markers
+  markers="$(printf '%s\n' "${output}" | grep '^@@tryout ' | sed 's/^@@tryout //')"
+  run python3 -c '
+import json, sys
+rows = [json.loads(l) for l in sys.argv[1].splitlines()]
+assert [r["level"] for r in rows] == ["info", "success", "warn"], rows
+assert rows[0]["msg"] == "Syncing the overlay", rows[0]  # colours stripped
+print("ok")' "${markers}"
+  assert_output "ok"
+
+  # error goes to stderr, and so does its twin.
+  run bash -c "source '${DIR}/tryout/functions.sh' >/dev/null 2>&1; TRYOUT_EVENTS=1 error 'boom' 2>&1 >/dev/null"
+  assert_line --regexp '^@@tryout \{"level":"error","msg":"boom"\}$'
+
+  # Without the variable: no markers at all.
+  run helper_eval 'info "quiet"; error "still quiet" 2>&1'
+  refute_output --partial "@@tryout"
+}
+
+@test "arguments survive the trip into the container, shell syntax and all" {
+  set -eu -o pipefail
+  # ddev exec hands its arguments to `bash -c` as one string, unquoted: an
+  # argument with ( ) ; broke `ddev tryout exec` outright. delegate quotes them.
+  local q
+  q="$(helper_eval "quote_for_exec exec main -r 'sleep(1); echo \"hi\";' 'a b' '\$HOME' \"it's\"")"
+  run bash -c "set -- ${q}; printf '[%s]\n' \"\$@\""
+  assert_success
+  assert_output "$(printf '[%s]\n' exec main -r 'sleep(1); echo "hi";' 'a b' '$HOME' "it's")"
+  run grep -q 'quote_for_exec' "${DIR}/commands/host/tryout"
+  assert_success
+}
+
+@test "worktree branches --json lists the branches a worktree can be based on" {
+  set -eu -o pipefail
+  command -v python3 >/dev/null || skip "python3 not available"
+  run helper_eval 'ensure_core_branch_refs() { :; }
+    list_local_core_branches() { printf "12.4\n13.4\nmain\n"; }
+    branches_json'
+  assert_success
+  run python3 -c 'import json,sys; print(json.loads(sys.argv[1]))' "${output}"
+  assert_output "['12.4', '13.4', 'main']"
+}
+
+@test "patch --list --json turns Gerrit's rows into objects and skips junk" {
+  set -eu -o pipefail
+  command -v python3 >/dev/null || skip "python3 not available"
+  run helper_eval "printf '91234\tFix \"quoted\" page tree\tAnna Dev\tCR+2 V+1\nnot-a-number\tx\ty\tz\n' | patches_json"
+  assert_success
+  run python3 -c '
+import json, sys
+rows = json.loads(sys.argv[1])
+assert rows == [{"number": 91234, "subject": "Fix \"quoted\" page tree", "owner": "Anna Dev", "scores": "CR+2 V+1"}], rows
+print("ok")' "${output}"
+  assert_output "ok"
+  run grep -q -- '--list)' <(sed -n '/^cmd_patch() {/,/^}/p' "${DIR}/commands/host/tryout")
+  assert_success
 }
 
 @test "ui_table keeps its rows where neither gum nor column exists" {
@@ -3025,7 +3122,11 @@ fake_tui_release() { # $1=content of the "binary" $2=checksum to publish (defaul
 
   printf '%s\n' "${body}" | grep -q 'ask_site' || fail "patch never asks for a site"
   site_at=$(printf '%s\n' "${body}" | grep -n 'ask_site' | head -1 | cut -d: -f1)
-  fetch_at=$(printf '%s\n' "${body}" | grep -n 'fetch_open_patches' | head -1 | cut -d: -f1)
+  # The browse path's fetch: the last one. `--list` fetches earlier, and never
+  # asks — it is a tool's call.
+  fetch_at=$(printf '%s\n' "${body}" | grep -n 'fetch_open_patches' | tail -1 | cut -d: -f1)
+  printf '%s\n' "${body}" | sed -n '/if \[ "\${list}" = "true" \]/,/^    fi$/p' | grep -q 'ask_' \
+    && fail "patch --list must never prompt"
   [ -n "${fetch_at}" ] || fail "no fetch"
   [ "${site_at}" -lt "${fetch_at}" ] \
     || fail "the site must be chosen before the changes are fetched"
@@ -3039,7 +3140,9 @@ fake_tui_release() { # $1=content of the "binary" $2=checksum to publish (defaul
 @test "the branch listed for a served site is that site's own, not the primary's" {
   set -eu -o pipefail
   local body
-  body=$(sed -n '/^cmd_patch() {/,/^}$/p' "${DIR}/commands/host/tryout")
+  body=$(sed -n '/^patch_branch_for() {/,/^}$/p' "${DIR}/commands/host/tryout")
+  sed -n '/^cmd_patch() {/,/^}$/p' "${DIR}/commands/host/tryout" | grep -q 'patch_branch_for' \
+    || fail "patch does not use patch_branch_for"
   # Without this a 13.4 worktree would be offered main's open changes.
   printf '%s\n' "${body}" | grep -q 'site_core_dir' \
     || fail "the site's own Core checkout is never consulted"

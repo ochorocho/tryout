@@ -275,13 +275,17 @@ case "${VERB}" in
         c cs       "Prepare this instance for Core contribution"
         c exec     "Run a command in a site's PHP/root/database"
         c launch   "Open a site in the browser"
-        c ui       "Terminal UI: worktrees, and a live shell in each"
+        c ui       "Terminal UI session: attach, or stop it"
         c reset    "Reset Core to current branch + rebuild"
         c delete   "Wipe DB + fileadmin, fresh setup"
         c help     "Show help"
         ;;
 
-    status | composer | ui | help)
+    ui)
+        [ "${POS}" -le 1 ] && c stop "close the session: every shell, agent and command in it"
+        ;;
+
+    status | composer | help)
         hint "${VERB} takes no arguments"
         ;;
 
@@ -367,6 +371,7 @@ case "${VERB}" in
                     c unserve "drop a site, keep the worktree"
                     c remove  "remove a worktree (not the primary)"
                     c rename  "rename a checkout (the branch is untouched)"
+                    c branches "the branches a worktree can be based on"
                     c help    "show help"
                 fi
                 ;;
@@ -383,6 +388,9 @@ case "${VERB}" in
                     flag --php    "run it on another PHP version"
                     flag --no-restart "skip the DDEV restart --serve needs"
                 fi
+                ;;
+            branches)
+                flag --json "one JSON array, for tools"
                 ;;
             list)
                 flag --plain "machine-readable columns, for scripts"

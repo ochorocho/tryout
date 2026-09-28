@@ -562,6 +562,16 @@ ctr_worktree() {
             fi
             ;;
 
+        branches)
+            # Read-only and never prompts: the TUI's branch picker reads it.
+            if [ "${1:-}" = "--json" ]; then
+                branches_json
+            else
+                ensure_core_branch_refs >/dev/null 2>&1 || true
+                list_local_core_branches
+            fi
+            ;;
+
         list)
             local plain="false" _wt_rows=""
             case "${1:-}" in

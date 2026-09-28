@@ -1,1 +1,5 @@
 /target
+# insta: proposals awaiting `cargo insta review` — never results. The accepted
+# *.snap files ARE the tests' expected output and must stay tracked.
+*.snap.new
+*.pending-snap
