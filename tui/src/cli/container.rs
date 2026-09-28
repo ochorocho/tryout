@@ -26,6 +26,7 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
             Ok(())
         }
         Some(Verb::Worktree) => worktree(ctx, rest),
+        Some(Verb::Composer) => composer(ctx),
         Some(_) => {
             out::error(format!("'{action}' is not in this build yet"));
             Err(Exit(70))
@@ -33,6 +34,23 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
         None => {
             out::error(format!("tryout-container: unknown verb '{action}'"));
             Err(Exit(64))
+        }
+    }
+}
+
+/// Regenerate the primary overlay's require block from the sysexts of the Core
+/// it serves — `active_core_dir`, which `worktree use` moves.
+pub fn composer(ctx: &Ctx) -> Res {
+    require_core(ctx)?;
+    out::info("Syncing composer.tryout.json with available system extensions...");
+    match crate::core::composer::sync(&ctx.instance_dir(), &ctx.active_core_dir()) {
+        Ok(msg) => {
+            print(&format!("{msg}\n"));
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            Err(Exit(1))
         }
     }
 }

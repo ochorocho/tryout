@@ -27,7 +27,7 @@ Stage 8 is done.
 **Goal**: composer overlays (sync/site/use-core), vhosts (nginx/apache), hash conf, config.worktrees.yaml (`__fpm`).
 **Success Criteria**: byte parity with the PHP/bash output (whitelist: `[]`→`{}`).
 **Tests**: unit.bats L454, L2290, L2342, L2365, L3580, L3613, L3667 as Rust tests.
-**Status**: Not Started
+**Status**: Complete — `tui/tests/generators.rs` compares every generator byte for byte with goldens captured from the bash/PHP by `tests/parity/goldens.sh` (the one intended change: the FPM daemon runs `tryout __fpm`); `composer` is ported with 3 parity cases.
 
 ## Stage 4: Prompts
 **Goal**: `prompt.rs` (inquire + no-TTY fallbacks) replacing gum.
@@ -68,11 +68,11 @@ Stage 8 is done.
 - [x] dirty / change counts on a non-checkout = clean
 - [x] only `worktree list` pays for the dirty check; completion never runs git status or the network
 - [x] `--plain` columns and `--json` keys unchanged (add-only)
-- [ ] sync-composer: sysexts on disk only, `@dev`, non-managed entries kept, lock unlinked
+- [x] sync-composer: sysexts on disk only, `@dev`, non-managed entries kept, lock unlinked
 - [ ] site overlay; `wipe_site_vendor` before a Core switch; PHP check before every composer install
 - [ ] serve: hostname snapshot before marker; marker removed on failure; relative additional.php link; FPM master before reload
-- [ ] vhost: literal `fastcgi_param HTTPS $fcgi_https;`, TYPO3_DB_DBNAME, TRYOUT_SITE; apache SetEnvIf; socket paths
-- [ ] server_names_hash_bucket_size sizing, own http-level file, removed when nothing served
+- [x] vhost: literal `fastcgi_param HTTPS $fcgi_https;`, TYPO3_DB_DBNAME, TRYOUT_SITE; apache SetEnvIf; socket paths
+- [x] server_names_hash_bucket_size sizing, own http-level file, removed when nothing served
 - [ ] sync+reload: container `.ddev` source, only our prefix cleared, copy back by name, validate before reload, nginx HUP / apachectl graceful
 - [ ] restart only when the hostname set changed, on the host, `--no-restart`; unserve still syncs
 - [ ] unserve keeps DB, saves settings.php; setup restores it when tables exist

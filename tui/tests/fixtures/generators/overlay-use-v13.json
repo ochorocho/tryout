@@ -1,0 +1,49 @@
+{
+    "_comment": "#ddev-generated \u2014 the tryout Composer overlay. It lives in TYPO3-Instances/<name>/ and is selected via COMPOSER=composer.tryout.json in config.tryout.yaml. The project root is the TYPO3 Core clone itself, two levels up from here, so the paths below reach out of the instance. Your own composer.json is merged in and never rewritten; `ddev tryout composer` regenerates the require block from the sysexts in the Core checkout.",
+    "description": "TYPO3 development environment \u2014 Core contribution & custom extensions",
+    "license": "GPL-2.0-or-later",
+    "type": "project",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../../packages/*"
+        },
+        {
+            "type": "path",
+            "url": "../../worktrees/v13/typo3/sysext/*",
+            "options": {
+                "symlink": true
+            }
+        }
+    ],
+    "require": {
+        "typo3/cms-backend": "@dev",
+        "typo3/cms-core": "@dev",
+        "typo3/cms-frontend": "@dev",
+        "vendor/custom": "^1.0",
+        "wikimedia/composer-merge-plugin": "^2"
+    },
+    "extra": {
+        "merge-plugin": {
+            "include": [
+                "composer.json"
+            ],
+            "merge-extra": true,
+            "merge-extra-deep": true,
+            "merge-scripts": true
+        },
+        "typo3/cms": {
+            "web-dir": "public"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "typo3/class-alias-loader": true,
+            "typo3/cms-composer-installers": true,
+            "wikimedia/composer-merge-plugin": true
+        },
+        "vendor-dir": "vendor"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

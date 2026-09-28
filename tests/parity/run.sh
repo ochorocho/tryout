@@ -32,7 +32,7 @@ for t in php git jq curl; do ln -s "$(command -v "${t}")" "${work}/tools/${t}"; 
 port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
 python3 -m http.server "${port}" --bind 127.0.0.1 --directory "${here}/gerrit" >/dev/null 2>&1 &
 gerrit_pid=$!
-trap 'kill "${gerrit_pid}" 2>/dev/null; wait "${gerrit_pid}" 2>/dev/null; [ -n "${PARITY_KEEP:-}" ] || rm -rf "${work}"' EXIT
+trap 'kill "${gerrit_pid}" 2>/dev/null; wait "${gerrit_pid}" 2>/dev/null || true; [ -n "${PARITY_KEEP:-}" ] || rm -rf "${work}"' EXIT
 for _ in 1 2 3 4 5 6 7 8 9 10; do curl -sf "http://127.0.0.1:${port}/changes/" >/dev/null && break; sleep 0.2; done
 
 # --- helpers for a case's setup() --------------------------------------------

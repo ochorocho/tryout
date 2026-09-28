@@ -33,12 +33,10 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
         Verb::Worktree => worktree(ctx, rest),
         Verb::Cs => cs(ctx, rest),
         Verb::Ui => ui(ctx, rest),
-        Verb::Download
-        | Verb::Checkout
-        | Verb::Composer
-        | Verb::Exec
-        | Verb::Reset
-        | Verb::Delete => not_ported(action),
+        Verb::Composer => composer(ctx, rest),
+        Verb::Download | Verb::Checkout | Verb::Exec | Verb::Reset | Verb::Delete => {
+            not_ported(action)
+        }
     }
 }
 
@@ -98,6 +96,22 @@ fn status(ctx: &Ctx, args: &[String]) -> Res {
         return Ok(());
     }
     delegate(ctx, &["status"])
+}
+
+// ─── composer ───────────────────────────────────────────────────────────────
+
+fn composer(ctx: &Ctx, args: &[String]) -> Res {
+    if !args.is_empty() {
+        let got = args.join(" ");
+        out::error(format!("'composer' takes no arguments, but got: {got}"));
+        out::error("  It regenerates composer.tryout.json from the Core sysexts.");
+        out::error(format!(
+            "  → ddev composer {got}   (to run Composer itself)"
+        ));
+        return Err(Exit(1));
+    }
+    require_core(ctx)?;
+    delegate(ctx, &["composer"])
 }
 
 // ─── launch ─────────────────────────────────────────────────────────────────

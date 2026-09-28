@@ -2,6 +2,7 @@
 //! and the terminal UI. Ported from tryout/functions.sh one helper group per
 //! module.
 
+pub mod composer;
 pub mod contrib;
 pub mod ctx;
 pub mod ddev;
@@ -14,6 +15,7 @@ pub mod prompt;
 pub mod site;
 pub mod status;
 pub mod vsort;
+pub mod webserver;
 pub mod worktree;
 
 /// The payload version the add-on stamps into .ddev/tryout/.version, which
