@@ -42,9 +42,9 @@ To update the add-on later, run `ddev add-on get bmack/tryout` again; to remove 
 
 ### Optional but recommended
 
-Two host tools make the add-on considerably nicer to use. Neither is installed by the
-add-on, and **everything works without them** — install them because they improve the
-experience, not because anything depends on them.
+One host tool makes the add-on considerably nicer to use. It is not installed by the
+add-on, and **everything works without it** — install it because it improves the
+experience, not because anything depends on it.
 
 **[gum](https://github.com/charmbracelet/gum)** — draws the tables, prompts and
 spinners. With it, `ddev tryout status` is a
@@ -59,26 +59,6 @@ sudo apt-get install gum      # Debian/Ubuntu
 sudo dnf install gum          # Fedora
 sudo pacman -S gum            # Arch
 ```
-
-**[herdr](https://herdr.dev)** — a terminal multiplexer built around coding agents,
-needed only for `ddev tryout herdr`. That one command opens each Core worktree as its
-own workspace, with a Claude tab, a shell and a command panel all rooted at that
-worktree — see [Opening worktrees in herdr](#opening-worktrees-in-herdr). It also needs
-[`jq`](https://jqlang.github.io/jq/download/), because herdr answers in JSON. Without
-either, `ddev tryout herdr` exits with the install command for your platform and every
-other command is unaffected.
-
-```bash
-# macOS
-brew install herdr jq
-
-# everywhere else — plus jq from your package manager
-curl -fsSL https://herdr.dev/install.sh | sh
-```
-
-No Linux distribution packages herdr, so the installer — not an `apt-get` line that
-would fail — is the honest answer there. See [herdr's install
-docs](https://herdr.dev/docs/install/) for the details.
 
 ### Installing from the repository
 
@@ -185,9 +165,6 @@ ddev tryout exec <site> <cmd>   Run a command in a site's PHP, root and database
 ddev tryout launch              Open the worktree you are in, in the browser
 ddev tryout launch <worktree>   Open that worktree's site (--backend for /typo3/)
 
-ddev tryout herdr               Open every Core worktree as a herdr workspace
-ddev tryout herdr new           Create a worktree and open it
-
 ddev tryout cs                  Prepare instance for Core contribution
 ddev tryout cs doctor           Check hooks, template, and push URL
 ddev tryout cs uninstall        Remove hooks and reset push URL
@@ -221,8 +198,7 @@ Serve which worktree?
 
 Each list is filtered to what the command can actually act on: `serve` offers only
 unserved checkouts, `unserve` only served ones, `use` and `remove` leave out the
-primary. A bare `adopt` lists the stray checkouts it found and lets you pick which
-to move in.
+primary.
 
 ### Keeping an installed project up to date
 
@@ -308,7 +284,7 @@ $ ddev tryout worktree rename         # pick the worktree, then type the new nam
 $ ddev tryout exec                    # pick the site, then type the command
 ```
 
-`use`, `remove`, `unserve` and `herdr new` ask the same way, each offering only
+`use`, `remove` and `unserve` ask the same way, each offering only
 what makes sense — `unserve` lists served worktrees, `use` leaves out the primary.
 <kbd>Esc</kbd> cancels. In a script or a pipe there is no one to ask, so the
 commands print their usage line and exit 1 exactly as before.
@@ -526,11 +502,11 @@ root holds the Core checkout and the Composer overlay:
 my-typo3-site/
 ├── .ddev/
 │   ├── commands/host/
-│   │   ├── tryout                # The ddev tryout entry point (host: prompts, herdr)
+│   │   ├── tryout                # The ddev tryout entry point (host: prompts)
 │   │   └── autocomplete/
 │   │       └── tryout            # Tab-completion for it (DDEV runs this on TAB)
 │   ├── tryout/                   # Add-on payload, namespaced so it cannot collide
-│   │   ├── functions.sh          # Shared helpers (Gerrit API, patching, worktrees, herdr)
+│   │   ├── functions.sh          # Shared helpers (Gerrit API, patching, worktrees)
 │   │   ├── commands.sh           # The verbs' work, run inside the web container
 │   │   ├── tryout-container.sh   # In-container dispatcher the host command calls
 │   │   ├── post-start.sh         # Runs on ddev start, in the container (clone, patch, setup)
@@ -630,7 +606,7 @@ that is not a `typo3/cms-*` or `typo3/theme-*` package is preserved.
 
 `ddev tryout` is a host command, and the host keeps what only the host can do:
 the prompts and pick-lists, the confirmation before `delete`, tab completion, and
-everything to do with herdr. **The work of every other verb runs inside the web
+opening the browser. **The work of every other verb runs inside the web
 container** — the host resolves the arguments, then makes one `ddev exec` into
 `.ddev/tryout/tryout-container.sh`. In there git, Composer, PHP, curl and the
 database clients are the container's own, so a Core clone, a cherry-pick, a
@@ -643,7 +619,7 @@ Two consequences are worth knowing:
   paths, and an absolute path is right on one side of the container boundary only.
   tryout therefore runs the Core repository with `worktree.useRelativePaths`, which
   git learned in 2.48, so a worktree the container created reads fine in your host
-  editor, in herdr and in `git status` on the host — and vice versa. Debian trixie,
+  editor and in `git status` on the host — and vice versa. Debian trixie,
   the base of DDEV's web image, ships git 2.47, so the add-on builds git 2.53 into
   the image from a checksum-pinned tarball (`.ddev/web-build/Dockerfile.tryout`).
   That costs about a minute the first time the image is built and nothing after.
@@ -706,9 +682,7 @@ install` with the constraint, the version in use and the command that changes
 it — `ddev config --php-version=8.5 && ddev restart` for the project, `worktree
 serve <name> --php <version>` for a site — instead of Composer's resolver trace.
 
-`add` takes `--branch` (a real local branch instead of a detached HEAD), `--serve`,
-`--php 8.2` (which implies `--serve`), and `--herdr` to open it as a
-[herdr workspace](#opening-worktrees-in-herdr) straight away.
+`add` takes `--serve` and `--php 8.2` (which implies `--serve`).
 
 > `use`, `remove` and `unserve` take their flag **after** the name —
 > `worktree use v13 --force`, not `worktree use --force v13`.
@@ -828,158 +802,10 @@ A worktree that is not served has no URL, and `launch` says so rather than
 opening some other site's: give it one with `worktree serve`, or make it the
 primary with `worktree use`.
 
-In the herdr panel the two forms are the last two rows, **launch frontend** and
-**launch backend**. They are the only rows that run in the panel itself instead
-of a popup — they raise the browser, so a popup would only sit in front of it.
-
-### Opening worktrees in herdr
-
-If you use [herdr](https://herdr.dev) — a terminal multiplexer built around coding
-agents — one command lays out every Core worktree:
-
-```bash
-ddev tryout herdr              # every worktree
-ddev tryout herdr v13          # just that one
-ddev tryout herdr --no-agent   # a plain shell instead of claude
-```
-
-Each worktree becomes its own herdr workspace, labelled `core-<name>` so it is
-unambiguous in the sidebar, holding a Claude session and a shell both rooted at that
-worktree:
-
-```text
-workspace "core-main"              workspace "core-v13"
-├── claude   (worktrees/main)     ├── claude   (worktrees/v13)
-└── shell    (worktrees/main)     └── shell    (worktrees/v13)
-```
-
-A fresh project with only the plain the project root clone and no worktrees yet gets
-one workspace for it, named after its branch (`core-main`). That is the name the
-checkout keeps when a later `worktree add` moves it to the worktree layout.
-
-**To see each worktree's branch in the sidebar**, add this to
-`~/.config/herdr/config.toml`:
-
-```toml
-[ui.sidebar.spaces]
-rows = [["state_icon", "workspace"], ["branch", "$wt_branch", "git_status"]]
-```
-
-herdr's own `branch` row is computed from a workspace's *repository* root, which
-for a linked worktree is the origin clone — so without this only the main checkout
-shows a branch. The add-on reports `$wt_branch` per workspace instead, refreshed
-whenever it opens or reconciles them and after a `worktree`/`checkout` run from the
-panel. A detached checkout reads `detached` rather than going blank.
-
-Worktrees already open are skipped, so it is safe to re-run, and the first Core
-workspace is focused when it is done (`--focus` is the default; `--no-focus` stays put). On the first run in
-a worktree Claude asks you to trust the folder — the command says so rather than
-waiting.
-
-**It runs in a herdr session of its own**, `tryout-<project>`, started on demand, and
-drops you straight into it. Your default session is never touched, so Core worktrees
-stay out of your everyday sidebar.
-
-Where attaching is not possible it prints what to do instead: with no terminal (a
-script or CI) it gives you `herdr session attach tryout-my-typo3-site`, and from
-inside herdr — which refuses to nest — it tells you to switch to that session.
-
-Pass `--no-attach` to always print rather than attach.
-
-### Creating a worktree from herdr
-
-`ddev tryout herdr new <name> [<branch>]` creates a Core worktree and opens it in one
-step. Run it bare in a terminal and it asks for both — a name, and a branch picked from
-the ones this Core knows. The same thing from the other direction is
-`ddev tryout worktree add <name> <branch> --herdr`.
-
-#### Worktrees always land in the project
-
-A TYPO3 Core worktree has to be at `<project>/worktrees/<name>` — that is what the
-the project root symlink points at, what `worktree list` finds, and what `serve` builds a
-site from.
-
-herdr's own **New worktree** puts its checkouts elsewhere. Its only setting,
-`worktrees.directory`, places them at `<directory>/<repo>/<branch-slug>`, and it names
-them from a generated word list — so a worktree created that way is invisible to every
-`ddev tryout` command until it is adopted:
-
-```bash
-ddev tryout worktree adopt --dry-run   # list strays
-ddev tryout worktree adopt             # move them into the project
-```
-
-`ddev tryout status` flags them too, so one cannot sit unnoticed.
-
-The **directory name and the branch are independent**. herdr's own action names a
-checkout after the branch it invents (`worktree/wilie-wonka`), and `adopt` derives
-one the same way, but that is only a starting point:
-
-```bash
-ddev tryout worktree adopt <path> wonka   # adopt one stray under a name you pick
-ddev tryout worktree rename wonka spike   # rename later; the branch is untouched
-```
-
-A rename moves everything keyed on the name — the checkout, the the project root
-symlink if it is the active one, and a served site's tree, vhost and database. A
-served site is unserved and re-served under the new name, so it needs a
-`ddev restart` afterwards to pick up the new hostname.
-
-> These are keybindings, not additions to herdr's own UI. A herdr plugin cannot add an
-> entry to its menus — plugin actions are reachable only by a keybinding or a
-> ctrl-click — so the menu is a popup of our own rather than tryout entries appearing
-> in herdr's right-click menu.
-
-> herdr has **one** global config, so these keys are live in every session, not just
-> tryout's. Pressed outside a tryout project, each popup says so and does nothing.
-
-Manage the session like any other:
-
-```bash
-herdr session list                                  # what is running
-herdr --session tryout-my-typo3-site server stop    # stop it (panes and agents end)
-herdr session delete tryout-my-typo3-site           # forget a stopped session
-```
-
-A bare `ddev tryout herdr` keeps the session in step with the project in **both**
-directions: it opens a workspace for any worktree that has none, and closes any
-workspace whose worktree has been removed.
-
-```text
-==> Opening 'v14'...
-==> 'v14' — claude 'v14' + shell
-  ✗ closed core-v13 — worktrees/v13 is gone
-```
-
-That close is unconditional — a workspace goes even if its agent is still
-working — so the session always matches what is on disk. A `worktree rename` is
-a remove plus an add as far as herdr is concerned, so the old workspace closes
-and the new one opens in the same run. Name a worktree
-(`ddev tryout herdr v14`) to open just that one and leave every other workspace
-untouched.
-
-It also reconciles workspaces that have drifted out of step. One already sitting
-in a Core worktree under a different label — anything opened before this naming
-existed, or renamed by hand — is **adopted** rather than closed, so its panes,
-history and running agent survive and no duplicate appears beside it:
-
-```text
-  ✓ adopted core-main (was 'worktrees/main')
-  ✗ closed scratch — outside this project
-```
-
-Since the session belongs to one project, a workspace pointing outside it is
-closed. Anything else *inside* the project — the project root, `packages/` — is
-left exactly as it is: it is not a Core worktree, and you opened it on purpose.
-
-> herdr is optional and the add-on never installs it. The command needs `herdr` and
-> `jq` on the host, and works from any terminal — it does not have to be run from
-> inside a herdr pane. Without those it exits with a hint and changes nothing.
-
 ### Mutagen and the Core checkout (macOS)
 
 With Mutagen the Core clone lives on both sides: git runs on it inside the
-container, and your editor and herdr read it on the host. Its
+container, and your editor reads it on the host. Its
 `.git` — around 650 MB — is part of the sync, and **must stay so**: excluding
 the checkouts' `.git` in `.ddev/mutagen/mutagen.yml` would leave the container's git
 with nothing to work on. What can safely be excluded is a served site's
@@ -988,8 +814,8 @@ with nothing to work on. What can safely be excluded is a served site's
 `ignore.paths`.
 
 A change made in the container reaches the host after a sync cycle, usually within
-seconds. The one place that cannot wait is a worktree herdr is about to open, so
-`worktree add --herdr` and `herdr new` flush the sync first.
+seconds; every `ddev tryout` verb that changes the checkout flushes the sync before
+it returns.
 
 ## Sharing one TYPO3 Core checkout across multiple tryouts
 
@@ -1019,13 +845,8 @@ where both the host and the container can see it.
   and prints the same information, just as plain text with a typed prompt instead of a
   chooser; installation says so once and carries on. Install with `brew install gum`,
   `sudo apt-get install gum`, `sudo dnf install gum` or `sudo pacman -S gum`.
-- Optional, for `ddev tryout herdr` only: [herdr](https://herdr.dev) plus
-  [`jq`](https://jqlang.github.io/jq/download/) on the host — `brew install herdr jq`,
-  or `curl -fsSL https://herdr.dev/install.sh | sh` where no distribution packages it.
-  The add-on installs neither; without them that one command exits with the install
-  command for your platform and everything else works as usual.
 
-Both are covered with a little more context under
+It is covered with a little more context under
 [Optional but recommended](#optional-but-recommended).
 
 Output is meant to be read by people: `ddev tryout worktree list` draws one card

@@ -45,7 +45,7 @@ COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
 # BUMP THIS whenever a change alters what a user sees: a new verb, a new flag, a
 # new completion candidate. It is a plain integer because nothing at install time
 # can read git — a local `ddev add-on get <dir>` records no version of its own.
-TRYOUT_VERSION=39
+TRYOUT_VERSION=40
 
 # Core worktrees live INSIDE the clone, under worktrees/<name>. Nested worktrees
 # keep relative metadata on both pointers (worktrees/<n>/.git -> ../../.git/... and
@@ -70,8 +70,8 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 DIM='\033[2m'
 # Ordinary text, stated rather than inherited. Output that carries no colour of
-# its own takes the terminal's default foreground, and a herdr popup does not
-# inherit the pane's — labels and values came out unreadable there. 37 is the
+# its own takes the terminal's default foreground, which a popup or embedded
+# terminal need not share — labels and values came out unreadable there. 37 is the
 # basic ANSI white every theme maps to something legible on its own background.
 TEXT='\033[37m'
 NC='\033[0m'
@@ -88,7 +88,7 @@ error()   { echo -e "${RED}✗${NC} $*" >&2; }
 # exports this flag and sources commands.sh. The helpers below that build, query
 # the database or talk to Gerrit are written for the container and call the
 # tools directly — never `ddev …`, which is a stub in there. Path helpers, git
-# reads and the herdr/ui code run on either side.
+# reads and the ui code run on either side.
 in_container() { [ "${TRYOUT_IN_CONTAINER:-}" = "1" ]; }
 
 # A shipped script by name, wherever the payload was installed.
@@ -322,48 +322,12 @@ explain_missing() {
     fi
 }
 
-# core_worktree_names [all|nonprimary|served|unserved]
-# From the directory glob, not list_core_worktrees: no git status per tree. This is
-# the helper for anything that must be instant — completion. The
-# picker wants detail instead and uses worktree_labels below.
-core_worktree_names() {
-    local mode="${1:-all}" d name primary names=""
-    primary="$(active_worktree_name 2>/dev/null)"
-
-    # The ROOT checkout first: it is a checkout too and does not live under
-    # worktrees/, so the glob below cannot see it. Leaving it out is what made
-    # `ddev tryout herdr` skip its workspace while `worktree list` showed it — the
-    # same omission already fixed in the two row listers (emit_root_worktree_row).
-    #
-    # plain_core_name, NOT the primary: `primary` here means "which Core the
-    # instance serves", which after `worktree use v13` is a nested worktree the
-    # glob already finds. The root is present either way, and its name is its
-    # branch.
-    local root_name; root_name="$(plain_core_name 2>/dev/null)"
-    if [ -n "${root_name}" ] && [ ! -d "$(core_worktree_dir "${root_name}")" ]; then
-        names="${root_name}"
-    fi
-    for d in "${CORE_WORKTREE_PREFIX}"*; do
-        [ -d "${d}" ] || continue
-        names="${names}${names:+ }${d#"${CORE_WORKTREE_PREFIX}"}"
-    done
-
-    for name in ${names}; do
-        case "${mode}" in
-            nonprimary) [ "${name}" = "${primary}" ] && continue ;;
-            served)     [ -f "$(site_dir "${name}")/.tryout-site" ] || continue ;;
-            unserved)   [ -f "$(site_dir "${name}")/.tryout-site" ] && continue ;;
-        esac
-        echo "${name}"
-    done
-}
-
-# One rendered row per worktree, filtered by <mode> exactly as core_worktree_names
-# filters: "<name>  <branch>  <head>  <state>  <what it serves>".
+# One rendered row per worktree, filtered by <mode> (all, nonprimary, served,
+# unserved): "<name>  <branch>  <head>  <state>  <what it serves>".
 #
-# This runs a `git status` per worktree, which core_worktree_names deliberately
-# avoids — but a picker is opened by hand, once, and a list of bare names does not
-# say which branch is which. Never call it from completion.
+# This runs a `git status` per worktree — fine for a picker opened by hand, once,
+# since a list of bare names does not say which branch is which. Never call it
+# from completion, which globs the directories instead.
 worktree_labels() {
     local mode="${1:-all}" name head branch dirty active site
     while IFS=$'\t' read -r name head branch dirty active; do
@@ -725,6 +689,18 @@ reset_core_to_main() {
 
 core_worktree_dir() { echo "${CORE_WORKTREE_PREFIX}$1"; }
 
+# Where a checkout name lives: worktrees/<name>, or the project root itself for
+# the primary, which has no directory under worktrees/ and is named after its
+# branch.
+core_checkout_dir() {
+    local name="$1"
+    if [ ! -d "$(core_worktree_dir "${name}")" ] && [ "${name}" = "$(plain_core_name)" ]; then
+        echo "${CORE_DIR}"
+    else
+        core_worktree_dir "${name}"
+    fi
+}
+
 # Clone Core INTO an existing directory. `git clone` refuses a non-empty target,
 # and the target always is non-empty here: `ddev config` writes .ddev/ before the
 # add-on ever runs. So do what clone does, by hand — init, fetch the one branch,
@@ -776,15 +752,14 @@ ensure_core_excludes() {
         "/.ddev/" \
         "/worktrees/" \
         "/TYPO3-Instances/" \
-        "/packages/" \
-        "/herdr-plugin.toml"
+        "/packages/"
     do
         grep -qxF "${e}" "${f}" 2>/dev/null || printf '%s\n' "${e}" >> "${f}"
     done
 }
 
 # git >= 2.48 can record worktree metadata with RELATIVE paths. That is what lets
-# the container (which does the git work) and the host (editors, herdr, the
+# the container (which does the git work) and the host (editors, the
 # completion) share one worktree: an absolute path is right on one side only.
 git_supports_relative_worktrees() {
     local v major minor
@@ -821,9 +796,9 @@ validate_worktree_name() {
         error "  → ddev tryout worktree add <name> [<branch>]"
         return 1
     fi
-    # A leading hyphen is what a mis-parsed flag looks like — `worktree add
-    # --herdr` once reached here as a NAME and passed. It is also unusable as a
-    # directory, a git branch and a herdr label, so it is never a real name.
+    # A leading hyphen is what a mis-parsed flag looks like — a flag once reached
+    # here as a NAME and passed. It is also unusable as a directory or a git
+    # branch, so it is never a real name.
     case "${name}" in
         -*) error "Invalid worktree name '${name}' (cannot start with '-')"
             error "  → ddev tryout worktree add <name> [<branch>]"
@@ -874,15 +849,13 @@ open_url() {
 
 # The Core worktree a path belongs to, or nothing if it is not in one.
 #
-# `top` matches only a worktree's own directory — what herdr wants, since a
-# workspace sitting in a subdirectory is not that worktree's workspace. The
-# default also matches anything INSIDE one, which is what a cwd needs: you run
+# Anything INSIDE a worktree counts, which is what a cwd needs: you run
 # `ddev tryout launch` from wherever you happen to be in the checkout.
 #
 # The path is resolved first: on macOS the project is reached through /var while
 # other tools report /private/var, and a plain prefix test would match neither.
 worktree_name_for_path() {
-    local path="${1:-}" mode="${2:-any}" root real name=""
+    local path="${1:-}" root real name=""
     [ -n "${path}" ] || return 1
     root="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P)" || return 1
     real="$(cd "${path}" 2>/dev/null && pwd -P)" || return 1
@@ -890,22 +863,13 @@ worktree_name_for_path() {
     # Order is load-bearing: worktrees/ lives INSIDE the root checkout, so the
     # nested arm has to be tested before the root arm, or every worktree would be
     # claimed by the root.
-    local rest=""
     case "${real}" in
         "${root}/worktrees/"*)  name="${real#"${root}/worktrees/"}"
-                                rest="${name#*/}"
-                                [ "${rest}" = "${name}" ] && rest=""
                                 name="${name%%/*}" ;;
         "${root}/worktrees")    return 1 ;;   # the container, not a worktree
-        "${root}")              name="$(plain_core_name)" ;;
-        "${root}/"*)            name="$(plain_core_name)"
-                                rest="${real#"${root}/"}" ;;
+        "${root}"|"${root}/"*)  name="$(plain_core_name)" ;;
         *) return 1 ;;
     esac
-
-    # A path inside a worktree is still that worktree; only `top` insists on its
-    # root itself.
-    [ "${mode}" = "top" ] && [ -n "${rest}" ] && return 1
 
     [ -n "${name}" ] || return 1
     printf '%s' "${name}"
@@ -918,8 +882,8 @@ worktree_name_for_path() {
 # is what `worktree use` moves — the root's branch would answer for the root even
 # after the primary was repointed at a worktree.
 #
-# grep + sed rather than jq: jq is optional (only `ddev tryout herdr` requires it)
-# and this runs on the dashboard path.
+# grep + sed rather than jq: jq is not required on the host, and this runs on
+# the dashboard path.
 active_worktree_name() {
     local url name
     url=$(grep -oE '\.\./\.\./(worktrees/[A-Za-z0-9._-]+/)?typo3/sysext' \
@@ -939,7 +903,7 @@ active_worktree_name() {
 # reading "the active Core" wants — CORE_DIR is only right while the primary has
 # not been repointed.
 active_core_dir() {
-    herdr_checkout_dir "$(active_worktree_name)"
+    core_checkout_dir "$(active_worktree_name)"
 }
 
 # The worktree that owns the object store; git lists it first. worktree add must
@@ -965,7 +929,7 @@ core_worktree_is_dirty() {
 # `worktree add` calls it; it only ensures worktrees/ exists.
 # The name the ROOT checkout goes by: its branch, falling back to the default.
 # There is no directory under worktrees/ naming it, so anything keyed on that name
-# — a herdr workspace label — has to come from here. It survives the
+# has to come from here. It survives the
 # move to the worktree layout. Empty on the symlink layout.
 plain_core_name() {
     local name
@@ -1054,10 +1018,10 @@ set_active_core() {
 use_core_worktree() {
     local name="$1" dir
     validate_worktree_name "${name}" || return 1
-    # herdr_checkout_dir, not core_worktree_dir: the ROOT checkout is a valid
+    # core_checkout_dir, not core_worktree_dir: the ROOT checkout is a valid
     # target and has no directory under worktrees/, so switching BACK to it would
     # otherwise be refused as "No worktree".
-    dir=$(herdr_checkout_dir "${name}")
+    dir=$(core_checkout_dir "${name}")
 
     if [ ! -d "${dir}" ]; then
         error "No worktree '${name}'"
@@ -1159,9 +1123,7 @@ remove_core_worktree() {
     success "Removed worktree '${name}' and its directory"
 }
 
-# Give a worktree a different directory name. The BRANCH is never touched: a name
-# derived from a branch — which is all herdr's own New-worktree action can give us —
-# is a starting point, not a commitment.
+# Give a worktree a different directory name. The BRANCH is never touched.
 #
 # The name reaches further than the checkout, so all of it moves together: a
 # served site's tree, its vhost and its database name.
@@ -1296,7 +1258,7 @@ worktree_change_summary() {
 worktree_card() {
     local name="$1" head="$2" branch="$3" active="$4"
     local dir base upstream count subject age changes url php db
-    dir="$(herdr_checkout_dir "${name}")"
+    dir="$(core_checkout_dir "${name}")"
 
     if [ -n "${active}" ]; then
         echo -e "${CYAN}●${NC} ${BOLD}${TEXT}${name}${NC}  ${CYAN}← primary${NC}"
@@ -1318,7 +1280,7 @@ worktree_card() {
     echo -e "  ${TEXT}${branch} ${DIM}${TEXT}@${NC} ${TEXT}${head}${age:+ ${DIM}${TEXT}· ${age}}${NC}"
 
     # Commits on top of the base ARE the applied patches — the measure `status`
-    # and the panel report.
+    # reports.
     count="$(git -C "${dir}" rev-list --count "${upstream}..HEAD" 2>/dev/null || echo 0)"
     subject="$(git -C "${dir}" log -1 --format=%s 2>/dev/null || true)"
     # DDEV exports COLUMNS=0, so there is no width to fit; 70 keeps it on a line.
@@ -1399,783 +1361,6 @@ ensure_core_branch_refs() {
     return 0
 }
 
-# --- herdr integration -----------------------------------------------------
-# herdr (https://herdr.dev) is a terminal multiplexer built around coding agents.
-# It is an OPTIONAL host tool: the add-on never installs it, and nothing else here
-# depends on it. `ddev tryout herdr` opens one workspace per Core worktree.
-
-# This project's own herdr session, so Core worktrees never land among the user's
-# everyday workspaces. Session names accept dots and uppercase, so the DDEV project
-# name goes in verbatim.
-herdr_session_name() {
-    # DDEV only exports DDEV_SITENAME to commands it runs itself. The herdr popups
-    # are launched by herdr, not ddev, so fall back to the project config — without
-    # this they resolve to the session "tryout" and talk to a server that is not
-    # there.
-    local name="${DDEV_SITENAME:-}"
-    if [ -z "${name}" ] && [ -f "${PROJECT_ROOT}/.ddev/config.yaml" ]; then
-        name="$(sed -n 's/^name: *//p' "${PROJECT_ROOT}/.ddev/config.yaml" 2>/dev/null \
-                | head -1 | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//')"
-    fi
-    [ -n "${name}" ] && { echo "tryout-${name}"; return; }
-    echo "tryout"
-}
-
-# Every herdr call goes through here. `--session` MUST precede the subcommand: put it
-# after and herdr SILENTLY IGNORES it and talks to the default session instead.
-# (HERDR_SESSION is no good either — it reports the right name but resolves the
-# default socket.)
-herdr_cli() { herdr --session "$(herdr_session_name)" "$@"; }
-
-# The binary and the JSON parser we need. Not a check for a running server: we start
-# one ourselves. Deliberately NOT gated on HERDR_ENV either — the herdr CLI talks to
-# a socket, not to the calling pane, and a DDEV host command never runs inside one.
-# Install hints worth reading: name the tool, why it is needed, and the command for
-# the platform actually in use rather than a list to pick from.
-missing_tool() {
-    local tool="$1" why="$2" brew="$3" apt="$4" docs="$5"
-    error "${tool} is not installed on the host"
-    error "  ${why}"
-    # uname may be missing from a stripped PATH; fall back to bash's own OSTYPE.
-    local os="${OSTYPE:-}"
-    command -v uname >/dev/null 2>&1 && os="$(uname -s)"
-    case "${os}" in
-        Darwin|darwin*)
-            error "  → brew install ${brew}"
-            ;;
-        Linux|linux*)
-            if command -v apt-get >/dev/null 2>&1; then
-                error "  → sudo apt-get install ${apt}"
-            elif command -v dnf >/dev/null 2>&1; then
-                error "  → sudo dnf install ${apt}"
-            elif command -v pacman >/dev/null 2>&1; then
-                error "  → sudo pacman -S ${apt}"
-            else
-                error "  → install '${apt}' with your package manager"
-            fi
-            ;;
-    esac
-    [ -n "${docs}" ] && error "  ${DIM}${docs}${NC}"
-    return 1
-}
-
-herdr_available() {
-    if ! command -v herdr >/dev/null 2>&1; then
-        error "herdr is not installed on the host"
-        error "  'ddev tryout herdr' opens your Core worktrees in it."
-        # Homebrew carries it; no Linux distro packages it, so the installer is the
-        # honest answer there rather than an apt-get line that would fail.
-        case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
-            darwin*|Darwin) error "  → brew install herdr" ;;
-        esac
-        error "  → curl -fsSL https://herdr.dev/install.sh | sh"
-        error "  ${DIM}https://herdr.dev/docs/install/${NC}"
-        return 1
-    fi
-    # Control commands answer in JSON; we parse IDs out rather than predict them.
-    if ! command -v jq >/dev/null 2>&1; then
-        missing_tool "jq" \
-            "herdr answers in JSON and its replies have to be parsed." \
-            "jq" "jq" "https://jqlang.github.io/jq/download/"
-        return 1
-    fi
-}
-
-# Drop the user into their session. A DDEV host command has no stdin/stdout tty of
-# its own, but /dev/tty still reaches the real terminal, so herdr can take it over —
-# this is what makes `ddev tryout herdr` land you in the session rather than printing
-# a command to copy. Two cases cannot attach:
-#   - no controlling terminal (a script, CI, an editor task runner)
-#   - already inside herdr, which refuses to nest
-# Both fall back to printing the command, so nothing is lost.
-attach_herdr_session() {
-    local session
-    session="$(herdr_session_name)"
-
-    if [ "${HERDR_ENV:-}" = "1" ]; then
-        info "  ${DIM}→ already in herdr; switch to '${session}' or: herdr session attach ${session}${NC}"
-        return 0
-    fi
-
-    if [ ! -e /dev/tty ] || ! { : < /dev/tty; } 2>/dev/null; then
-        info "  ${DIM}→ herdr session attach ${session}${NC}"
-        return 0
-    fi
-
-    info "Attaching to '${session}'..."
-    # Deliberately NOT herdr_cli: `session attach` takes the session as its argument,
-    # and this call must own the real terminal. Every other call goes through the
-    # wrapper; a unit test allows this one line by name.
-    herdr session attach "${session}" < /dev/tty > /dev/tty 2>&1
-}
-
-# Start this project's session unless it is already up. A server spawned here
-# outlives the command, which is what makes `ddev tryout herdr` usable at all: a DDEV
-# host command has no TTY, so it can never host the session itself.
-ensure_herdr_session() {
-    herdr_cli status server --json 2>/dev/null | grep -q '"running":true' && return 0
-
-    info "Starting herdr session '$(herdr_session_name)'..."
-    nohup herdr --session "$(herdr_session_name)" server >/dev/null 2>&1 &
-    disown 2>/dev/null || true
-
-    # Poll rather than sleep blindly: the server answers in ~30ms, and a successful
-    # status check is a reliable gate for real work.
-    local i
-    for i in $(seq 1 50); do
-        herdr_cli status server --json 2>/dev/null | grep -q '"running":true' && return 0
-        sleep 0.1
-    done
-
-    error "herdr session '$(herdr_session_name)' did not start"
-    return 1
-}
-
-# Worktree names allow uppercase and dots (see validate_worktree_name); herdr
-# agent names must match [a-z][a-z0-9_-]{0,31}. Map one onto the other.
-herdr_agent_name() {
-    printf '%s' "${1:-}" \
-        | tr '[:upper:]' '[:lower:]' \
-        | sed -e 's/[^a-z0-9_-]/-/g' -e 's/^[^a-z]/x&/' \
-        | cut -c1-32
-}
-
-# Where a checkout name lives: worktrees/<name>, or the project root itself for
-# the primary, which has no directory under worktrees/.
-# Where a worktree's workspace is rooted. The primary is the ROOT checkout, which
-# does not live under worktrees/ — so it is named after its branch and answered
-# separately.
-herdr_checkout_dir() {
-    local name="$1"
-    if [ ! -d "$(core_worktree_dir "${name}")" ] && [ "${name}" = "$(plain_core_name)" ]; then
-        echo "${CORE_DIR}"
-    else
-        core_worktree_dir "${name}"
-    fi
-}
-
-# True when any pane anywhere is already sitting in that worktree, which is what
-# makes `ddev tryout herdr` safe to re-run. Deliberately NOT scoped to the current
-# workspace: each worktree gets its own, so a scoped query would never find them.
-# Keyed on the pane cwd rather than the label, which a user can rename by hand.
-herdr_worktree_is_open() {
-    local dir="$1"
-    herdr_cli pane list 2>/dev/null \
-        | jq -e --arg d "${dir}" \
-            '[.result.panes[]? | select(.cwd == $d)] | length > 0' >/dev/null 2>&1
-}
-
-# Workspace labels live in one global sidebar alongside every other project, so a
-# bare worktree name would be ambiguous there.
-herdr_workspace_label() { echo "core-${1}"; }
-
-# Show a worktree's branch under its space in the herdr sidebar.
-#
-# herdr's OWN `branch` row is computed server-side from the workspace's repo_root,
-# which for a linked worktree points at the origin clone — so it renders only for
-# the one checkout that owns the repo, and the value is not on the API's worktree
-# struct to correct. A custom token is the way in: it is addressed as $wt_branch
-# and renders wherever the sidebar config names it. See the README for the row.
-#
-# "detached" rather than nothing when there is no branch: an empty token makes the
-# row vanish, and half the worktrees in a typical project are detached.
-set_workspace_branch_token() {
-    local ws="${1:-}" name="${2:-}" dir b
-    [ -n "${ws}" ] && [ -n "${name}" ] || return 0
-    dir="$(core_worktree_dir "${name}")"
-    [ -d "${dir}" ] || return 0
-
-    b="$(git -C "${dir}" symbolic-ref --short -q HEAD 2>/dev/null)" || b=""
-    [ -n "${b}" ] || b="detached"
-
-    herdr_cli workspace report-metadata "${ws}" --source tryout \
-        --token "wt_branch=${b}" >/dev/null 2>&1 || true
-    return 0
-}
-
-# Workspace id for a worktree's workspace, empty when it is not open.
-# Does this workspace already run an agent anywhere in it?
-herdr_workspace_has_agent() {
-    herdr_cli pane list 2>/dev/null \
-        | jq -e --arg w "$1" \
-            '[.result.panes[]? | select(.workspace_id == $w and .agent != null)] | length > 0' \
-            >/dev/null 2>&1
-}
-
-# The pane an agent belongs in: the one sitting in the worktree, not the panel
-# docked beside it — which is in the project root and would run claude in the
-# wrong directory.
-herdr_workspace_agent_pane() {
-    local ws="$1" dir="$2"
-    herdr_cli pane list 2>/dev/null \
-        | jq -r --arg w "${ws}" --arg d "${dir}" --arg l "${PANEL_PANE_LABEL}" \
-            'first(.result.panes[]? | select(.workspace_id == $w and .cwd == $d
-                                             and (.label // "") != $l) | .pane_id) // empty' \
-            2>/dev/null
-}
-
-# A workspace's current label.
-herdr_workspace_label_of() {
-    herdr_cli workspace list 2>/dev/null \
-        | jq -r --arg w "$1" \
-            'first(.result.workspaces[]? | select(.workspace_id == $w) | .label) // empty' 2>/dev/null
-}
-
-# Workspace id for whichever workspace holds a pane in this directory, empty when
-# none does. Unlike herdr_workspace_id this does NOT go through the label — which
-# matters precisely when the label is the thing that is wrong, as on a workspace
-# opened before the core-<name> scheme existed.
-herdr_workspace_id_for_dir() {
-    local dir="$1"
-    herdr_cli pane list 2>/dev/null \
-        | jq -r --arg d "${dir}" \
-            'first(.result.panes[]? | select(.cwd == $d) | .workspace_id) // empty' 2>/dev/null
-}
-
-herdr_workspace_id() {
-    herdr_cli workspace list 2>/dev/null \
-        | jq -r --arg l "$(herdr_workspace_label "${1}")" \
-            '.result.workspaces[]? | select(.label == $l) | .workspace_id' 2>/dev/null \
-        | head -1
-}
-
-# The tab holding a plain shell, beside the agent's own. herdr labels the first
-# tab "1", which says nothing about what is in it.
-TERMINAL_TAB_LABEL="Terminal"
-
-# Give a workspace its Terminal tab unless it already has one. Idempotent, because
-# both routes call it: a freshly opened workspace, and the reconcile pass over
-# workspaces opened before this existed.
-# Name a workspace's first tab for what it holds. herdr calls it "1", which says
-# nothing; an agent pane in it earns "Claude", anything else is a plain "Shell".
-# Only ever renames the default "1", so a name the user chose is left alone.
-ensure_first_tab_label() {
-    local ws="$1" first agent
-    [ -n "${ws}" ] || return 0
-
-    # "1" is herdr's own name for an unnamed tab, but "Shell" is OURS — set when
-    # the workspace had no agent — and an agent starting later must be allowed to
-    # correct it. Any other label is the user's and is left alone.
-    first=$(herdr_cli tab list --workspace "${ws}" 2>/dev/null \
-        | jq -r '.result.tabs[0]? | select(.label == "1" or .label == "Shell" or .label == "Claude")
-                 | .tab_id // empty' 2>/dev/null)
-    [ -n "${first}" ] || return 0
-
-    # An agent anywhere in the workspace means the first tab is the one running it:
-    # the Terminal tab is created without one.
-    agent=$(herdr_cli pane list 2>/dev/null \
-        | jq -r --arg w "${ws}" \
-            '[.result.panes[]? | select(.workspace_id == $w and .agent != null)] | length' 2>/dev/null)
-    if [ "${agent:-0}" = "0" ]; then
-        herdr_cli tab rename "${first}" "Shell" >/dev/null 2>&1 || return 1
-    else
-        herdr_cli tab rename "${first}" "Claude" >/dev/null 2>&1 || return 1
-    fi
-    return 0
-}
-
-# The pane running the command panel, beside the Terminal tab's shell.
-PANEL_PANE_LABEL="tryout"
-# How much of the split the SHELL keeps; the panel gets the rest. herdr clamps to
-# 0.1-0.9. Both routes that dock a panel must use it, or they look different.
-PANEL_DOCK_RATIO="0.78"
-
-# What a worktree is, which decides what can be done to it:
-#   primary        it IS the project's site
-#   served         it has a site, URL and database of its own
-#   checkout-only  a checkout and nothing more — most worktrees, most of the time
-# Site-scoped verbs (checkout, reset, patch) need one of the first two; offering
-# them on the third would mean a command that fails, or silently hits the primary.
-core_worktree_state() {
-    local name="$1"
-    [ -n "${name}" ] || { echo "checkout-only"; return 0; }
-    if [ "${name}" = "$(active_worktree_name)" ]; then
-        echo "primary"
-    elif site_is_served "${name}"; then
-        echo "served"
-    else
-        echo "checkout-only"
-    fi
-}
-
-# Dock the panel in a workspace's Terminal tab, unless it is already there.
-# Deliberately that tab and not the agent's: the panel would take width from
-# claude in every workspace, which is the clutter it exists to avoid.
-# Is this pane actually running the panel, or is it a shell wearing its label?
-#
-# `pane process-info` answers for ANY live pane, a bare shell included, so it can
-# only spot a pane whose process is GONE — never one running the wrong thing. A
-# panel closed with q or esc drops back to its shell and keeps the label, and that
-# read as healthy: seven of eight panels sat like that with every re-run of
-# `ddev tryout herdr` reporting success.
-#
-# The terminal title is what tells them apart. herdr reports the running command
-# there, so a live panel's title names the script and a shell's is a prompt.
-panel_pane_is_running() {
-    local id="${1:-}"
-    [ -n "${id}" ] || return 1
-    herdr_cli pane list 2>/dev/null \
-        | jq -e --arg p "${id}" \
-            '[.result.panes[]? | select(.pane_id == $p)
-              | (.terminal_title // "") | test("herdr-panel")] | any' \
-            >/dev/null 2>&1
-}
-
-ensure_panel_pane() {
-    local ws="$1" dir="$2" name="$3" has tab_pane
-    [ -n "${ws}" ] || return 0
-
-    # The agent's tab is what gets split: the panel drives the worktree the agent
-    # is working in, so it belongs where you are already looking.
-    local tab; tab="$(herdr_agent_tab_id "${ws}")"
-    [ -n "${tab}" ] || return 1
-
-    # The pane to split is the agent's own, never a panel already sitting there:
-    # splitting the panel would nest one inside the other. Its label is the only
-    # thing that tells them apart.
-    tab_pane=$(herdr_cli pane list 2>/dev/null \
-        | jq -r --arg w "${ws}" --arg t "${tab}" --arg l "${PANEL_PANE_LABEL}" \
-            '[.result.panes[]? | select(.workspace_id == $w and .tab_id == $t
-                                        and (.label // "") != $l)][0].pane_id // empty' 2>/dev/null)
-    [ -n "${tab_pane}" ] || return 1
-
-    local existing existing_tab
-    existing=$(herdr_cli pane list 2>/dev/null \
-        | jq -r --arg w "${ws}" --arg l "${PANEL_PANE_LABEL}" \
-            '.result.panes[]? | select(.workspace_id == $w and .label == $l) | .pane_id' \
-            2>/dev/null | head -1)
-    if [ -n "${existing}" ]; then
-        if panel_pane_is_running "${existing}"; then
-            # Alive. A panel docked before this one sits in the Terminal tab, so
-            # move it rather than close and redock: closing would kill a running
-            # panel and flash the pane for nothing.
-            existing_tab=$(herdr_cli pane list 2>/dev/null \
-                | jq -r --arg p "${existing}" \
-                    '.result.panes[]? | select(.pane_id == $p) | .tab_id' 2>/dev/null | head -1)
-            if [ -n "${existing_tab}" ] && [ "${existing_tab}" != "${tab}" ]; then
-                # --no-focus, as the split below: a reconcile pass must not yank
-                # focus off the agent onto a panel the user did not ask for.
-                herdr_cli pane move "${existing}" --tab "${tab}" --split right \
-                    --target-pane "${tab_pane}" --ratio "${PANEL_DOCK_RATIO}" \
-                    --no-focus >/dev/null 2>&1 || true
-            fi
-            return 0
-        fi
-        # Not running the panel: a corpse from a herdr server restart, or a shell
-        # left behind by q/esc. Either way the label lies, so close it and let the
-        # code below dock a real one. A panel closed on purpose therefore comes
-        # back on the next run — to be rid of it, close the pane, not the panel.
-        herdr_cli pane close "${existing}" >/dev/null 2>&1 || true
-    fi
-
-    # An install predating the panel has no script to run.
-    local script; script="$(tryout_script herdr-panel.sh)"
-    [ -f "${script}" ] || return 0
-
-    # The panel runs outside DDEV, so it cannot source this file: it is handed the
-    # three things it would otherwise have to guess. The session especially —
-    # without it a bare `herdr` in the panel means the DEFAULT session, not the
-    # tryout-<project> one these workspaces live in.
-    local new
-    # Same geometry and same working directory as `ddev tryout panel`, or the two
-    # routes hand you visibly different panels. 0.78 leaves the panel the narrow
-    # right-hand strip; the agent beside it keeps the room. The project root, not
-    # the worktree, because the popup's manifest command is a relative path that
-    # herdr resolves against this cwd — see run_selected.
-    new=$(herdr_cli pane split "${tab_pane}" --direction right --ratio "${PANEL_DOCK_RATIO}" \
-            --no-focus --cwd "${PROJECT_ROOT}" \
-            --env "TRYOUT_PANEL_WORKTREE=${name}" \
-            --env "TRYOUT_PANEL_APPROOT=${PROJECT_ROOT}" \
-            --env "TRYOUT_PANEL_SESSION=$(herdr_session_name)" 2>/dev/null \
-          | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
-    [ -n "${new}" ] || return 1
-
-    herdr_cli pane rename "${new}" "${PANEL_PANE_LABEL}" >/dev/null 2>&1 || true
-
-    # `pane run` types the command into the pane's shell, and `pane split` answers
-    # before that shell has reached its prompt — so a first attempt can be typed
-    # into nothing and lost, leaving a pane that is labelled but bare. Same race
-    # start_agent_in_pane retries for. herdr answering ok proves only that it
-    # delivered the keystrokes, so confirm the panel is really up before believing
-    # it, and say so if it never comes.
-    #
-    # WAIT before concluding it did not start. `pane run` answers in ~17ms, but the
-    # pane's terminal title — all panel_pane_is_running has to go on — takes ~700ms
-    # to appear. Checking straight after the call therefore failed every single
-    # time, however well the panel had started, and the "retry" then typed the
-    # command AT A LIVE PANEL. Those keystrokes end in a newline, the panel's
-    # `read -rsn1` returns that as empty, and its loop reads empty as Enter — so it
-    # ran whatever row was selected, which on a fresh panel is row 0: `status`.
-    # That is the bug this loop caused; re-running at a running panel is never
-    # harmless, so the poll below has to lose before another `pane run` may fire.
-    local attempt=0 waited
-    while :; do
-        herdr_cli pane run "${new}" bash "${script}" >/dev/null 2>&1 || true
-        # ~700ms is the measured norm; six whole seconds is slack for a loaded
-        # machine. Whole-second sleeps only: a fractional one is not portable and
-        # this runs on the host.
-        waited=0
-        while [ "${waited}" -lt 6 ]; do
-            sleep 1
-            waited=$((waited + 1))
-            panel_pane_is_running "${new}" && return 0
-        done
-        attempt=$((attempt + 1))
-        [ "${attempt}" -ge 3 ] && break
-    done
-    return 1
-}
-
-# The Terminal tab of a workspace, empty when it has none yet.
-herdr_terminal_tab_id() {
-    herdr_cli tab list --workspace "${1}" 2>/dev/null \
-        | jq -r --arg l "${TERMINAL_TAB_LABEL}" \
-            '.result.tabs[]? | select(.label == $l) | .tab_id' 2>/dev/null | head -1
-}
-
-# The agent's tab: the workspace's FIRST, whatever it is called. ensure_first_tab_label
-# names it "Claude" or "Shell" depending on what is in it, and a user may rename it
-# again — so the position is the reliable key, not the label.
-herdr_agent_tab_id() {
-    herdr_cli tab list --workspace "${1}" 2>/dev/null \
-        | jq -r '.result.tabs[0]?.tab_id // empty' 2>/dev/null
-}
-
-ensure_terminal_tab() {
-    local ws="$1" dir="$2" has
-    [ -n "${ws}" ] || return 0
-
-    has=$(herdr_cli tab list --workspace "${ws}" 2>/dev/null \
-        | jq -r --arg l "${TERMINAL_TAB_LABEL}" \
-            '[.result.tabs[]? | select(.label == $l)] | length' 2>/dev/null)
-    [ "${has:-0}" = "0" ] || return 0
-
-    # --no-focus: the agent is what the user came for, so opening a workspace must
-    # not land them in the shell.
-    herdr_cli tab create --workspace "${ws}" --cwd "${dir}" \
-        --label "${TERMINAL_TAB_LABEL}" --no-focus >/dev/null 2>&1 \
-        || return 1
-    return 0
-}
-
-# Workspaces this command manages whose worktree is no longer on disk, one per
-# line as "<workspace_id>\t<label>\t<name>".
-#
-# Only the core-<name> label marks a workspace as ours: the session is per
-# project, but a user may have opened anything else in it, and those must never
-# be touched. One `workspace list` call, then a filesystem test each — this runs
-# on every bare `ddev tryout herdr`, so it must not cost a round trip per
-# workspace.
-herdr_orphan_workspaces() {
-    local id label name
-    while IFS=$'\t' read -r id label; do
-        [ -n "${id}" ] || continue
-        case "${label}" in
-            core-*) name="${label#core-}" ;;
-            *)      continue ;;
-        esac
-        [ -n "${name}" ] || continue
-        # herdr_checkout_dir knows both shapes: worktrees/<name>, and the root
-        # checkout itself for the primary.
-        [ -d "$(herdr_checkout_dir "${name}")" ] && continue
-        printf '%s\t%s\t%s\n' "${id}" "${label}" "${name}"
-    done < <(herdr_cli workspace list 2>/dev/null \
-        | jq -r '.result.workspaces[]? | [.workspace_id, .label] | @tsv' 2>/dev/null)
-}
-
-# The directory a workspace is sitting in, from its first pane's cwd.
-#
-# NOT worktree.checkout_path: that field only exists for workspaces opened with
-# `worktree open`, and the `workspace create` fallback records none — so it is
-# absent exactly when we still need an answer. Every workspace has a pane.
-herdr_workspace_dir() {
-    local id="$1"
-    herdr_cli pane list 2>/dev/null \
-        | jq -r --arg w "${id}" \
-            'first(.result.panes[]? | select(.workspace_id == $w) | .cwd) // empty' 2>/dev/null
-}
-
-# Reconcile the session with the project, in one pass over the workspace list:
-#
-#   * a workspace sitting in one of our worktrees but labelled something else is
-#     ADOPTED — renamed to core-<name>. Closing it would kill a live agent and
-#     leave a duplicate workspace beside it; renaming keeps the pane, its history
-#     and its agent, and makes every other helper here recognise it.
-#   * a workspace labelled core-<name> whose worktree is gone is CLOSED.
-#   * a workspace pointing outside the project has no business in this session
-#     (it is named after the project) and is CLOSED.
-#   * anything else inside the project — the root, packages/ — is LEFT ALONE:
-#     someone opened it deliberately and it is not a Core worktree.
-#
-# Runs before the open loop, so an adopted workspace is not opened a second time.
-sync_herdr_workspaces() {
-    local root id label dir real name
-    root="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P)" || return 0
-
-    while IFS=$'\t' read -r id label; do
-        [ -n "${id}" ] || continue
-        dir="$(herdr_workspace_dir "${id}")"
-        # No pane, no cwd, nothing to reason about — leave it be.
-        [ -n "${dir}" ] || continue
-        # Resolve both sides: on macOS the project is reached through /var while
-        # herdr reports /private/var, and a plain prefix test calls everything
-        # foreign. Same reasoning as list_foreign_core_worktrees.
-        real="$(cd "${dir}" 2>/dev/null && pwd -P)" || real=""
-
-        # Outside the project (or gone entirely, which a core-* label explains).
-        if [ -z "${real}" ] || case "${real}/" in "${root}/"*) false ;; *) true ;; esac; then
-            case "${label}" in
-                core-*) ;;   # an orphan; the message below names the worktree
-                *)
-                    if herdr_cli workspace close "${id}" >/dev/null 2>&1; then
-                        echo -e "  ${RED}✗${NC} closed ${label} ${DIM}— outside this project${NC}"
-                    fi
-                    continue ;;
-            esac
-        fi
-
-        # Inside the project: is it one of our Core worktrees?
-        # `|| true` is load-bearing: the function returns non-zero for a path that
-        # is not one — a workspace whose checkout has since been removed, which is
-        # exactly what this loop exists to find — and a bare assignment under
-        # `set -e` makes that abort the whole command, silently.
-        name="$(worktree_name_for_path "${real}" top 2>/dev/null || true)"
-
-        if [ -n "${name}" ]; then
-            # Ours. Fix the label if it is not the one everything else keys on.
-            if [ "${label}" != "$(herdr_workspace_label "${name}")" ]; then
-                if herdr_cli workspace rename "${id}" "$(herdr_workspace_label "${name}")" >/dev/null 2>&1; then
-                    echo -e "  ${GREEN}✓${NC} adopted $(herdr_workspace_label "${name}") ${DIM}(was '${label}')${NC}"
-                fi
-            fi
-            # Workspaces opened before the Terminal tab existed get one here: the
-            # open loop skips anything already open, so this is the only route that
-            # reaches them. ensure_terminal_tab is a no-op when one is present.
-            ensure_terminal_tab "${id}" "${real}" \
-                || warn "Could not add a Terminal tab to ${label}"
-            ensure_first_tab_label "${id}" || true
-            # The panel rides along: it lives in the Terminal tab, so it can only
-            # be docked once that tab exists.
-            set_workspace_branch_token "${id}" "${name}"
-            ensure_panel_pane "${id}" "${real}" "${name}" \
-                || warn "Could not add the tryout panel to ${label}"
-        fi
-    done < <(herdr_cli workspace list 2>/dev/null \
-        | jq -r '.result.workspaces[]? | [.workspace_id, .label] | @tsv' 2>/dev/null)
-
-    # Whatever is left labelled core-<name> with no worktree behind it.
-    close_orphan_workspaces
-}
-
-# Close every workspace whose worktree is gone, so a session matches the project.
-# Deliberately unconditional: no prompt, and no exception for a workspace whose
-# agent is still working. A `worktree rename` is a remove plus an add to herdr,
-# so the old workspace goes and the new one is opened in the same run — the old
-# pane's scrollback with it. That is the trade for herdr staying exactly in step.
-close_orphan_workspaces() {
-    local id label name closed=0
-    while IFS=$'\t' read -r id label name; do
-        [ -n "${id}" ] || continue
-        if herdr_cli workspace close "${id}" >/dev/null 2>&1; then
-            echo -e "  ${RED}✗${NC} closed ${label} ${DIM}— $(basename "$(herdr_checkout_dir "${name}")") is gone${NC}"
-            closed=$((closed + 1))
-        else
-            warn "Could not close ${label}"
-        fi
-    done < <(herdr_orphan_workspaces)
-    return 0
-}
-
-# A worktree name derived from a branch (or any path segment). herdr names its own
-# checkouts from a generated word list on a "worktree/<slug>" branch, so take the last
-# segment, drop a typo3-core- prefix, and force it into validate_worktree_name's
-# grammar. Empty in, empty out — the caller decides what to do about that.
-worktree_name_from_ref() {
-    printf '%s' "${1:-}" \
-        | sed -e 's|^worktree/||' -e 's|^refs/heads/||' -e 's/^typo3-core-//' \
-              -e 's/[^A-Za-z0-9._-]/-/g' \
-        | cut -c1-64
-}
-
-# Checkouts of the Core repo that live OUTSIDE the project, one path per line. These
-# are invisible to every tryout command: not matched by list_core_worktrees' glob, not
-# servable, never reachable through the typo3-core symlink. herdr's own New-worktree
-# action creates them under its worktrees.directory.
-list_foreign_core_worktrees() {
-    [ -d "${CORE_DIR}" ] || return 0
-
-    # Compare RESOLVED paths: on macOS the project root is reached through /var
-    # while git reports /private/var, and a plain prefix test would call every
-    # worktree foreign.
-    local root
-    root="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P)" || return 0
-
-    git -C "${CORE_DIR}" worktree list --porcelain 2>/dev/null \
-        | awk '/^worktree /{print substr($0,10)}' \
-        | while IFS= read -r p; do
-            [ -n "${p}" ] || continue
-            local real
-            real="$(cd "${p}" 2>/dev/null && pwd -P)" || real="${p}"
-            case "${real}/" in
-                "${root}/"*) ;;
-                *) echo "${p}" ;;
-            esac
-          done
-}
-
-# One workspace per worktree, in two tabs: the first runs the agent, a second one
-# labelled Terminal holds a plain shell. Both are rooted at the worktree. A tab
-# rather than a split, so the shell costs the agent no width. Focus stays where the
-# caller was unless asked.
-# Start claude in a pane. Returns 0 when the agent is up — including the case where
-# it is up but blocked on its own UI — so the caller can name the tab for what is
-# actually in it. Used by both routes into a workspace: the fresh open, and the
-# backfill of one that was already there but had no agent.
-start_agent_in_pane() {
-    local name="$1" pane="$2" agent start_err rc=0 attempt=0
-    [ -n "${pane}" ] || return 1
-    agent="$(herdr_agent_name "${name}")"
-
-    # `workspace create` answers before the pane's shell reaches its prompt, and
-    # `agent start` needs an idle shell to take over — so a first attempt can lose
-    # that race. Retry a few times before believing a failure.
-    while :; do
-        rc=0
-        start_err=$(herdr_cli agent start "${agent}" --kind claude --pane "${pane}" 2>&1 >/dev/null) || rc=$?
-        # Success, or a definite answer (the agent is up but blocked on its own
-        # UI) — either way, stop.
-        [ "${rc}" -eq 0 ] && break
-        printf '%s' "${start_err}" | grep -q 'agent_not_ready' && break
-        attempt=$((attempt + 1))
-        [ "${attempt}" -ge 5 ] && break
-        sleep 1
-    done
-
-    if [ "${rc}" -eq 0 ]; then
-        success "'${name}' — claude '${agent}'"
-        return 0
-    fi
-    if printf '%s' "${start_err}" | grep -q 'agent_not_ready'; then
-        # Claude launched but is waiting on its own UI — on a worktree it has not
-        # seen before that is the folder-trust prompt. It is running and named, so
-        # this is a normal first run, not a failure.
-        success "'${name}' — claude '${agent}'"
-        info "  ${DIM}'${agent}' is waiting for input (folder trust?) — open core-${name}${NC}"
-        return 0
-    fi
-    warn "Could not start claude in '${name}' — left as a shell"
-    return 1
-}
-
-open_worktree_in_herdr() {
-    local name="$1" use_agent="${2:-true}" focus="${3:-false}" dir ws_json root_pane agent
-    local first_tab tab_label="Shell"
-    # Every caller validates first, but the name becomes a path and a herdr label —
-    # so check here too rather than trusting each new call site to remember.
-    validate_worktree_name "${name}" || return 1
-    dir="$(herdr_checkout_dir "${name}")"
-
-    if [ ! -d "${dir}" ]; then
-        error "No worktree '${name}'"
-        error "  → ddev tryout worktree add ${name} <branch>"
-        return 1
-    fi
-
-    if herdr_worktree_is_open "${dir}"; then
-        # Open, but not necessarily COMPLETE. A workspace opened by hand, or by a
-        # scheme older than the Terminal tab or the panel, is missing whichever of
-        # those did not exist yet — and returning here is what left it that way:
-        # `ddev tryout herdr <name>` skips the reconcile pass, so nothing else
-        # would ever reach it. Backfill the same three things the fresh path ends
-        # with; each is a no-op when already present.
-        # By DIRECTORY, not by label: a workspace old enough to be missing the tab
-        # and the panel is old enough to be missing the core-<name> label too, and
-        # looking it up by the label it does not have was why this branch did
-        # nothing at all for the one workspace that needed it.
-        local open_ws; open_ws="$(herdr_workspace_id_for_dir "${dir}")"
-        if [ -n "${open_ws}" ]; then
-            # Adopt the label as well, so everything that keys on it — the sync
-            # pass, orphan cleanup, `herdr <name>` focusing — finds it afterwards.
-            local want; want="$(herdr_workspace_label "${name}")"
-            if [ "$(herdr_workspace_label_of "${open_ws}")" != "${want}" ]; then
-                herdr_cli workspace rename "${open_ws}" "${want}" >/dev/null 2>&1 || true
-            fi
-            # An agent too, if the workspace has none and one was asked for. The
-            # fresh path starts it before this early return, so a workspace that
-            # predates the agent — or lost it — never got one back.
-            if [ "${use_agent}" = "true" ] && ! herdr_workspace_has_agent "${open_ws}"; then
-                # The worktree's own pane, never the panel beside it.
-                local root; root="$(herdr_workspace_agent_pane "${open_ws}" "${dir}")"
-                if [ -n "${root}" ]; then
-                    start_agent_in_pane "${name}" "${root}" || true
-                fi
-            fi
-            ensure_terminal_tab "${open_ws}" "${dir}" || true
-            # After the agent, so the tab is named for what is now in it.
-            ensure_first_tab_label "${open_ws}" || true
-            set_workspace_branch_token "${open_ws}" "${name}"
-            ensure_panel_pane "${open_ws}" "${dir}" "${name}" || true
-        fi
-        info "'${name}' is already open — skipping"
-        return 0
-    fi
-
-    info "Opening '${name}'..."
-
-    local focus_flag="--no-focus"
-    [ "${focus}" = "true" ] && focus_flag="--focus"
-
-    # `worktree open` registers the checkout as a workspace WITH git provenance, so
-    # herdr groups it under the Core repo exactly like a natively created worktree.
-    # `workspace create` sets no provenance, so it is only the fallback for a herdr
-    # that does not know the subcommand.
-    local label main_dir
-    label="$(herdr_workspace_label "${name}")"
-    main_dir="$(main_core_worktree_dir)"
-    [ -z "${main_dir}" ] && main_dir="${dir}"
-
-    ws_json=$(herdr_cli worktree open \
-        --cwd "${main_dir}" --path "${dir}" --label "${label}" "${focus_flag}" 2>&1) \
-        || ws_json=""
-
-    if [ -z "${ws_json}" ] || ! printf '%s' "${ws_json}" | jq -e '.result' >/dev/null 2>&1; then
-        ws_json=$(herdr_cli workspace create \
-            --cwd "${dir}" --label "${label}" "${focus_flag}" 2>&1) || {
-            error "herdr could not open '${name}'"
-            echo "${ws_json}" >&2
-            return 1
-        }
-    fi
-
-    root_pane=$(printf '%s' "${ws_json}" | jq -r '.result.root_pane.pane_id // empty')
-    # The reply carries the first tab beside the root pane, so naming it costs no
-    # extra round trip.
-    first_tab=$(printf '%s' "${ws_json}" | jq -r '.result.tab.tab_id // empty')
-    if [ -z "${root_pane}" ]; then
-        error "herdr did not report a pane for '${name}'"
-        return 1
-    fi
-
-    if [ "${use_agent}" = "true" ]; then
-        start_agent_in_pane "${name}" "${root_pane}" && tab_label="Claude"
-    else
-        success "'${name}' — shell"
-    fi
-
-    # Naming the tab and adding the shell are conveniences: a workspace that opened
-    # but could not be labelled is still perfectly usable, so neither failure ends
-    # the run — several worktrees may still be waiting behind this one.
-    [ -n "${first_tab}" ] \
-        && herdr_cli tab rename "${first_tab}" "${tab_label}" >/dev/null 2>&1
-    local ws_id; ws_id="$(herdr_workspace_id "${name}")"
-    ensure_terminal_tab "${ws_id}" "${dir}" \
-        || warn "Could not add a Terminal tab for '${name}'"
-    set_workspace_branch_token "${ws_id}" "${name}"
-    ensure_panel_pane "${ws_id}" "${dir}" "${name}" \
-        || warn "Could not add the tryout panel for '${name}'"
-    return 0
-}
-
 # True when the installed payload is not the one this code came from. Runs on the
 # host, cheaply: two file reads and a string compare.
 #
@@ -2203,7 +1388,7 @@ vendor_core_mismatch() {
     # asking core_worktree_dir for it names a path that does not exist, and the cd
     # below then printed an error on every `status`.
     local expected
-    expected="$(herdr_checkout_dir "${active}")"
+    expected="$(core_checkout_dir "${active}")"
     expected="$(cd "${expected}" 2>/dev/null && pwd -P)" || return 1
     case "${resolved}" in
         "${expected}"/*) return 1 ;;

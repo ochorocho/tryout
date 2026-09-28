@@ -22,7 +22,7 @@ shift || true
 # ─────────────────────────────────────────────────────────────────────
 # Host / container split
 #
-# This script runs on the HOST and owns the terminal: prompts, gum, herdr, the
+# This script runs on the HOST and owns the terminal: prompts, gum, the
 # confirmation before `delete`. The work of every other verb runs INSIDE the web
 # container, where git, composer, php, curl and the database clients are the
 # container's own — one `ddev exec` per command, into tryout-container.sh, which
@@ -148,9 +148,9 @@ cmd_patch() {
     require_core
 
     local site="" all_branches="false" args=()
-    # --site names the site without occupying the change-id slot. The panel needs
-    # it: it knows which worktree it drives but not which change you want, and
-    # positionally the id comes first — so `patch benni` would fetch a Gerrit
+    # --site names the site without occupying the change-id slot. A caller that
+    # knows the worktree but not the change needs it: positionally the id comes
+    # first — so `patch benni` would fetch a Gerrit
     # change called "benni" and apply it to the primary.
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -256,8 +256,8 @@ cmd_reset() {
 # ─────────────────────────────────────────────────────────────────────
 cmd_delete() {
     local target="" sites=() assume_yes="false" a
-    # --yes lets a caller that has already confirmed (the herdr menu) skip the
-    # prompt, which would otherwise appear in a pane the user is not looking at.
+    # --yes lets a caller that has already confirmed — a script, say — skip the
+    # prompt.
     for a in "$@"; do
         case "${a}" in
             --yes|-y) assume_yes="true" ;;
@@ -317,9 +317,8 @@ cmd_delete() {
 # checkout — Switch TYPO3 Core branch (version)
 # ─────────────────────────────────────────────────────────────────────
 cmd_checkout() {
-    # --site pins the site while leaving the branch to be asked for. The panel
-    # needs that: it knows which worktree it drives, but not which branch you
-    # want, and positionally the branch has to come first.
+    # --site pins the site while leaving the branch to be asked for: positionally
+    # the branch has to come first.
     local args=() site=""
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -416,15 +415,12 @@ cmd_worktree() {
     case "${sub}" in
         add)
             require_core
-            # The name is taken IN the loop, not from $1 before it: `worktree add
-            # --herdr` (what the panel runs) otherwise made the name the literal
-            # string "--herdr", which is non-empty, so the prompt below never
-            # fired and the flag was delegated as the worktree name.
-            local name="" branch="" in_herdr="false" flags=()
-            # --herdr is answered here; everything else is the container's.
+            # The name is taken IN the loop, not from $1 before it: a flag in
+            # first position otherwise became the name — non-empty, so the prompt
+            # below never fired and the flag was delegated as the worktree name.
+            local name="" branch="" flags=()
             while [ $# -gt 0 ]; do
                 case "$1" in
-                    --herdr)   in_herdr="true" ;;
                     # --detach and --branch are both no-ops now: worktrees are
                     # always detached. Still accepted so an existing habit or
                     # script does not start erroring. --detach is forwarded (the
@@ -444,7 +440,7 @@ cmd_worktree() {
             # Guided: no name means ask for it.
             if [ -z "${name}" ]; then
                 name="$(ask_text "Name for the new worktree (becomes worktrees/<name>)" "e.g. bugfix-12345")" \
-                    || { explain_missing "ddev tryout worktree add <name> [<branch>] [--serve] [--php 8.2] [--herdr]"; return 1; }
+                    || { explain_missing "ddev tryout worktree add <name> [<branch>] [--serve] [--php 8.2]"; return 1; }
             fi
             validate_worktree_name "${name}" || return 1
             # The branch is asked for whether or not the name came from the command
@@ -461,10 +457,6 @@ cmd_worktree() {
             ad_before="$(served_hostname_set)"
             delegate worktree add "${name}" ${branch:+"${branch}"} ${flags[@]+"${flags[@]}"} || return 1
             restart_if_hosts_changed "${ad_before}" || true
-            if [ "${in_herdr}" = "true" ]; then
-                echo ""
-                ensure_herdr_session && open_worktree_in_herdr "${name}" "true" "true"
-            fi
             ;;
 
         list)
@@ -491,8 +483,7 @@ cmd_worktree() {
             # Core worktree is ~20k files that took minutes to check out — git's
             # own refusal to drop a dirty tree is no longer the backstop, because
             # the removal below deliberately takes the directory with it.
-            # --yes skips the question for a caller that has already asked (the
-            # herdr popup), which would otherwise prompt in a pane nobody watches.
+            # --yes skips the question for a caller that has already asked.
             local wt_force="false" wt_yes="false" a wt_args=()
             for a in "$@"; do
                 case "${a}" in
@@ -584,103 +575,6 @@ cmd_worktree() {
             restart_if_hosts_changed "${rn_before}"
             ;;
 
-        adopt)
-            # Host-side by nature: the strays live in herdr's worktree directory,
-            # a host path the container has never heard of.
-            require_core
-            local dry="false" one_path="" one_name=""
-            case "${1:-}" in
-                --dry-run) dry="true" ;;
-                "")        ;;
-                *)         one_path="$1"; one_name="${2:-}" ;;
-            esac
-
-            # Adopting a single stray by path lets the caller choose the directory
-            # name, rather than taking whatever the branch happens to be called.
-            if [ -n "${one_path}" ]; then
-                [ -d "${one_path}" ] || { error "No such worktree: ${one_path}"; return 1; }
-                local n
-                if [ -n "${one_name}" ]; then
-                    n="${one_name}"
-                else
-                    n="$(worktree_name_from_ref \
-                        "$(git -C "${one_path}" branch --show-current 2>/dev/null || basename "${one_path}")")"
-                fi
-                validate_worktree_name "${n}" || return 1
-                local t
-                t="$(core_worktree_dir "${n}")"
-                [ -e "${t}" ] && { error "'${n}' already exists"; return 1; }
-                info "Moving ${one_path} → $(basename "${t}")"
-                if git -C "${one_path}" worktree move "${one_path}" "${t}" 2>/dev/null; then
-                    ensure_relative_worktree_paths
-                    success "Adopted as '${n}'"
-                else
-                    error "Could not move ${one_path} (uncommitted changes?)"
-                    return 1
-                fi
-                return 0
-            fi
-
-            local foreign wt name target branch
-            foreign=$(list_foreign_core_worktrees)
-            if [ -z "${foreign}" ]; then
-                success "Every Core worktree is inside the project"
-                return 0
-            fi
-
-            echo ""
-            warn "Core worktrees outside the project:"
-            echo "${foreign}" | sed 's/^/    /'
-            echo ""
-            echo -e "  ${DIM}These are invisible to every ddev tryout command.${NC}"
-            echo ""
-
-            [ "${dry}" = "true" ] && return 0
-
-            # Which of them to take is a choice: herdr leaves checkouts behind
-            # that the user may still be working in. Offer them, and fall back to
-            # all of them where nobody can answer — the behaviour before this.
-            local chosen=() labels=() l
-            if have_tty; then
-                while IFS= read -r wt; do
-                    [ -n "${wt}" ] || continue
-                    branch=$(git -C "${wt}" branch --show-current 2>/dev/null || true)
-                    labels+=("$(printf '%s  %s' "$(pad_display "${wt}" 52)" "${branch:-(detached)}")")
-                done <<< "${foreign}"
-                while IFS= read -r l; do
-                    [ -n "${l}" ] && chosen+=("${l%% *}")
-                done < <(ui_choose_multi "Adopt which checkouts?" "${labels[@]}")
-                if [ ${#chosen[@]} -eq 0 ]; then
-                    warn "Nothing adopted"
-                    return 0
-                fi
-            else
-                while IFS= read -r wt; do [ -n "${wt}" ] && chosen+=("${wt}"); done <<< "${foreign}"
-            fi
-
-            for wt in "${chosen[@]}"; do
-                branch=$(git -C "${wt}" branch --show-current 2>/dev/null || true)
-                name=$(worktree_name_from_ref "${branch:-$(basename "${wt}")}")
-                if ! validate_worktree_name "${name}" >/dev/null 2>&1; then
-                    error "Cannot derive a name for ${wt}"
-                    continue
-                fi
-                target=$(core_worktree_dir "${name}")
-                if [ -e "${target}" ]; then
-                    error "'${name}' already exists — skipping ${wt}"
-                    continue
-                fi
-                info "Moving ${wt} → $(basename "${target}")"
-                if git -C "${wt}" worktree move "${wt}" "${target}" 2>/dev/null; then
-                    success "Adopted '${name}'"
-                else
-                    error "Could not move ${wt} (uncommitted changes?)"
-                fi
-            done
-            ensure_relative_worktree_paths
-            echo ""
-            ;;
-
         help|-h|--help)
             echo ""
             echo -e "${BOLD}ddev tryout worktree${NC} — side-by-side Core checkouts"
@@ -691,11 +585,9 @@ cmd_worktree() {
             echo -e "  ${BOLD}serve <name>${NC}            Give <name> its own URL, PHP version and database"
             echo -e "  ${BOLD}unserve <name>${NC}          Drop the site, keep the worktree"
             echo -e "  ${BOLD}remove <name>${NC}           Delete a worktree and its directory (asks first)"
-            echo -e "  ${BOLD}adopt [<path> [<name>]]${NC} Move stray checkouts in (bare: pick from a list)"
             echo -e "  ${BOLD}rename <old> <new>${NC}      Rename a checkout (the branch is untouched)"
             echo ""
             echo "  Flags: --serve     (add: serve it immediately)"
-            echo "         --herdr     (add: open it as a herdr workspace)"
             echo "         --php 8.2   (add/serve: run this site on another PHP version)"
             echo "         --force     (remove: also drop an unmerged branch)"
             echo "         --yes       (remove: skip the confirmation)"
@@ -723,49 +615,6 @@ cmd_worktree() {
             return 1
             ;;
     esac
-}
-
-# ─────────────────────────────────────────────────────────────────────
-# panel — Dock a clickable command panel in the current herdr tab
-# ─────────────────────────────────────────────────────────────────────
-cmd_panel() {
-    reject_args panel "$@" || return 1
-    herdr_available || return 1
-    # Inside herdr, and only there: the panel is a pane in the tab you are looking
-    # at, so there is nothing to dock it to from a plain shell.
-    if [ "${HERDR_ENV:-}" != "1" ]; then
-        error "The panel docks into the herdr tab you are in — run it from inside herdr."
-        error "  → ddev tryout herdr    opens your worktrees there"
-        return 1
-    fi
-    # Linking the plugin is optional and buys one thing: the popup. Without it the
-    # panel still runs every command, just in its own pane instead of a modal. Say
-    # so once, here, because nothing else would ever mention it.
-    # The plugin registry is machine-wide, so this needs no --session — and
-    # pinning it to tryout-<project> would misreport "not linked" whenever that
-    # server is not running, which here it need not be.
-    if ! herdr plugin list 2>/dev/null | grep -q 'ddev-tryout'; then
-        info "Commands will run in the panel itself."
-        echo -e "  ${DIM}For a popup that prompts instead, register the plugin once:${NC}"
-        echo -e "  ${DIM}→ herdr plugin link ${PROJECT_ROOT}${NC}"
-        echo ""
-    fi
-
-    # Which session to dock into. Pinning tryout-<project> unconditionally would be
-    # the mirror of the bug this fixes: run from a pane in the user's own session,
-    # it would search ours and find nothing. So ask whether the calling pane is one
-    # of ours, and leave it to the ambient session when it is not.
-    local session=""
-    if [ -n "${HERDR_PANE_ID:-}" ] \
-       && herdr_cli pane list 2>/dev/null \
-          | jq -e --arg p "${HERDR_PANE_ID}" \
-              '[.result.panes[]? | select(.pane_id == $p)] | length > 0' >/dev/null 2>&1; then
-        session="$(herdr_session_name)"
-    fi
-
-    # The script does the work: it is also the plugin action's entry point, so the
-    # toggle behaves the same however it was reached.
-    TRYOUT_PANEL_SESSION="${session}" bash "$(tryout_script herdr-panel-open.sh)"
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -809,9 +658,8 @@ cmd_launch() {
         || { explain_missing "ddev tryout launch [<worktree>] [--backend]"; return 1; }
 
     # The active worktree IS the primary and has no sites/<name>/ marker of its
-    # own, so it would read as "not served" by name. The panel passes exactly
-    # that — its own worktree name, primary included — and so does anyone typing
-    # the name they see in `worktree list`.
+    # own, so it would read as "not served" by name — yet that is exactly what
+    # anyone typing the name they see in `worktree list` passes.
     if [ "${site}" = "$(active_worktree_name 2>/dev/null)" ]; then site="${PRIMARY_SITE}"; fi
 
     if ! site_is_served "${site}"; then
@@ -840,172 +688,6 @@ cmd_launch_help() {
     echo -e "  ${BOLD}launch <worktree>${NC}       That worktree's site"
     echo ""
     echo "  Flags: --backend   open /typo3/ instead of the frontend"
-    echo ""
-}
-
-# ─────────────────────────────────────────────────────────────────────
-# herdr — Open every Core worktree in its own herdr tab
-# ─────────────────────────────────────────────────────────────────────
-cmd_herdr() {
-    # Subcommands come before the flag loop: they are separate entry points.
-    case "${1:-}" in
-        new)           shift; cmd_herdr_new "$@"; return $? ;;
-    esac
-
-    local only="" use_agent="true" focus="true" attach="true"
-
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --no-agent)  use_agent="false" ;;
-            --focus)     focus="true" ;;
-            --no-focus)  focus="false" ;;
-            --no-attach) attach="false" ;;
-            -h|--help)  cmd_herdr_help; return 0 ;;
-            -*)         error "Unknown option: $1"; cmd_herdr_help; return 1 ;;
-            *)          only="$1" ;;
-        esac
-        shift
-    done
-
-    herdr_available || return 1
-    require_core
-
-    local names
-    if ! core_is_symlinked; then
-        # A fresh project has one plain clone and no worktrees yet. Open it as a
-        # single workspace rather than turning the user away; it goes by its
-        # branch, the name the worktree layout gives it later.
-        names="$(plain_core_name)"
-        if [ -n "${only}" ] && [ "${only}" != "${names}" ]; then
-            error "No worktree '${only}' — this project has a single Core checkout, '${names}'"
-            error "  → ddev tryout herdr ${names}"
-            error "  → or: ddev tryout worktree add ${only} <branch>"
-            return 1
-        fi
-    elif [ -n "${only}" ]; then
-        validate_worktree_name "${only}" || return 1
-        names="${only}"
-    else
-        # Names only, and `core_worktree_names` is the helper that costs nothing:
-        # list_core_worktrees runs two `git diff` calls per worktree for a dirty
-        # column this discards with `cut -f1`. On a Mutagen project that is ~3.8s
-        # per Core checkout cold — 24s over eight worktrees, and the whole of the
-        # "reloading workspaces…" pause after a panel command.
-        names=$(core_worktree_names)
-    fi
-
-    if [ -z "${names}" ]; then
-        error "No Core worktrees found"
-        error "  → ddev tryout worktree add <name> <branch>"
-        return 1
-    fi
-
-    echo ""
-    ensure_herdr_session || return 1
-
-    # Reconcile before opening anything: a workspace already sitting in one of our
-    # worktrees under an older label is adopted here, so the loop below sees it as
-    # open and does not create a duplicate beside it. Bare runs only — naming a
-    # worktree must not touch workspaces it has nothing to do with.
-    [ -z "${only}" ] && sync_herdr_workspaces
-
-    local name first_ws="" first_label=""
-    # A failure on one worktree must not abandon the rest.
-    for name in ${names}; do
-        if open_worktree_in_herdr "${name}" "${use_agent}"; then
-            if [ -z "${first_ws}" ]; then
-                first_ws="$(herdr_workspace_id "${name}")"
-                first_label="$(herdr_workspace_label "${name}")"
-            fi
-        fi
-    done
-
-    # A rename is a remove plus an add to herdr, so the worktree that vanished is
-    # only orphaned once its replacement has been opened above.
-    [ -z "${only}" ] && close_orphan_workspaces
-
-    # Land the user on the first Core workspace rather than wherever they were.
-    if [ "${focus}" != "false" ] && [ -n "${first_ws}" ]; then
-        herdr_cli workspace focus "${first_ws}" >/dev/null 2>&1 || true
-    fi
-
-    echo ""
-    if [ -n "${first_ws}" ]; then
-        # A DDEV host command has no TTY, so it cannot attach the herdr UI itself —
-        # herdr panics without one, and refuses a nested launch from inside a pane.
-        # Attaching stays the user's keystroke, so hand them the exact command.
-        success "Session ready — focused ${first_label}"
-
-        if [ "${attach}" = "true" ]; then
-            attach_herdr_session
-        else
-            info "  ${DIM}→ herdr session attach $(herdr_session_name)${NC}"
-        fi
-    fi
-    echo ""
-}
-
-# herdr new — create a Core worktree and open it, prompting when run interactively.
-# This is what the herdr popup calls; `ddev tryout worktree add --herdr` is the same
-# work from the other direction.
-cmd_herdr_new() {
-    local name="${1:-}" branch="${2:-}"
-
-    herdr_available || return 1
-    require_core
-
-    # No name given: ask, if there is anyone to ask.
-    if [ -z "${name}" ]; then
-        name="$(ask_text "Name for the new worktree (becomes worktrees/<name>)" "e.g. bugfix-12345")" \
-            || { explain_missing "ddev tryout herdr new <name> [<branch>]"; return 1; }
-    fi
-
-    validate_worktree_name "${name}" || return 1
-    # Asked for even when the name came in as an argument — the popup passes a name
-    # and no branch, and that must still be a question, not a silent ${BRANCH}.
-    ASKED_BRANCH="${branch}"
-    ask_new_worktree_branch "ddev tryout herdr new <name> [<branch>]" || return 1
-    branch="${ASKED_BRANCH}"
-
-    delegate worktree add "${name}" "${branch}" || return 1
-
-    echo ""
-    ensure_herdr_session || return 1
-    open_worktree_in_herdr "${name}" "true" "true" || return 1
-
-    echo ""
-    success "Worktree '${name}' opened as $(herdr_workspace_label "${name}")"
-    echo ""
-}
-
-cmd_herdr_help() {
-    echo ""
-    echo -e "${BOLD}ddev tryout herdr${NC} — open Core worktrees in herdr"
-    echo ""
-    echo "  Creates one herdr workspace per Core worktree (labelled core-<name>),"
-    echo "  each with a Claude tab and a Terminal tab rooted at that worktree,"
-    echo "  and a command panel docked beside the Terminal shell."
-    echo ""
-    echo -e "  ${BOLD}herdr${NC}                 Open every worktree"
-    echo -e "  ${BOLD}herdr <name>${NC}          Open just that one"
-    echo -e "  ${BOLD}herdr new [<name>]${NC}    Create a worktree and open it (prompts if bare)"
-    echo ""
-    echo "  Flags: --no-agent    A plain shell instead of claude"
-    echo "         --no-focus    Stay where you are (default: focus the first one)"
-    echo "         --no-attach   Print the attach command instead of attaching"
-    echo ""
-    echo "  Worktrees already open in any workspace are skipped, so the"
-    echo "  command is safe to re-run. A bare run also CLOSES workspaces whose"
-    echo "  worktree has been removed — including one whose agent is still"
-    echo "  working, so the session always matches the project. Name a worktree"
-    echo "  to open just that one and leave every other workspace alone."
-    echo ""
-    echo "  Runs in a herdr session of its own, 'tryout-<project>', started on"
-    echo "  demand, and attaches to it — your default session is never touched."
-    echo "  Stop the session with:"
-    echo "    herdr --session tryout-<project> server stop"
-    echo ""
-    echo "  Needs the herdr terminal multiplexer on the host — https://herdr.dev"
     echo ""
 }
 
@@ -1062,16 +744,13 @@ cmd_help() {
     echo -e "  ${BOLD}patch [<id>] [<site>]${NC}     Apply a Gerrit patch — bare, browse and pick"
     echo -e "  ${BOLD}worktree${NC}                  Manage side-by-side Core checkouts"
     echo -e "  ${BOLD}cs [setup|doctor]${NC}         Prepare this instance for Core contribution"
-    echo -e "  ${BOLD}herdr [<name>|new]${NC}        Open Core worktrees as herdr workspaces"
-    echo -e "  ${BOLD}panel${NC}                     Dock a clickable command panel (inside herdr)"
-    echo -e "  ${DIM}                            herdr plugin link <project> adds prompting popups${NC}"
     echo -e "  ${BOLD}exec <site> <cmd>${NC}         Run a command in a site's PHP/root/database"
     echo -e "  ${BOLD}launch [<worktree>]${NC}       Open a site in the browser (--backend for /typo3/)"
     echo -e "  ${BOLD}reset [<site>]${NC}            Reset Core to current branch + rebuild"
     echo -e "  ${BOLD}delete [<site>]${NC}           Wipe DB + fileadmin, fresh setup (--all for every site)"
     echo -e "  ${BOLD}help${NC}                      Show this help"
     echo ""
-    echo -e "  ${DIM}worktree and herdr have their own help: ddev tryout worktree help${NC}"
+    echo -e "  ${DIM}worktree has its own help: ddev tryout worktree help${NC}"
     echo ""
     echo "Custom extensions:"
     echo "  Place extensions in packages/ and run:"
@@ -1094,8 +773,6 @@ case "${ACTION}" in
     patch)    cmd_patch "$@" ;;
     worktree) cmd_worktree "$@" ;;
     cs)       cmd_cs "$@" ;;
-    panel)    cmd_panel "$@" ;;
-    herdr)    cmd_herdr "$@" ;;
     exec)     cmd_exec "$@" ;;
     launch)   cmd_launch "$@" ;;
     reset)    cmd_reset "$@" ;;

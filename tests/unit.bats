@@ -398,228 +398,6 @@ names() { complete "$@" | grep -v '^_activeHelp_ ' | cut -f1; }
   assert_line "--force"
 }
 
-# --- herdr integration ----------------------------------------------------
-# `ddev tryout herdr` opens one herdr tab per Core worktree. herdr is an optional
-# host tool, so these tests cover the pure helpers and the guard clauses only —
-# real tab creation mutates a live session and is verified by hand.
-
-@test "herdr agent names are sanitised to herdr's grammar" {
-  # Worktree names allow uppercase and dots; agent names must match
-  # [a-z][a-z0-9_-]{0,31}.
-  set -eu -o pipefail
-  run helper herdr_agent_name main
-  assert_output "main"
-
-  run helper herdr_agent_name v13
-  assert_output "v13"
-
-  run helper herdr_agent_name my.branch
-  assert_output "my-branch"
-
-  run helper herdr_agent_name Feature-X
-  assert_output "feature-x"
-
-  # Must start with a letter.
-  run helper herdr_agent_name 13.4
-  assert_output "x13-4"
-
-  # And be at most 32 characters.
-  run helper_eval 'herdr_agent_name a-very-long-worktree-name-that-goes-past-the-limit | wc -c'
-  assert_output --partial "33"   # 32 chars + newline
-}
-
-@test "the herdr session is named after the DDEV project" {
-  # Each project gets its own session, so two tryout projects never collide.
-  set -eu -o pipefail
-  run helper_eval 'DDEV_SITENAME=myproj herdr_session_name'
-  assert_output "tryout-myproj"
-
-  # setup() exports DDEV_SITENAME, so clear it in a child env rather than in-shell.
-  run env -u DDEV_SITENAME bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    herdr_session_name
-  "
-  assert_output "tryout"
-}
-
-@test "herdr_cli puts --session before the subcommand" {
-  # herdr SILENTLY IGNORES --session when it comes after the subcommand and talks to
-  # the default session instead — so argument order is load-bearing, not cosmetic.
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/bin"
-  printf '#!/usr/bin/env bash\necho "ARGV: $*"\n' > "${FAKEROOT}/bin/herdr"
-  chmod +x "${FAKEROOT}/bin/herdr"
-
-  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    herdr_cli workspace list
-  "
-  assert_success
-  assert_output "ARGV: --session tryout-myproj workspace list"
-}
-
-@test "every herdr call goes through the session wrapper" {
-  # A bare `herdr <subcommand>` would silently target the user's default session.
-  # The only allowed raw call is the deliberate `nohup herdr --session ... server`.
-  set -eu -o pipefail
-  # Only look at executable lines: strip comments and echo/error strings first, so
-  # help text and messages mentioning herdr do not register as calls.
-  run bash -c "
-    cat '${DIR}/tryout/functions.sh' '${DIR}/commands/host/tryout' \
-      '${DIR}'/tryout/herdr-panel*.sh \
-      | grep -vE '^[[:space:]]*#' \
-      | grep -vE '^[[:space:]]*(echo|printf|error|warn|info|success)\b' \
-      | grep -E '(^|[^_[:alnum:]])herdr (workspace|pane|agent|tab|status|session|plugin) ' \
-      | grep -v 'herdr_cli' \
-      | grep -v 'herdr session attach' \
-      | grep -v 'herdr plugin list' || true
-  "
-  assert_output ""
-}
-
-@test "attaching falls back to printing the command when it cannot attach" {
-  # Three ways attaching is impossible: no controlling terminal (CI, a script), or
-  # already inside herdr, which refuses to nest. Neither may hang or fail.
-  set -eu -o pipefail
-
-  # Inside herdr: say how to switch, do not try to nest.
-  run env HERDR_ENV=1 DDEV_SITENAME=myproj bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    attach_herdr_session
-  "
-  assert_success
-  assert_output --partial "already in herdr"
-  assert_output --partial "tryout-myproj"
-
-  # No controlling terminal: print the command. bats already runs without one.
-  run env -u HERDR_ENV DDEV_SITENAME=myproj bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    attach_herdr_session
-  "
-  assert_success
-  assert_output --partial "herdr session attach tryout-myproj"
-}
-
-@test "the herdr command reports a missing herdr binary" {
-  set -eu -o pipefail
-  run bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    export HERDR_ENV=1 HERDR_WORKSPACE_ID=w1
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    PATH=/nonexistent
-    herdr_available
-  "
-  assert_failure
-  assert_output --partial "herdr is not installed"
-  assert_output --partial "herdr.dev"
-}
-
-@test "herdr workspace labels are namespaced" {
-  # Workspace labels share one global sidebar with every other project, so a bare
-  # worktree name would be ambiguous there.
-  set -eu -o pipefail
-  run helper herdr_workspace_label main
-  assert_output "core-main"
-
-  run helper herdr_workspace_label v13
-  assert_output "core-v13"
-}
-
-@test "worktree names are derived from a branch and sanitised" {
-  # herdr names its own checkouts worktree/<generated-slug>; tryout needs a name
-  # validate_worktree_name accepts.
-  set -eu -o pipefail
-  run helper worktree_name_from_ref "worktree/brave-harbor-dc20"
-  assert_output "brave-harbor-dc20"
-
-  run helper worktree_name_from_ref "feature/foo"
-  assert_output "feature-foo"
-
-  run helper worktree_name_from_ref "typo3-core-v13"
-  assert_output "v13"
-
-  run helper worktree_name_from_ref "13.4"
-  assert_output "13.4"
-}
-
-@test "foreign worktrees are the ones outside the project root" {
-  set -eu -o pipefail
-  command -v git >/dev/null 2>&1 || skip 'git not available'
-  # The project root IS the clone, and worktrees are nested inside it.
-  git -C "${FAKEROOT}" init -q .
-  git -C "${FAKEROOT}" commit -q --allow-empty -m init
-  git -C "${FAKEROOT}" worktree add -q "${FAKEROOT}/worktrees/inside" -b inside
-  git -C "${FAKEROOT}" worktree add -q "${BATS_TMPDIR}/tryout-outside-$$" -b outside
-
-  run helper_eval 'list_foreign_core_worktrees'
-  assert_success
-  refute_output --partial "worktrees/inside"
-  assert_output --partial "tryout-outside-$$"
-
-  git -C "${FAKEROOT}" worktree remove --force "${BATS_TMPDIR}/tryout-outside-$$" || true
-}
-
-@test "a missing herdr says how to install it, per platform" {
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/empty"
-
-  # macOS gets brew; the universal installer is always offered because no Linux
-  # distro packages herdr — an apt-get line would just fail.
-  run env OSTYPE=darwin24 bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    PATH='${FAKEROOT}/empty'
-    herdr_available
-  "
-  assert_failure
-  assert_output --partial "herdr is not installed"
-  assert_output --partial "brew install herdr"
-  assert_output --partial "herdr.dev/install.sh"
-
-  run env OSTYPE=linux-gnu bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    PATH='${FAKEROOT}/empty'
-    herdr_available
-  "
-  assert_failure
-  assert_output --partial "herdr.dev/install.sh"
-  # herdr is not in apt/dnf/pacman — never claim otherwise.
-  refute_output --partial "apt-get install herdr"
-}
-
-@test "a missing jq says how to install it, and needs no uname" {
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/onlyherdr"
-  printf '#!/bin/sh\nexit 0\n' > "${FAKEROOT}/onlyherdr/herdr"
-  chmod +x "${FAKEROOT}/onlyherdr/herdr"
-
-  # No uname on this PATH: the platform must come from OSTYPE instead.
-  run env OSTYPE=darwin24 bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    PATH='${FAKEROOT}/onlyherdr'
-    herdr_available
-  "
-  assert_failure
-  assert_output --partial "jq is not installed"
-  assert_output --partial "brew install jq"
-  refute_output --partial "uname: command not found"
-
-  run env OSTYPE=linux-gnu bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    PATH='${FAKEROOT}/onlyherdr'
-    herdr_available
-  "
-  assert_failure
-  assert_output --partial "jq is not installed"
-}
-
 @test "no fractional read -t, which bash 3.2 rejects outright" {
   # `read -t 0.01` is bash 4+. On macOS's bash 3.2 it fails with "invalid timeout
   # specification" — so a drain written that way never runs, and every prompt after
@@ -773,9 +551,8 @@ FAKE
 }
 
 @test "a worktree can be renamed without touching its branch" {
-  # herdr's own New-worktree action names a checkout after the branch it invents
-  # (worktree/wilie-wonka), and adopt derives one the same way. That is a starting
-  # point, not a commitment: the directory name and the branch are independent.
+  # The directory name and the branch are independent: renaming one must never
+  # touch the other.
   set -eu -o pipefail
   command -v git >/dev/null 2>&1 || skip 'git not available'
 
@@ -808,15 +585,6 @@ FAKE
   assert_dir_exist "${FAKEROOT}/worktrees/a"
 }
 
-@test "adopt takes an optional name so the branch does not dictate the path" {
-  set -eu -o pipefail
-  run grep -q 'adopt \[<path> \[<name>\]\]' "${DIR}/commands/host/tryout"
-  assert_success
-  # and rename is offered alongside it
-  run grep -q 'rename <old> <new>' "${DIR}/commands/host/tryout"
-  assert_success
-}
-
 @test "commands that take no arguments say so instead of ignoring them" {
   # `ddev tryout composer install` used to regenerate the overlay and say nothing
   # about `install` — a typo that looked like it worked. Worse, the name suggests
@@ -840,16 +608,16 @@ FAKE
 @test "completion works while a word is being typed, not just on an empty one" {
   # Every test here used to pass '' as the word being completed, so the partial
   # case went unexercised — and it was broken: the script read $2 as the verb, but
-  # with `ddev tryout herd<TAB>` argv is `tryout herd`, so $2 IS the partial word.
+  # with `ddev tryout wor<TAB>` argv is `tryout wor`, so $2 IS the partial word.
   # It matched no case, printed nothing, and zsh fell back to file completion.
   # cobra filters candidates against the partial word itself, so returning the full
   # list is correct.
   set -eu -o pipefail
   mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13"
 
-  run names herd
+  run names wor
   assert_success
-  assert_line "herdr"
+  assert_line "worktree"
 
   run names cs doc
   assert_success
@@ -867,23 +635,7 @@ FAKE
   # An empty word must keep working too.
   run names "''"
   assert_success
-  assert_line "herdr"
-}
-
-@test "completion offers herdr, its worktrees and its flags" {
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13"
-
-  run names "''"
-  assert_success
-  assert_line "herdr"
-
-  run names herdr "''"
-  assert_success
-  assert_line "main"
-  assert_line "v13"
-  assert_line "--no-agent"
-  assert_line "--no-focus"
+  assert_line "worktree"
 }
 
 @test "completion describes every candidate or explains the free-text word" {
@@ -895,8 +647,8 @@ FAKE
   printf 'php=8.2\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
   local args line
   for args in "''" "worktree ''" "worktree add ''" "worktree add x ''" "worktree use ''" \
-              "worktree serve ''" "worktree list ''" "cs ''" "cs setup ''" "herdr ''" \
-              "herdr new ''" "checkout ''" "patch ''" "exec ''" "exec v13 ''" \
+              "worktree serve ''" "worktree list ''" "cs ''" "cs setup ''" \
+              "checkout ''" "patch ''" "exec ''" "exec v13 ''" \
               "delete ''" "download ''" "status ''"; do
     # shellcheck disable=SC2086
     while IFS= read -r line; do
@@ -971,7 +723,7 @@ FAKE
   refute_output --partial "main"
 
   # Elsewhere the primary is offered, and labelled.
-  run complete herdr "''"
+  run complete worktree rename "''"
   assert_line --regexp $'^main\tprimary'
 }
 
@@ -1025,10 +777,10 @@ FAKE
   assert_line "12345"
 }
 
-@test "completion covers every worktree, cs and herdr subcommand the command dispatches" {
+@test "completion covers every worktree and cs subcommand the command dispatches" {
   set -eu -o pipefail
   local subs sub
-  for verb in worktree cs herdr; do
+  for verb in worktree cs; do
     # The first name of each case label; aliases (remove|rm) are deliberately
     # not offered — two spellings of one thing would only lengthen the list.
     subs=$(sed -n "/^cmd_${verb}()/,/^}/p" "${DIR}/commands/host/tryout" \
@@ -1050,7 +802,7 @@ FAKE
   for n in 1 2 3 4 5 6; do mkdir -p "${FAKEROOT}/worktrees/wt${n}"; done
   start=$(date +%s)
   complete worktree use "''" >/dev/null
-  complete herdr "''" >/dev/null
+  complete worktree rename "''" >/dev/null
   complete exec "''" >/dev/null
   end=$(date +%s)
   [ $(( end - start )) -le 1 ]
@@ -1370,29 +1122,11 @@ FAKE
   # no-terminal case instead.
   run grep -nE 'gum (choose|filter|input|confirm) .*2>/dev/null' "${DIR}/tryout/functions.sh"
   assert_failure
-  # The same trap one level up: hushing an ask_* helper hides the gum UI it draws.
-  # The popup did exactly that and its branch chooser answered nothing.
+  # The same trap one level up: hushing an ask_* helper hides the gum UI it draws,
+  # and its chooser answers nothing.
   run bash -c "grep -nE 'ask_(branch|worktree|site|text|patches)[^|]*2>/dev/null' \
     '${DIR}'/tryout/*.sh '${DIR}/commands/host/tryout'"
   assert_failure
-}
-
-@test "core_worktree_names filters by primary and served state" {
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/v13" "${FAKEROOT}/worktrees/v12" "${FAKEROOT}/TYPO3-Instances/v13"
-  printf 'php=8.2\n' > "${FAKEROOT}/TYPO3-Instances/v13/.tryout-site"
-
-  run helper core_worktree_names all
-  assert_line "main"; assert_line "v13"; assert_line "v12"
-
-  run helper core_worktree_names nonprimary
-  refute_line "main"; assert_line "v13"
-
-  run helper core_worktree_names served
-  assert_output "v13"
-
-  run helper core_worktree_names unserved
-  assert_line "main"; assert_line "v12"; refute_line "v13"
 }
 
 @test "ask_worktree takes a piped answer and fails cleanly with none" {
@@ -1552,53 +1286,6 @@ LINES
   done
 }
 
-@test "the single Core checkout of a fresh project opens in herdr under its branch" {
-  # Before any worktree exists there is only the root checkout. It must resolve
-  # to that directory under the name the worktree layout gives it later, so the
-  # herdr label survives the migration; on the symlink layout the name maps to
-  # worktrees/<name> as before.
-  set -eu -o pipefail
-  # The project root IS the checkout, so a fresh project has exactly one — named
-  # after its branch, with no directory under worktrees/ to find it by.
-  git init -q -b main "${FAKEROOT}"
-
-  run bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    printf '%s|%s|%s\n' \"\$(plain_core_name)\" \"\$(herdr_checkout_dir main)\" \"\$(herdr_checkout_dir v13)\"
-  "
-  assert_success
-  assert_output "main|${FAKEROOT}|${FAKEROOT}/worktrees/v13"
-
-  # A branch name that is no valid worktree name falls back to the default.
-  git -C "${FAKEROOT}" checkout -q -b 'feature/x' 2>/dev/null
-  run bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    plain_core_name
-  "
-  assert_success
-  assert_output "main"
-
-  # Once a worktree of that name exists it wins: a real directory beats the
-  # branch-name fallback, so the workspace opens on the checkout the user made.
-  git -C "${FAKEROOT}" checkout -q -b main 2>/dev/null || git -C "${FAKEROOT}" checkout -q main
-  mkdir -p "${FAKEROOT}/worktrees/main"
-  run bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    herdr_checkout_dir main
-  "
-  assert_success
-  assert_output "${FAKEROOT}/worktrees/main"
-}
-
-@test "the herdr command no longer turns a single-checkout project away" {
-  set -eu -o pipefail
-  run grep -q 'This project has a single Core checkout, not worktrees' "${DIR}/commands/host/tryout"
-  assert_failure
-}
-
 @test "the extra php-fpm socket lives under /run/php/, in daemon and vhost alike" {
   # The daemon runs as the web user and /run is root-owned on some providers
   # (Colima): a bind there fails with "Permission denied" and every request to the
@@ -1706,7 +1393,7 @@ EOF
 }
 
 # --- git in the container, relative worktree paths --------------------------
-# tryout's git work runs inside the web container while editors, herdr and the
+# tryout's git work runs inside the web container while editors and the
 # completion read the same checkouts on the host. Worktree metadata records paths,
 # and an absolute path is right on one side only; relative paths (git >= 2.48)
 # are what let both sides share one worktree.
@@ -1817,8 +1504,8 @@ EOF
 }
 
 # --- host / container split ---------------------------------------------------
-# commands/host/tryout is the entry point: it owns the terminal (prompts, gum,
-# herdr) and hands every container-safe verb to tryout-container.sh through ONE
+# commands/host/tryout is the entry point: it owns the terminal (prompts, gum)
+# and hands every container-safe verb to tryout-container.sh through ONE
 # `ddev exec`. Inside, git, composer, php and the database clients are the
 # container's own, so nothing in there may call `ddev` back.
 
@@ -1844,7 +1531,7 @@ EOF
   [ -n "${ctr_verbs}" ]
   for verb in ${host_verbs}; do
     case "${verb}" in
-      herdr|panel|launch|help) continue ;;  # host by nature: herdr panes, a browser, static text
+      launch|help) continue ;;  # host by nature: a browser, static text
     esac
     printf '%s\n' "${ctr_verbs}" | grep -qx "${verb}" || fail "container dispatcher lacks '${verb}'"
   done
@@ -2095,8 +1782,8 @@ YAML
   # must still reach the container as --site, or it lands in the id slot.
   printf '%s\n' "${host}" | grep -q -- 'delegate patch ${site:+--site "${site}"} "${id}"' \
     || fail "host does not translate patch <id> <site> into --site"
-  # And --site is accepted from the user too: the panel knows the site but not the
-  # change number, and positionally the id comes first.
+  # And --site is accepted from the user too: a caller may know the site but not
+  # the change number, and positionally the id comes first.
   printf '%s\n' "${host}" | grep -q -- '--site)' \
     || fail "host does not accept --site"
 }
@@ -2331,26 +2018,14 @@ YAML
   refute_output --partial "v13"
 }
 
-@test "worktree adopt offers the strays instead of taking all of them" {
-  set -eu -o pipefail
-  local body
-  body=$(awk '/^        adopt\)/,/^            ;;/' "${DIR}/commands/host/tryout")
-  [ -n "${body}" ] || fail "no adopt branch"
-  printf '%s\n' "${body}" | grep -q 'ui_choose_multi' \
-    || fail "adopt does not offer a multi-select"
-  # --dry-run still just reports, and an explicit path still bypasses the picker.
-  printf '%s\n' "${body}" | grep -q 'dry="true"' || fail "--dry-run is gone"
-  printf '%s\n' "${body}" | grep -q 'one_path' || fail "the explicit-path form is gone"
-}
-
 @test "every worktree subcommand that names a worktree can pick one" {
   set -eu -o pipefail
   local sub body
-  for sub in "use" "remove|rm" "serve" "unserve" "rename" "adopt"; do
+  for sub in "use" "remove|rm" "serve" "unserve" "rename"; do
     body=$(awk -v pat="        ${sub})" 'index($0, pat) == 1, /^            ;;/' \
       "${DIR}/commands/host/tryout")
     [ -n "${body}" ] || fail "no '${sub}' branch"
-    printf '%s\n' "${body}" | grep -qE 'ask_worktree|ui_choose_multi' \
+    printf '%s\n' "${body}" | grep -q 'ask_worktree' \
       || fail "'${sub}' never offers a worktree list"
   done
 }
@@ -2361,632 +2036,11 @@ YAML
 # Completion then still works but offers the older feature set, which is
 # indistinguishable from "autocomplete is broken".
 
-# --- the herdr command panel ------------------------------------------------
-# The panel is a bash TUI in a herdr pane. Its risky parts are the ones a parse
-# check cannot see: mouse-sequence decoding, and leaving the terminal as it was.
-
-# Load the panel's definitions without running its input loop, which would block.
-panel_defs() {
-  sed '/^mouse_on$/,$d' "${DIR}/tryout/herdr-panel.sh"
-}
-
-@test "the panel's input loop starts at a bare mouse_on, which the tests cut at" {
-  set -eu -o pipefail
-  # Four tests below load the panel's definitions by deleting everything from the
-  # `mouse_on` that starts the input loop — without it they would block on read.
-  # Rename that line and they stop testing anything while still passing, so pin it.
-  run grep -cx 'mouse_on' "${DIR}/tryout/herdr-panel.sh"
-  assert_success
-  assert_output "1"
-  # And what remains above it must still define the pieces those tests drive.
-  run bash -c "sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh' | grep -c '^handle_escape()'"
-  assert_output "1"
-}
-
-@test "a click maps to the command on that row, and misses are ignored" {
-  set -eu -o pipefail
-  # Rows are absolute screen rows; FIRST_ROW is where the list starts. Getting this
-  # off by one would run the wrong command, which is worse than doing nothing.
-  # A served worktree gives the longest menu, so there are rows to miss past.
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/benni" \
-           "${FAKEROOT}/TYPO3-Instances/benni"
-  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/benni/.tryout-site"
-
-  run env TRYOUT_PANEL_WORKTREE=benni TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
-    eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-    trap - EXIT INT TERM
-    build_menu
-    run_selected() { echo \"PICKED=\${LABELS[\${SEL}]}\"; }
-    handle_escape '[<0;5;4m'
-    handle_escape '[<0;5;8m'
-    before=\${SEL}
-    handle_escape '[<0;5;99m'
-    echo \"AFTER_MISS=\${SEL} BEFORE=\${before}\"
-  "
-  assert_success
-  assert_line "PICKED=status"                 # first row, at FIRST_ROW
-  assert_line "PICKED=reset"                  # fifth row
-  assert_line --partial "AFTER_MISS=4 BEFORE=4"   # a click past the list moves nothing
-}
-
-@test "the panel acts on release and ignores a press, so a drag does not fire" {
-  set -eu -o pipefail
-  run /bin/bash -c "
-    eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-    run_selected() { echo 'RAN'; }
-    handle_escape '[<0;5;5M'   # press
-    echo 'AFTER_PRESS'
-    handle_escape '[<0;5;5m'   # release
-  "
-  assert_success
-  # The press must not have run anything; only the release does.
-  assert_equal "${lines[0]}" "AFTER_PRESS"
-  assert_line "RAN"
-}
-
-@test "the wheel scrolls the selection instead of running a command" {
-  set -eu -o pipefail
-  run /bin/bash -c "
-    eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-    run_selected() { echo 'RAN'; }
-    handle_escape '[<65;5;5M'   # wheel down
-    handle_escape '[<65;5;5M'
-    handle_escape '[<64;5;5M'   # wheel up
-    echo \"SEL=\${SEL}\"
-  "
-  assert_success
-  assert_output --partial "SEL=1"
-  refute_output --partial "RAN"
-}
-
-@test "a malformed mouse sequence is ignored, not mis-dispatched" {
-  set -eu -o pipefail
-  run /bin/bash -c "
-    eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-    run_selected() { echo 'RAN'; }
-    handle_escape '[<garbage'
-    handle_escape '[<0;5m'
-    handle_escape ''
-    echo \"SEL=\${SEL}\"
-  "
-  assert_success
-  assert_output --partial "SEL=0"
-  refute_output --partial "RAN"
-}
-
-@test "the panel always restores mouse mode and the cursor" {
-  set -eu -o pipefail
-  # An abandoned mouse mode leaves the user's pane spraying escape codes into
-  # whatever they type next, so the restore must survive any exit path.
-  run grep -qE '^trap cleanup EXIT INT TERM' "${DIR}/tryout/herdr-panel.sh"
-  assert_success
-  # Disable sequences, and the cursor back on.
-  run grep -q '1006l' "${DIR}/tryout/herdr-panel.sh"; assert_success
-  run grep -q '1000l' "${DIR}/tryout/herdr-panel.sh"; assert_success
-  run grep -q '25h'   "${DIR}/tryout/herdr-panel.sh"; assert_success
-}
-
-@test "the panel never depends on right-click, which herdr keeps for itself" {
-  set -eu -o pipefail
-  # herdr intercepts right-click for its own pane menu unless the user sets
-  # right_click_passthrough_modifier, so a right-click handler would be dead code
-  # for almost everyone. Button 2 is right; only 0 (left) and 64/65 (wheel) are ours.
-  run grep -nE '"2"\)|btn.*=.*2[^0-9]' "${DIR}/tryout/herdr-panel.sh"
-  assert_failure
-}
-
-@test "the panel and its popup are wired to the same verb list" {
-  set -eu -o pipefail
-  # The popup runs whatever the panel hands it, so a verb the panel offers must be
-  # one `ddev tryout` actually dispatches — a typo here is a dead row.
-  local verbs host_case
-  # Read the list as text: sourcing the script would install its cleanup trap,
-  # whose escape codes then land in the captured output as a bogus entry.
-  # The menu is built per worktree state now, so ask it for its rows rather than
-  # reading a static array. The primary's list is the widest.
-  mkdir -p "${FAKEROOT}/worktrees/main"
-  verbs=$(TRYOUT_PANEL_WORKTREE=main TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
-    eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-    trap - EXIT INT TERM
-    build_menu
-    printf '%s\n' \"\${ARGS[@]}\"
-  " 2>/dev/null)
-  host_case=$(sed -n '/^case "${ACTION}" in/,/^esac/p' "${DIR}/commands/host/tryout")
-  local v
-  while IFS= read -r v; do
-    [ -n "${v}" ] || continue
-    printf '%s\n' "${host_case}" | grep -qE "^    ${v%% *}[)|]" \
-      || fail "panel offers '${v}' but the command does not dispatch '${v%% *}'"
-  done <<< "${verbs}"
-}
-
-@test "the panel docks against the calling pane, never the UI-focused one" {
-  set -eu -o pipefail
-  # This is the bug that made the panel vanish: splitting from whichever pane held
-  # UI focus put it in another client's workspace entirely. herdr's own guidance —
-  # "omitting a target may use the UI-focused pane, which can belong to the user or
-  # another client" — is why the target must come from HERDR_PANE_ID, which DDEV
-  # passes through to a host command.
-  run grep -nE 'focused *== *true|focused_pane' "${DIR}/tryout/herdr-panel-open.sh"
-  assert_failure
-  run grep -q 'HERDR_PANE_ID' "${DIR}/tryout/herdr-panel-open.sh"
-  assert_success
-
-  # `--current` is meaningless here too: a DDEV host command is not itself a pane,
-  # so herdr would fall back to the focused one and reintroduce the same bug.
-  run grep -n 'pane \(split\|focus\).*--current' "${DIR}/tryout/herdr-panel-open.sh"
-  assert_failure
-}
-
-@test "the panel refuses outside herdr instead of splitting nothing" {
-  set -eu -o pipefail
-  run grep -q 'HERDR_ENV' "${DIR}/tryout/herdr-panel-open.sh"
-  assert_success
-  # And the host verb says so too, rather than handing the user a herdr error.
-  local branch
-  branch=$(sed -n '/^cmd_panel()/,/^}/p' "${DIR}/commands/host/tryout")
-  printf '%s' "${branch}" | grep -q 'HERDR_ENV' \
-    || fail "cmd_panel must refuse outside herdr"
-}
-
-@test "the popup resolves the project from the CWD, not from its own path" {
-  set -eu -o pipefail
-  # A plugin action is registered per machine, so $0 points at whichever checkout
-  # installed it. Only the pane's directory says which project the user is in.
-  run grep -q 'resolve_approot' "${DIR}/tryout/herdr-panel-run.sh"
-  assert_success
-  run bash -c "cd /tmp && bash '${DIR}/tryout/herdr-panel-run.sh' status </dev/null 2>&1"
-  assert_output --partial "No DDEV project here"
-}
-
-@test "the popup never spawns a pane, and only launch skips the popup" {
-  set -eu -o pipefail
-  # checkout/reset/patch once got a pane of their own, to keep a multi-minute
-  # rebuild out of a session-modal popup. It left a stray pane behind after every
-  # run — the clutter the panel exists to avoid — so they run in the popup, which
-  # streams their [1/4] progress as a live log rather than a frozen box.
-  run grep -nE 'is_slow|hand_off' "${DIR}/tryout/herdr-panel-run.sh"
-  assert_failure
-  # The popup must never split anything: one command, one popup, nothing left over.
-  run grep -n 'pane split' "${DIR}/tryout/herdr-panel-run.sh"
-  assert_failure
-  # Nor may the panel itself.
-  run grep -n 'pane split' "${DIR}/tryout/herdr-panel.sh"
-  assert_failure
-
-  # The exception runs the other way: launch skips the popup entirely and runs in
-  # the panel. It raises the browser, so a popup only puts a box in front of it.
-  # Nothing else may claim that — a verb that prompts, takes minutes, or prints a
-  # screenful needs the popup's room and its TTY. status is the near miss: fast
-  # and read-only, but a screenful in a ~25-column strip.
-  local menu direct
-  menu=$(sed -n '/^build_menu()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  direct=$(printf '%s\n' "${menu}" | grep -c 'add .* direct$' || true)
-  [ "${direct}" -eq 2 ] || fail "expected exactly two direct rows, found ${direct}"
-  printf '%s' "${menu}" | grep -q 'add "launch frontend" .* direct$' \
-    || fail "launch frontend must run in the panel"
-  printf '%s' "${menu}" | grep -q 'add "launch backend" .* direct$' \
-    || fail "launch backend must run in the panel"
-  # Both are the same verb; nothing else may claim the direct path.
-  local other
-  other=$(printf '%s\n' "${menu}" | grep 'add .* direct$' | grep -cv 'add "launch ' || true)
-  [ "${other}" -eq 0 ] || fail "${other} row(s) other than launch tagged direct"
-}
-
-# --- the Claude / Terminal tabs ---------------------------------------------
-# herdr labels a workspace's first tab "1", which says nothing about what is in
-# it. Each worktree gets that tab named for its contents plus a Terminal tab.
-
-# A herdr stub that answers tab list and pane list as well as workspace list, so
-# the tab helpers can be driven without a running herdr.
-fake_herdr_tabs() {
-  mkdir -p "${FAKEROOT}/bin"
-  printf '%s' "${1:-}" > "${FAKEROOT}/tabs.json"
-  printf '%s' "${2:-}" > "${FAKEROOT}/panes.json"
-  cat > "${FAKEROOT}/bin/herdr" <<FAKE
-#!/usr/bin/env bash
-[ "\$1" = "--session" ] && shift 2
-if [ "\$1" = "tab" ] && [ "\$2" = "list" ]; then cat "${FAKEROOT}/tabs.json"; exit 0; fi
-if [ "\$1" = "pane" ] && [ "\$2" = "list" ]; then cat "${FAKEROOT}/panes.json"; exit 0; fi
-echo "CALL: \$*" >> "${FAKEROOT}/calls.log"
-FAKE
-  chmod +x "${FAKEROOT}/bin/herdr"
-  : > "${FAKEROOT}/calls.log"
-}
-
-run_with_fake_herdr() {
-  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    $1
-  "
-}
-
-@test "a workspace without a Terminal tab gets exactly one" {
-  set -eu -o pipefail
-  fake_herdr_tabs '{"result":{"tabs":[{"tab_id":"w1:t1","label":"1"}]}}'
-  run_with_fake_herdr 'ensure_terminal_tab w1 /tmp/wt'
-  assert_success
-
-  run cat "${FAKEROOT}/calls.log"
-  assert_output --partial "tab create --workspace w1"
-  assert_output --partial "--label Terminal"
-  # --no-focus: the agent is what the user came for; opening must not land them
-  # in the shell instead.
-  assert_output --partial "--no-focus"
-}
-
-@test "a workspace that already has a Terminal tab gets no second one" {
-  set -eu -o pipefail
-  # This is what makes the backfill safe to run on every bare `ddev tryout herdr`.
-  fake_herdr_tabs '{"result":{"tabs":[
-    {"tab_id":"w1:t1","label":"Claude"},
-    {"tab_id":"w1:t2","label":"Terminal"}
-  ]}}'
-  run_with_fake_herdr 'ensure_terminal_tab w1 /tmp/wt'
-  assert_success
-
-  run cat "${FAKEROOT}/calls.log"
-  refute_output --partial "tab create"
-}
-
-@test "the first tab is named Claude only when an agent is actually in it" {
-  set -eu -o pipefail
-  # Naming a tab for an agent that is not running is worse than leaving it "1".
-  fake_herdr_tabs \
-    '{"result":{"tabs":[{"tab_id":"w1:t1","label":"1"}]}}' \
-    '{"result":{"panes":[{"pane_id":"w1:p1","workspace_id":"w1","agent":"claude"}]}}'
-  run_with_fake_herdr 'ensure_first_tab_label w1'
-  assert_success
-  run cat "${FAKEROOT}/calls.log"
-  assert_line "CALL: tab rename w1:t1 Claude"
-
-  # No agent anywhere in the workspace: it is a shell, and says so.
-  fake_herdr_tabs \
-    '{"result":{"tabs":[{"tab_id":"w1:t1","label":"1"}]}}' \
-    '{"result":{"panes":[{"pane_id":"w1:p1","workspace_id":"w1","agent":null}]}}'
-  run_with_fake_herdr 'ensure_first_tab_label w1'
-  assert_success
-  run cat "${FAKEROOT}/calls.log"
-  assert_line "CALL: tab rename w1:t1 Shell"
-}
-
-@test "a tab the user named themselves is never renamed" {
-  set -eu -o pipefail
-  # Only herdr's default "1" is ours to replace. Anything else was chosen.
-  fake_herdr_tabs \
-    '{"result":{"tabs":[{"tab_id":"w1:t1","label":"my notes"}]}}' \
-    '{"result":{"panes":[{"pane_id":"w1:p1","workspace_id":"w1","agent":"claude"}]}}'
-  run_with_fake_herdr 'ensure_first_tab_label w1'
-  assert_success
-  run cat "${FAKEROOT}/calls.log"
-  refute_output --partial "tab rename"
-}
-
-@test "the tab helpers do nothing without a workspace id" {
-  set -eu -o pipefail
-  # herdr_workspace_id returns empty for a workspace that is not open; neither
-  # helper may then act on whatever herdr considers current.
-  fake_herdr_tabs '{"result":{"tabs":[]}}' '{"result":{"panes":[]}}'
-  run_with_fake_herdr 'ensure_terminal_tab "" /tmp/wt; ensure_first_tab_label ""'
-  assert_success
-  run cat "${FAKEROOT}/calls.log"
-  refute_output --partial "tab create"
-  refute_output --partial "tab rename"
-}
-
-@test "opening a worktree names its tab from the agent it actually started" {
-  set -eu -o pipefail
-  # The agent-start outcomes decide the name, so the label cannot drift from what
-  # the success/warn lines report. start_agent_in_pane owns those outcomes — both
-  # routes into a workspace use it, the fresh open and the backfill of one that was
-  # already there — and it answers 0 whenever the agent is up.
-  local fn ag
-  fn=$(sed -n '/^open_worktree_in_herdr()/,/^}/p' "${DIR}/tryout/functions.sh")
-  ag=$(sed -n '/^start_agent_in_pane()/,/^}/p' "${DIR}/tryout/functions.sh")
-  [ -n "${ag}" ] || fail "no start_agent_in_pane"
-
-  # Default is Shell; only a started agent promotes it to Claude.
-  printf '%s' "${fn}" | grep -q 'tab_label="Shell"' \
-    || fail "the tab must default to Shell"
-  printf '%s' "${fn}" | grep -q 'start_agent_in_pane .* && tab_label="Claude"' \
-    || fail "a started agent must promote the tab to Claude"
-  printf '%s' "${fn}" | grep -q 'ensure_terminal_tab' \
-    || fail "opening a worktree must add its Terminal tab"
-
-  # Two of the three outcomes mean "the agent is up": started, and started but
-  # blocked on its own UI (the folder-trust prompt on a first run). Only the third
-  # is a failure, and only it leaves the tab a shell.
-  [ "$(printf '%s' "${ag}" | grep -c 'return 0')" -eq 2 ] \
-    || fail "both agent-running outcomes must report success"
-  printf '%s' "${ag}" | grep -q 'agent_not_ready' \
-    || fail "a first run waiting on folder trust is not a failure"
-  printf '%s' "${ag}" | grep -q 'Could not start claude' \
-    || fail "a real failure must say so"
-
-  # And the tab label follows the agent LATER too: a workspace that gains one on a
-  # backfill was already renamed Shell, so a rename that only fires on herdr's own
-  # "1" would leave it saying Shell beside a running claude.
-  # Pin the SELECTOR, not just the word "Shell" — that appears in the rename call
-  # below whatever the selector matches, so a grep for it passes either way.
-  local lbl sel
-  lbl=$(sed -n '/^ensure_first_tab_label()/,/^}/p' "${DIR}/tryout/functions.sh")
-  sel=$(printf '%s\n' "${lbl}" | sed -n '/tabs\[0\]/,/tab_id/p')
-  [ -n "${sel}" ] || fail "no first-tab selector"
-  printf '%s' "${sel}" | grep -q 'Shell' \
-    || fail "an already-named Shell tab must be re-checked, not skipped"
-}
-
-# --- the per-worktree panel -------------------------------------------------
-# Each workspace gets a panel scoped to its own worktree. What a worktree IS
-# decides what can be done to it, and the menu must never offer otherwise.
-
-# Build the panel's menu for a given worktree, without running its input loop.
-panel_menu() { # $1=worktree $2=approot
-  TRYOUT_PANEL_WORKTREE="$1" TRYOUT_PANEL_APPROOT="$2" \
-  /bin/bash -c "
-    eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-    trap - EXIT INT TERM
-    build_menu
-    echo \"STATE=\${STATE}\"
-    i=0; while [ \$i -lt \${#LABELS[@]} ]; do
-      printf 'ROW %s|%s\n' \"\${LABELS[\$i]}\" \"\${ARGS[\$i]}\"; i=\$((i+1))
-    done
-  " 2>/dev/null
-}
-
-@test "escape closes the panel and runs nothing" {
-  set -eu -o pipefail
-  # A bare ESC arrives with an empty tail — nothing followed it. Arrows and mouse
-  # reports come through the same function WITH a tail, so only the empty case may
-  # quit, and none of them may run a command on the way out.
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely"
-
-  run env TRYOUT_PANEL_WORKTREE=lonely TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
-    eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-    trap - EXIT INT TERM
-    build_menu
-    run_selected() { echo 'RAN'; }
-    handle_escape '' && echo 'esc:continue' || echo 'esc:quit'
-    handle_escape '[A' && echo 'up:continue' || echo 'up:quit'
-    handle_escape '[B' && echo 'down:continue' || echo 'down:quit'
-    handle_escape '[<0;5;99m' >/dev/null && echo 'click:continue' || echo 'click:quit'
-  "
-  assert_success
-  assert_line "esc:quit"
-  assert_line "up:continue"
-  assert_line "down:continue"
-  assert_line "click:continue"
-  refute_output --partial "RAN"
-
-  # And the loop has to act on that signal, or ESC just spins.
-  run grep -q 'handle_escape "$(read_escape_tail)" || break' "${DIR}/tryout/herdr-panel.sh"
-  assert_success
-}
-
-@test "the selected row is highlighted with explicit colours" {
-  set -eu -o pipefail
-  # ESC[7m only swaps whatever the terminal's CURRENT colours are, so on a dark
-  # theme the selection came out invisible. An explicit pair cannot be themed away.
-  run grep -q '\\033\[7m' "${DIR}/tryout/herdr-panel.sh"
-  assert_failure
-  # An explicit foreground;background pair, whatever the exact colours are.
-  run grep -qE "SEL_ON='.*[0-9]+;[0-9]+m'" "${DIR}/tryout/herdr-panel.sh"
-  assert_success
-
-  # And it really reaches the selected row, spanning its full width.
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely"
-  run env TRYOUT_PANEL_WORKTREE=lonely TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
-    eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-    trap - EXIT INT TERM
-    build_menu
-    render
-  "
-  assert_success
-  assert_output --partial $'\033[97;40m'
-}
-
-@test "the panel draws with newlines, never screen coordinates" {
-  set -eu -o pipefail
-  # `ESC[row;colH` addresses the SCREEN, not the pane. In a split those rows land
-  # wherever the pane is not, which made the panel unreadable: only the first row
-  # showed and the rest went elsewhere. Sequential output needs no coordinates.
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely"
-
-  run env TRYOUT_PANEL_WORKTREE=lonely TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
-    eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-    trap - EXIT INT TERM
-    build_menu
-    render
-  "
-  assert_success
-  # A cursor-position escape is ESC [ <n> ; <n> H — none may appear.
-  refute_output --regexp $'\033\[[0-9]+;[0-9]+H'
-  # Every command still reaches the screen, one per line.
-  assert_output --partial "worktree serve"
-  assert_output --partial "worktree use"
-}
-
-@test "the panel proves the popup started, since herdr says ok either way" {
-  set -eu -o pipefail
-  # `plugin pane open` answers {"type":"ok"} whether or not a UI was there to draw
-  # into. With none — a session nobody is viewing — herdr accepts the request and
-  # drops it, and trusting that ok made Enter look like it did nothing at all.
-  local fn
-  fn=$(sed -n '/^run_selected()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  printf '%s' "${fn}" | grep -q 'popup_started' \
-    || fail "the panel must confirm the popup actually started"
-  # And it must fall through to running inline when it did not.
-  printf '%s' "${fn}" | grep -q 'RUNNER' \
-    || fail "a popup that never appeared must fall back to running here"
-
-  # The check itself: polls for the process, gives up rather than hanging.
-  run bash -c "
-    popup_started() {
-      local i=0
-      while [ \"\${i}\" -lt 5 ]; do
-        pgrep -f 'no-such-process-xyzzy' >/dev/null 2>&1 && return 0
-        sleep 0.2; i=\$(( i + 1 ))
-      done
-      return 1
-    }
-    popup_started && echo started || echo 'gave up'
-  "
-  assert_output "gave up"
-}
-
-@test "the popup opens at the project root, where its relative path resolves" {
-  set -eu -o pipefail
-  # The manifest runs the popup as `bash .ddev/tryout/herdr-panel-run.sh`, and
-  # herdr resolves that relative path against --cwd. A panel lives IN a worktree,
-  # which has no .ddev/ beneath it — so passing $PWD there means the popup never
-  # starts, while herdr still answers ok. The worktree is carried separately in
-  # TRYOUT_PANEL_WORKTREE, so nothing is lost by rooting the popup at the project.
-  local fn
-  fn=$(sed -n '/^run_selected()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  printf '%s' "${fn}" | grep -q 'cwd "${APPROOT:-${PWD}}"' \
-    || fail "the popup must open at the project root, not the worktree"
-  printf '%s' "${fn}" | grep -q 'entrypoint run --cwd "${PWD}"' \
-    && fail "--cwd \$PWD is the worktree; the popup cannot start there"
-
-  # And the manifest really is relative, which is why this matters.
-  run grep -q 'command = \["bash", ".ddev/tryout/herdr-panel-run.sh"\]' \
-    "${DIR}/tryout/herdr-plugin.toml"
-  assert_success
-}
-
-@test "both ways of docking a panel produce the same pane" {
-  set -eu -o pipefail
-  # `ddev tryout herdr` and `ddev tryout panel` open the same panel, so it must
-  # also LOOK the same: same width, same working directory. They came to differ
-  # once — one docked a 38% pane rooted at the worktree, the other a 22% one
-  # rooted at the project — and the difference was plainly visible.
-  local by_herdr by_panel r1 r2
-  by_herdr=$(sed -n '/^ensure_panel_pane()/,/^}/p' "${DIR}/tryout/functions.sh")
-  by_panel=$(sed -n '/^open_panel()/,/^}/p' "${DIR}/tryout/herdr-panel-open.sh")
-
-  # The ratio lives in a constant on each side; they must hold the same number.
-  r1=$(sed -n 's/^PANEL_DOCK_RATIO="\([0-9.]*\)".*/\1/p' "${DIR}/tryout/functions.sh")
-  r2=$(sed -n 's/^DOCK_RATIO="\([0-9.]*\)".*/\1/p' "${DIR}/tryout/herdr-panel-open.sh")
-  [ -n "${r1}" ] || fail "functions.sh has no PANEL_DOCK_RATIO"
-  [ -n "${r2}" ] || fail "herdr-panel-open.sh has no DOCK_RATIO"
-  assert_equal "${r1}" "${r2}"
-
-  # Both must split with that constant rather than a literal.
-  printf '%s' "${by_herdr}" | grep -q 'ratio "${PANEL_DOCK_RATIO}"' \
-    || fail "ddev tryout herdr does not dock at the shared ratio"
-  printf '%s' "${by_panel}" | grep -q 'ratio "${DOCK_RATIO}"' \
-    || fail "ddev tryout panel does not dock at the shared ratio"
-
-  # And both root the pane at the project, not a worktree.
-  printf '%s' "${by_herdr}" | grep -q 'cwd "${PROJECT_ROOT}"' \
-    || fail "ddev tryout herdr must dock the panel at the project root"
-}
-
-@test "both ways of docking a panel hand it the same environment" {
-  set -eu -o pipefail
-  # `ddev tryout herdr` and `ddev tryout panel` open the same panel, so they must
-  # tell it the same three things. Without the session its popup asks the DEFAULT
-  # server and silently opens nothing — which is how the two paths came to behave
-  # differently in the first place.
-  local by_herdr by_panel v
-  by_herdr=$(sed -n '/^ensure_panel_pane()/,/^}/p' "${DIR}/tryout/functions.sh")
-  by_panel=$(sed -n '/^open_panel()/,/^}/p' "${DIR}/tryout/herdr-panel-open.sh")
-
-  for v in TRYOUT_PANEL_APPROOT TRYOUT_PANEL_SESSION TRYOUT_PANEL_WORKTREE; do
-    printf '%s' "${by_herdr}" | grep -q "${v}" \
-      || fail "ddev tryout herdr does not pass ${v}"
-    printf '%s' "${by_panel}" | grep -q "${v}" \
-      || fail "ddev tryout panel does not pass ${v}"
-  done
-}
-
-@test "a panel with no worktree offers no command with an empty argument" {
-  set -eu -o pipefail
-  # Started by hand outside any worktree, WORKTREE is empty. "worktree serve " with
-  # nothing after it is a button that can only fail, so the list falls back to the
-  # project-wide verbs instead.
-  run env -u TRYOUT_PANEL_WORKTREE -u TRYOUT_PANEL_APPROOT /bin/bash -c "
-    cd /tmp
-    eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-    trap - EXIT INT TERM
-    build_menu
-    printf '[%s]\n' \"\${ARGS[@]}\"
-  "
-  assert_success
-  refute_output --partial "worktree serve ]"
-  refute_output --partial "worktree use ]"
-  refute_output --regexp '\[[a-z ]+ \]'
-}
-
-@test "a sibling workspace's popup is not mistaken for this panel's own" {
-  set -eu -o pipefail
-  # Nothing observable from the panel identifies its own popup: herdr answers ok
-  # regardless, the verb travels in the environment (unreadable from outside on
-  # macOS), and the popup's parent is the herdr server, not the panel. A pgrep on
-  # the script name matches every workspace's popup. So the popup says so itself,
-  # by touching a marker unique to this panel and this run.
-  local fn
-  fn=$(sed -n '/^popup_started()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  printf '%s' "${fn}" | grep -q 'marker' \
-    || fail "popup_started must wait on a marker, not a process name"
-  printf '%s' "${fn}" | grep -q 'pgrep' \
-    && fail "pgrep cannot tell our popup from a sibling's"
-
-  # The runner must create it, or every popup looks like a failure.
-  run grep -q 'TRYOUT_PANEL_STARTED' "${DIR}/tryout/herdr-panel-run.sh"
-  assert_success
-  # And the panel must pass it.
-  run grep -q 'TRYOUT_PANEL_STARTED=' "${DIR}/tryout/herdr-panel.sh"
-  assert_success
-
-  # Behaviour: absent marker means not started; one that appears means started.
-  run bash -c "
-    popup_started() {
-      local marker=\"\$1\" i=0
-      while [ \"\${i}\" -lt 5 ]; do
-        [ -f \"\${marker}\" ] && return 0
-        sleep 0.2; i=\$(( i + 1 ))
-      done
-      return 1
-    }
-    m=\"\${TMPDIR:-/tmp}/bats-marker.\$\$\"
-    rm -f \"\${m}\"
-    popup_started \"\${m}\" && echo 'saw a missing marker' || echo 'absent'
-    ( sleep 0.3; : > \"\${m}\" ) &
-    popup_started \"\${m}\" && echo 'present' || echo 'missed it'
-    rm -f \"\${m}\"
-  "
-  assert_line "absent"
-  assert_line "present"
-}
-
-@test "nothing the panel runs can block its pane forever" {
-  set -eu -o pipefail
-  # The inline path runs IN the panel's own pane. An unbounded read there holds
-  # that pane until a keystroke that may never come: the panel stops redrawing and
-  # the whole workspace looks dead. Every wait must be bounded, and the panel must
-  # redraw however the runner ended.
-  local fn
-  fn=$(sed -n '/^pause()/,/^}/p' "${DIR}/tryout/herdr-panel-run.sh")
-  printf '%s' "${fn}" | grep -qE 'read .*-t +[0-9]+' \
-    || fail "pause must time out rather than wait forever"
-
-  # And the panel must not abandon its pane if the runner fails or is killed.
-  local sel
-  sel=$(sed -n '/^run_selected()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  printf '%s' "${sel}" | grep -q 'RUNNER}" "${verb}" || true' \
-    || fail "the panel must redraw however the runner exits"
-  printf '%s' "${sel}" | grep -q 'mouse_on' \
-    || fail "the panel must restore mouse mode after running inline"
-}
-
 @test "status output states its own colour instead of inheriting one" {
   set -eu -o pipefail
-  # A herdr popup does not inherit the pane's colours, so text with none of its
-  # own — the "Core:" labels and their values — was unreadable there. Stating the
-  # colour fixes it for every theme and every background, which repainting the
-  # popup could not: herdr has 11 themes and no way to ask which is active.
+  # A popup or embedded terminal need not share the pane's colours, so text with
+  # none of its own — the "Core:" labels and their values — can come out
+  # unreadable. Stating the colour fixes it for every theme and background.
   local body
   body=$(sed -n '/^ctr_status_body()/,/^}/p' "${DIR}/tryout/commands.sh")
 
@@ -3001,78 +2055,6 @@ panel_menu() { # $1=worktree $2=approot
   # after them on the same line goes bare again.
   printf '%s' "${body}" | grep -q 'local OK="${GREEN}✓${TEXT}"' \
     || fail "the OK icon must return to the text colour, not reset"
-
-  # And the popup itself repaints nothing: the terminal's own theme decides.
-  run grep -qE '033\]1[01];' "${DIR}/tryout/herdr-panel-run.sh"
-  assert_failure
-}
-
-@test "the popup waits to be read even with no keyboard behind it" {
-  set -eu -o pipefail
-  # `read || true` returns instantly on EOF, so the window would close before the
-  # output could be seen — indistinguishable from the command never running.
-  local fn
-  fn=$(sed -n '/^pause()/,/^}/p' "${DIR}/tryout/herdr-panel-run.sh")
-  printf '%s' "${fn}" | grep -q '\[ -t 0 \]' \
-    || fail "pause must check for a terminal before reading"
-  printf '%s' "${fn}" | grep -q 'sleep' \
-    || fail "with no terminal it must hold the output, not vanish"
-}
-
-@test "the panel notices when the primary moves out from under it" {
-  set -eu -o pipefail
-  # `worktree use X` from a shell or another panel repoints typo3-core. A panel
-  # that only computed its state at startup would keep claiming a role it no
-  # longer has — and, before the rows named themselves, act on the wrong checkout.
-  mkdir -p "${FAKEROOT}/worktrees/alpha" "${FAKEROOT}/worktrees/beta" \
-           "${FAKEROOT}/TYPO3-Instances/alpha" "${FAKEROOT}/TYPO3-Instances/beta"
-  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/alpha/.tryout-site"
-  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/beta/.tryout-site"
-  # The primary is the ROOT checkout, identified by the branch it is on.
-  git init -q -b alpha "${FAKEROOT}"
-
-  local draw="
-    eval \"\$(sed '/^mouse_on\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-    trap - EXIT INT TERM
-    build_menu
-    render
-    printf '\nSTATE=%s\n' \"\${STATE}\"
-  "
-
-  run env TRYOUT_PANEL_WORKTREE=alpha TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "${draw}"
-  assert_success
-  assert_output --partial "STATE=primary"
-
-  # Move the primary elsewhere — a branch switch now, not a relink; the same
-  # panel must report itself as served.
-  git -C "${FAKEROOT}" checkout -q -b beta
-
-  run env TRYOUT_PANEL_WORKTREE=alpha TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "${draw}"
-  assert_success
-  assert_output --partial "STATE=served"
-
-  # And render is what re-asks, by rebuilding the whole menu: the ROWS have to
-  # follow a state change too, not just the header. The popup path is why it must
-  # happen here — it returns as soon as the popup starts, so there is no later
-  # moment it could rebuild from.
-  local fn
-  # Comments stripped: this function's own comment explains why it calls
-  # build_menu, so a grep over the raw text passes even when the call is gone.
-  fn=$(sed -n '/^render()/,/^}/p' "${DIR}/tryout/herdr-panel.sh" | grep -v '^[[:space:]]*#')
-  printf '%s' "${fn}" | grep -q 'build_menu' \
-    || fail "render must rebuild the menu, or the rows go stale"
-
-  # Behaviour: the rows follow, not only the state line. alpha is served above,
-  # so unserving it must drop the rows that need a site.
-  local rows
-  rows="$(panel_menu alpha "${FAKEROOT}")"
-  printf '%s' "${rows}" | grep -q 'ROW reset|' || fail "a served panel offers reset"
-  rm "${FAKEROOT}/TYPO3-Instances/alpha/.tryout-site"
-  rows="$(panel_menu alpha "${FAKEROOT}")"
-  printf '%s' "${rows}" | grep -q 'ROW reset|' \
-    && fail "reset survived unserving: the rows did not follow the state"
-  printf '%s' "${rows}" | grep -q 'ROW worktree serve|' \
-    || fail "an unserved panel must offer the way to give it a site"
 }
 
 @test "a new worktree is always created detached, with no local branch" {
@@ -3210,9 +2192,8 @@ panel_menu() { # $1=worktree $2=approot
 
 @test "worktree_name_for_path names the worktree a path sits in" {
   set -eu -o pipefail
-  # `launch` reads the cwd with this, and sync_herdr_workspaces reads a pane's
-  # cwd with it. One definition, because the two subtleties below are easy to
-  # get wrong twice: /private/var, and how deep a match is allowed to be.
+  # `launch` reads the cwd with this. The subtleties are easy to get wrong:
+  # /private/var, and that worktrees/ lives inside the root checkout.
   local root
   root="$(mktemp -d)"
   mkdir -p "${root}/worktrees/jiiha/Build" "${root}/Build" "${root}/packages"
@@ -3222,25 +2203,20 @@ panel_menu() { # $1=worktree $2=approot
     source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
     PROJECT_ROOT='${root}'
     plain_core_name() { echo plainclone; }
-    p() { printf '%s ' \"\$(worktree_name_for_path \"\$1\" \"\${2:-any}\" || echo none)\"; }
+    p() { printf '%s ' \"\$(worktree_name_for_path \"\$1\" || echo none)\"; }
     p '${root}/worktrees/jiiha'
-    p '${root}/worktrees/jiiha' top
     p '${root}/worktrees/jiiha/Build'
-    p '${root}/worktrees/jiiha/Build' top
     p '${root}'
-    p '${root}' top
     p '${root}/Build'
-    p '${root}/Build' top
     p '${root}/worktrees'
     echo
   "
   assert_success
-  # The root IS the primary checkout now, so a path anywhere under it that is not
-  # in worktrees/ belongs to the primary — packages/ and Build/ included. `top`
-  # still insists on a checkout's own directory, and worktrees/ is the container
-  # of worktrees, not one itself.
-  # in-wt | same,top | subdir | top rejects subdir | root | root,top | Build | top rejects Build | container
-  assert_output "jiiha jiiha jiiha none plainclone plainclone plainclone none none "
+  # The root IS the primary checkout, so a path anywhere under it that is not in
+  # worktrees/ belongs to the primary — packages/ and Build/ included. worktrees/
+  # is the container of worktrees, not one itself.
+  # in-wt | subdir | root | Build | container
+  assert_output "jiiha jiiha plainclone plainclone none "
   rm -rf "${root}"
 }
 
@@ -3273,23 +2249,12 @@ panel_menu() { # $1=worktree $2=approot
 @test "launch takes the active worktree by name, not just @primary" {
   set -eu -o pipefail
   # The active worktree has no sites/<name>/ marker — it IS the primary — so
-  # looking it up by name reads as "not served". The panel passes exactly that
-  # (its own worktree name, primary included), and so does anyone typing the
-  # name `worktree list` shows them.
+  # looking it up by name reads as "not served", yet it is the name anyone sees
+  # in `worktree list` and types.
   local fn
   fn=$(sed -n '/^cmd_launch()/,/^}/p' "${DIR}/commands/host/tryout")
   printf '%s' "${fn}" | grep -q 'active_worktree_name 2>/dev/null.*site="${PRIMARY_SITE}"' \
     || fail "the active worktree's name must resolve to the primary site"
-
-  # The panel names its own worktree for launch, the way it does for reset.
-  local menu
-  menu=$(sed -n '/^build_menu()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  printf '%s' "${menu}" | grep -q 'add "launch .*@primary' \
-    && fail "the panel must never pass the @primary sentinel"
-  printf '%s' "${menu}" | grep -q 'add "launch frontend" .* "launch ${site}"' \
-    || fail "the panel must launch its own worktree"
-  printf '%s' "${menu}" | grep -q 'add "launch backend" .* "launch ${site} --backend"' \
-    || fail "the backend row must add --backend to its own site"
 }
 
 @test "launch is host-only and never reaches the container" {
@@ -3320,147 +2285,6 @@ panel_menu() { # $1=worktree $2=approot
   "
   assert_success
   assert_output --partial "https://example.ddev.site"
-}
-
-@test "worktree add is offered where a worktree comes from, remove where it can go" {
-  set -eu -o pipefail
-  # They are opposites in scope. Creating a worktree is a project-level act and
-  # the popup asks for everything it needs, so it belongs where nothing is scoped.
-  # Removing one is about a specific checkout, so it belongs on that checkout's
-  # own panel — where it names itself and the popup only has to confirm.
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/cold" \
-           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/TYPO3-Instances/live"
-  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/live/.tryout-site"
-
-  # No worktree: add, and nothing to remove.
-  run panel_menu "" "${FAKEROOT}"
-  assert_success
-  assert_output --partial "ROW worktree add|worktree add"
-  refute_output --partial "ROW worktree remove|"
-
-  # A scoped worktree offers remove, naming itself — and never add.
-  local w
-  for w in main live cold; do
-    run panel_menu "${w}" "${FAKEROOT}"
-    assert_success
-    assert_output --partial "ROW worktree remove|worktree remove ${w}"
-    refute_output --partial "ROW worktree add|"
-  done
-
-  # The ORIGIN clone is the exception, both ways round. It owns the shared object
-  # store, so remove_core_worktree refuses to drop it — a remove row there could
-  # only ever fail, which is the promise this menu exists not to make. And it is
-  # the clone every other worktree branches from, so it is where making one
-  # belongs. `git worktree add` writes a .git FILE; the origin keeps a directory.
-  mkdir -p "${FAKEROOT}/worktrees/main/.git"
-  for w in main live cold; do
-    run panel_menu "${w}" "${FAKEROOT}"
-    assert_success
-    if [ "${w}" = "main" ]; then
-      assert_output --partial "ROW worktree add|worktree add"
-      refute_output --partial "ROW worktree remove|"
-    else
-      assert_output --partial "ROW worktree remove|worktree remove ${w}"
-      refute_output --partial "ROW worktree add|"
-    fi
-  done
-
-  # remove never carries the sentinel: cmd_worktree passes its argument through.
-  run panel_menu main "${FAKEROOT}"
-  assert_success
-  refute_output --partial "@primary"
-
-  # It goes through the popup, not the direct path: it prompts before deleting a
-  # checkout, and a confirmation cannot happen in a pane with no terminal.
-  local menu
-  menu=$(sed -n '/^build_menu()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  printf '%s' "${menu}" | grep -q 'add "worktree remove" .* direct$' \
-    && fail "remove must not skip the popup: it has to confirm first"
-  printf '%s' "${menu}" | grep -q 'add "worktree add" .* direct$' \
-    && fail "add must not skip the popup: it asks for a name and a branch"
-  printf '%s' "${menu}" | grep -q 'add "worktree add"' \
-    || fail "the off-worktree panel must offer worktree add"
-}
-
-@test "the panel shows its branch and applied patches below the rows" {
-  set -eu -o pipefail
-  command -v git >/dev/null || skip "git not available"
-  # Commits on top of the upstream ARE the applied patches — the same measure
-  # `ddev tryout status` reports.
-  local root="${FAKEROOT}/gitinfo"
-  mkdir -p "${root}/TYPO3-Instances/live" "${root}/worktrees/main"
-  ln -s worktrees/main "${root}/typo3-core"
-  printf 'php=8.3\n' > "${root}/TYPO3-Instances/live/.tryout-site"
-  git init -q -b main "${root}/up"
-  git -C "${root}/up" commit -q --allow-empty -m base
-  git clone -q "${root}/up" "${root}/worktrees/live" 2>/dev/null
-
-  draw() {
-    TRYOUT_PANEL_WORKTREE=live TRYOUT_PANEL_APPROOT="${root}" /bin/bash -c "
-      eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-      trap - EXIT INT TERM
-      build_menu; refresh_git_info; render >/dev/null; render
-    " 2>/dev/null | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g'
-  }
-
-  # Clean: the branch, and no patch line.
-  run draw
-  assert_success
-  assert_output --partial "main"
-  # Not a bare "patch": that is also a menu row. The count line is what must be
-  # absent when nothing is applied.
-  refute_output --regexp '[0-9]+ patch'
-
-  # One commit on top is one patch, singular.
-  git -C "${root}/worktrees/live" commit -q --allow-empty -m 'a patch'
-  run draw
-  assert_output --partial "1 patch"
-  refute_output --partial "1 patches"
-
-  # Two is plural.
-  git -C "${root}/worktrees/live" commit -q --allow-empty -m 'another'
-  run draw
-  assert_output --partial "2 patches"
-
-  # A detached checkout says so rather than showing nothing: it has no branch and
-  # no upstream, so both reads come back empty and the line would have vanished.
-  git -C "${root}/worktrees/live" checkout -q --detach HEAD
-  run draw
-  assert_output --partial "detached"
-}
-
-@test "the git reads are cached, never run on a keystroke" {
-  set -eu -o pipefail
-  # render runs on EVERY keystroke, so an arrow key must not pay for git. Working
-  # out the base of a DETACHED head is the one that really bites: it means
-  # for-each-ref --contains over every remote branch, 0.7s on a real Core.
-  local fn rn
-  # Comments stripped: this function's own comment names for-each-ref while
-  # explaining why it is avoided, and a raw grep cannot tell the two apart.
-  fn=$(sed -n '/^refresh_git_info()/,/^}/p' "${DIR}/tryout/herdr-panel.sh" \
-       | grep -v '^[[:space:]]*#')
-  rn=$(sed -n '/^render()/,/^}/p' "${DIR}/tryout/herdr-panel.sh" | grep -v '^[[:space:]]*#')
-  [ -n "${fn}" ] || fail "no refresh_git_info"
-
-  if printf '%s' "${rn}" | grep -q 'refresh_git_info'; then
-    fail "render must read the cache, not refill it"
-  fi
-  if printf '%s' "${rn}" | grep -qE '\bgit '; then
-    fail "render must not run git at all"
-  fi
-  # And the expensive detached lookup is not in the panel to begin with.
-  if printf '%s' "${fn}" | grep -q 'for-each-ref'; then
-    fail "the detached-base lookup is far too slow for a redraw"
-  fi
-  # It is refilled where something could have changed it: after a command.
-  local sel
-  sel=$(sed -n '/^run_selected()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  printf '%s' "${sel}" | grep -q 'refresh_after_command\|GIT_STALE=1' \
-    || fail "a command that ran must refresh the cache"
-  # The popup returns on START, so it cannot refresh at return time — it marks the
-  # cache stale and the next keystroke picks the answer up.
-  printf '%s' "${sel}" | grep -q 'GIT_STALE=1' \
-    || fail "the popup path must defer its refresh"
 }
 
 @test "nginx gets a server-name hash big enough for the longest hostname" {
@@ -3538,513 +2362,6 @@ panel_menu() { # $1=worktree $2=approot
   assert_success
 }
 
-@test "unserve is offered only where there is a site to take away" {
-  set -eu -o pipefail
-  # It is the inverse of serve, and unserve_worktree refuses a site that is not
-  # served — so on an unserved checkout the row could only ever fail.
-  mkdir -p "${FAKEROOT}/worktrees/main/.git" "${FAKEROOT}/worktrees/cold" \
-           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/TYPO3-Instances/live"
-  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/live/.tryout-site"
-
-  # The primary and a served worktree both have a site.
-  local w
-  for w in main live; do
-    run panel_menu "${w}" "${FAKEROOT}"
-    assert_success
-    assert_output --partial "ROW worktree unserve|worktree unserve ${w}"
-  done
-
-  # An unserved checkout offers serve instead — there is nothing to take away.
-  run panel_menu cold "${FAKEROOT}"
-  assert_success
-  refute_output --partial "ROW worktree unserve|"
-  assert_output --partial "ROW worktree serve|worktree serve cold"
-}
-
-@test "a worktree verb reloads the workspaces and wakes the panel that ran it" {
-  set -eu -o pipefail
-  # `worktree remove` and `unserve` strand a workspace whose checkout is gone, and
-  # the popup is the only place that knows when the command actually finished — the
-  # panel returns as soon as the popup STARTS. A bare `ddev tryout herdr` is the
-  # reconcile pass for exactly that.
-  local fn
-  fn=$(sed -n '/^case "${rc}:${VERB}" in/,/^esac$/p' "${DIR}/tryout/herdr-panel-run.sh")
-  [ -n "${fn}" ] || fail "no post-command reload"
-
-  # Only for worktree verbs: the pass walks every workspace, which is wasted work
-  # after a patch or a launch.
-  printf '%s' "${fn}" | grep -q 'worktree' \
-    || fail "the reload must be scoped to the verbs that change the worktree set"
-  # And only on success — a failed command changed nothing.
-  printf '%s' "${fn}" | grep -q '0:' \
-    || fail "a failed command must not trigger a reload"
-  printf '%s' "${fn}" | grep -q 'ddev tryout herdr' \
-    || fail "the reload is the reconcile pass"
-  # --no-focus, because this is a background reconcile and not the user asking to
-  # be taken anywhere. `cmd_herdr` focuses the FIRST worktree alphabetically by
-  # default, so without it every panel command threw you out of the space you were
-  # working in. herdr moves focus by itself when the focused workspace closes, so
-  # the "unless it was removed" case needs nothing here.
-  printf '%s' "${fn}" | grep -q 'ddev tryout herdr --no-focus' \
-    || fail "the reconcile must not steal focus from the space you are in"
-
-  # It must NOT move the focus. An earlier version jumped to the origin clone on
-  # the theory that the popup's own workspace might have just been removed; that
-  # yanks the user somewhere they did not ask to go, which is worse than the case
-  # it guarded against.
-  local run
-  run=$(cat "${DIR}/tryout/herdr-panel-run.sh")
-  printf '%s' "${run}" | grep -q 'workspace focus' \
-    && fail "the popup must leave the focus where the user put it"
-
-  # The panel is woken for ANY success, not only these verbs — serve and unserve
-  # change its rows, checkout and patch its branch line — so that lives outside
-  # this case block now.
-  # The CALL, not the definition — `wake_panel` names itself either way.
-  local run
-  run=$(cat "${DIR}/tryout/herdr-panel-run.sh" | grep -v '^[[:space:]]*#' \
-        | grep -v '^wake_panel()')
-  printf '%s' "${run}" | grep -qE '^\s+wake_panel$' \
-    || fail "the panel that ran the command must be told to redraw"
-}
-
-@test "the popup closes itself on success and stays open on failure" {
-  set -eu -o pipefail
-  # Clicking a row and then having to dismiss a report of a success is friction —
-  # and a popup nobody dismisses BLOCKS the next one: herdr answers `ui_busy: a
-  # popup pane is already open`. Verified live, with one stuck on a confirmation
-  # prompt for four minutes.
-  local run
-  run=$(cat "${DIR}/tryout/herdr-panel-run.sh" | grep -v '^[[:space:]]*#')
-
-  # Success: wake the panel, then leave.
-  printf '%s' "${run}" | grep -q 'if \[ "${rc}" -eq 0 \]; then'     || fail "success must be handled apart from failure"
-  printf '%s' "${run}" | grep -q 'exit 0'     || fail "a successful command must close its own popup"
-
-  # Except where the OUTPUT is the point: status renders a screenful and exec
-  # shows whatever was typed. Closing those on success flashes the answer past.
-  printf '%s' "${run}" | grep -q 'status\*|exec\*'     || fail "the read-only verbs must keep their output on screen"
-
-  # Failure always holds, with the error and the pause — the popup is the only
-  # place it is written.
-  printf '%s' "${run}" | grep -q 'exited ${rc}'     || fail "a failure must say so"
-  printf '%s' "${run}" | grep -q '^pause$'     || fail "a failure must wait rather than vanish"
-
-  # Behaviour: the branch each rc takes.
-  run bash -c '
-    rc=0; VERB="worktree serve x"
-    if [ "${rc}" -eq 0 ]; then
-      case "${VERB}" in status*|exec*) ;; *) echo "CLOSES"; exit 0 ;; esac
-    fi
-    echo "PAUSES"'
-  assert_output "CLOSES"
-
-  run bash -c '
-    rc=0; VERB="status"
-    if [ "${rc}" -eq 0 ]; then
-      case "${VERB}" in status*|exec*) ;; *) echo "CLOSES"; exit 0 ;; esac
-    fi
-    echo "PAUSES"'
-  assert_output "PAUSES"
-
-  run bash -c '
-    rc=1; VERB="worktree serve x"
-    if [ "${rc}" -eq 0 ]; then
-      case "${VERB}" in status*|exec*) ;; *) echo "CLOSES"; exit 0 ;; esac
-    fi
-    echo "PAUSES"'
-  assert_output "PAUSES"
-}
-
-@test "the popup wakes its panel with a key the panel ignores" {
-  set -eu -o pipefail
-  # The panel blocks in `read` with no timeout, so one byte is what makes it
-  # redraw — and render rebuilds the whole menu, so one byte is all it needs.
-  # But the byte must fall THROUGH the loop's case: q quits, Enter runs the
-  # selected row, ESC closes, j/k move the selection. Any of those would do
-  # something the user never asked for.
-  local fn key
-  fn=$(sed -n '/^wake_panel()/,/^}/p' "${DIR}/tryout/herdr-panel-run.sh" \
-       | grep -v '^[[:space:]]*#')
-  [ -n "${fn}" ] || fail "no wake_panel"
-
-  printf '%s' "${fn}" | grep -q 'pane send-keys' \
-    || fail "waking the panel means sending it a key"
-  key=$(printf '%s\n' "${fn}" | sed -n 's/.*send-keys[^ ]* "\${TRYOUT_PANEL_PANE}" \([a-z]*\).*/\1/p')
-  [ -n "${key}" ] || fail "could not read the key it sends"
-  case "${key}" in
-    q|j|k|enter|escape|esc) fail "'${key}' is handled by the panel loop and would act" ;;
-  esac
-  # And that key really is unhandled: the loop's case must not mention it.
-  local loop
-  loop=$(sed -n '/^while :; do/,/^done$/p' "${DIR}/tryout/herdr-panel.sh")
-  printf '%s' "${loop}" | grep -qE "^\s+${key}\)" \
-    && fail "the panel's case handles '${key}'"
-
-  # No pane means the runner was called positionally, with no panel behind it —
-  # and `send-keys` with an empty pane id is an error, not a no-op. Pin the GUARD,
-  # not just the variable: it appears in the send-keys line either way.
-  printf '%s' "${fn}" | grep -q '\[ -n "\${TRYOUT_PANEL_PANE:-}" \] || return' \
-    || fail "wake_panel must no-op when there is no panel to wake"
-  # It runs where herdr may not be.
-  printf '%s' "${fn}" | grep -q 'command -v herdr' \
-    || fail "a missing herdr must be survivable"
-
-  # And the panel actually tells the popup which pane that is. herdr sets
-  # HERDR_PANE_ID in every pane it runs, so the panel already knows its own.
-  local sel
-  sel=$(sed -n '/^run_selected()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  printf '%s' "${sel}" | grep -q 'TRYOUT_PANEL_PANE=${HERDR_PANE_ID' \
-    || fail "the popup must be told which pane to wake"
-}
-
-@test "a woken panel repaints its branch line in the same draw" {
-  set -eu -o pipefail
-  # The git cache is refilled on the keystroke after a popup — including the one
-  # the popup sends itself. If that refill happens AFTER render, the repaint shows
-  # the old branch and patch count and needs a second key to catch up, which for a
-  # key the user did not press means it simply stays wrong.
-  local loop refill draw
-  loop=$(sed -n '/^while :; do/,/^done$/p' "${DIR}/tryout/herdr-panel.sh" \
-         | grep -v '^[[:space:]]*#')
-  refill=$(printf '%s\n' "${loop}" | grep -n 'refresh_after_command' | head -1 | cut -d: -f1)
-  draw=$(printf '%s\n' "${loop}" | grep -n '^\s*render$' | head -1 | cut -d: -f1)
-  [ -n "${refill}" ] || fail "the loop never refills the git cache"
-  [ -n "${draw}" ] || fail "the loop never draws"
-  [ "${refill}" -lt "${draw}" ] \
-    || fail "the refill must precede the draw, or the repaint is one key behind"
-}
-@test "a worktree made from the panel opens as a workspace" {
-  set -eu -o pipefail
-  # The panel lives IN herdr, so a worktree created from it that did not appear
-  # there is a worktree you then have to go and open by hand. --herdr is what
-  # creates the workspace, starts its agent and focuses it.
-  local menu
-  menu=$(sed -n '/^build_menu()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  local bare
-  bare=$(printf '%s\n' "${menu}" | grep -c '"worktree add"$' || true)
-  [ "${bare}" -eq 0 ] || fail "${bare} panel row(s) create a worktree without opening it"
-  printf '%s' "${menu}" | grep -q 'add "worktree add" .* "worktree add --herdr"' \
-    || fail "the panel must pass --herdr so the workspace appears"
-}
-
-@test "a workspace whose checkout is gone does not abort the sync" {
-  set -eu -o pipefail
-  # worktree_name_for_path returns non-zero for a path that is not one of ours —
-  # which is exactly what a workspace left behind by `worktree remove` looks like,
-  # and precisely what the reconcile loop exists to find. Assigned bare under
-  # `set -e` that aborted the whole command with no output at all.
-  local fn
-  fn=$(sed -n '/^sync_herdr_workspaces()/,/^}/p' "${DIR}/tryout/functions.sh")
-  printf '%s' "${fn}" | grep -q 'worktree_name_for_path .* || true' \
-    || fail "a path that is not ours must not abort the reconcile pass"
-
-  # Behaviour: the assignment form used here survives a non-zero return.
-  run bash -c "
-    set -euo pipefail
-    f() { return 1; }
-    name=\"\$(f 2>/dev/null || true)\"
-    echo \"reached with name=[\${name}]\"
-  "
-  assert_success
-  assert_output "reached with name=[]"
-}
-
-@test "the origin clone is told apart by its .git, not by its name" {
-  set -eu -o pipefail
-  # "main" is just the name this project happens to use; another may call the
-  # origin clone anything, and `worktree use` can point the primary at any of them.
-  # What actually distinguishes it is the object store: `git worktree add` writes a
-  # .git FILE pointing back at the main clone, which keeps a real .git DIRECTORY.
-  # One filesystem test, so render can re-ask on every draw.
-  mkdir -p "${FAKEROOT}/worktrees/origin/.git" "${FAKEROOT}/worktrees/derived"
-  : > "${FAKEROOT}/worktrees/derived/.git"
-  ln -s worktrees/derived "${FAKEROOT}/typo3-core"
-
-  probe() { # $1=worktree -> yes/no
-    TRYOUT_PANEL_WORKTREE="$1" TRYOUT_PANEL_APPROOT="${FAKEROOT}" /bin/bash -c "
-      eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-      trap - EXIT INT TERM
-      is_origin_checkout && echo yes || echo no
-    " 2>/dev/null
-  }
-
-  # The origin clone, even though it is NOT the primary here.
-  [ "$(probe origin)" = "yes" ] || fail "a .git directory means the origin clone"
-  # The primary, which is an ordinary worktree.
-  [ "$(probe derived)" = "no" ] || fail "a .git file means an added worktree"
-  # Nothing to test against.
-  [ "$(probe gone)" = "no" ] || fail "a checkout that is not there is not the origin"
-  [ "$(probe '')" = "no" ] || fail "no worktree is not the origin"
-}
-
-@test "the launch rows come last, in frontend then backend order" {
-  set -eu -o pipefail
-  # They sit at the end deliberately: the rows above act on the checkout, these
-  # two only look at it. Anything appended after them would separate the pair.
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/live" \
-           "${FAKEROOT}/TYPO3-Instances/live"
-  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/live/.tryout-site"
-
-  local w out last2
-  # Both shapes that have a site: the served worktree and the primary, whose
-  # trailing rows differ (worktree use vs composer).
-  for w in live main; do
-    out="$(panel_menu "${w}" "${FAKEROOT}")"
-    [ -n "${out}" ] || fail "no menu for ${w}"
-    last2="$(printf '%s\n' "${out}" | grep '^ROW ' | tail -2)"
-    printf '%s\n' "${last2}" | head -1 | grep -q '^ROW launch frontend|' \
-      || fail "frontend is not second to last for ${w}: ${last2}"
-    printf '%s\n' "${last2}" | tail -1 | grep -q '^ROW launch backend|' \
-      || fail "backend is not last for ${w}: ${last2}"
-  done
-}
-
-@test "every panel row carries all four of its fields" {
-  set -eu -o pipefail
-  # Four parallel arrays and no associative ones, so a row that fell out of step
-  # would read another row's arguments — a command run on the wrong worktree,
-  # which is the whole class of bug this menu exists to prevent.
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/cold" \
-           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/TYPO3-Instances/live"
-  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/live/.tryout-site"
-
-  counts() { # $1=worktree — every menu shape, since each builds a different list
-    TRYOUT_PANEL_WORKTREE="$1" TRYOUT_PANEL_APPROOT="${FAKEROOT}" \
-    /bin/bash -c "
-      eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-      trap - EXIT INT TERM
-      # TWICE: the inline path rebuilds the menu after every run, and an array
-      # the rebuild forgets to reset keeps growing while the others do not.
-      build_menu; build_menu
-      echo \"\${#LABELS[@]} \${#HINTS[@]} \${#ARGS[@]} \${#DIRECT[@]}\"
-    " 2>/dev/null
-  }
-
-  local w n
-  for w in main live cold ""; do
-    n="$(counts "${w}")"
-    [ -n "${n}" ] || fail "menu for '${w:-<none>}' produced nothing"
-    # All four equal, whatever the length.
-    printf '%s\n' "${n}" | grep -qE '^([0-9]+) \1 \1 \1$' \
-      || fail "arrays out of step for '${w:-<none>}': ${n}"
-  done
-
-  # Equal lengths are not enough: a DIRECT that recorded nothing, or one left
-  # stale from an earlier build, keeps every count identical while sending the
-  # wrong row down the wrong path. So check the VALUES line up with the labels,
-  # and that a second build_menu — which the inline path does run — is clean.
-  rows() { # $1=worktree -> "<label> <direct>" per row, twice-built
-    TRYOUT_PANEL_WORKTREE="$1" TRYOUT_PANEL_APPROOT="${FAKEROOT}" \
-    /bin/bash -c "
-      eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-      trap - EXIT INT TERM
-      build_menu; build_menu
-      i=0; while [ \$i -lt \${#LABELS[@]} ]; do
-        printf '%s=%s\n' \"\${LABELS[\$i]}\" \"\${DIRECT[\$i]}\"; i=\$((i+1))
-      done
-    " 2>/dev/null
-  }
-
-  local out
-  out="$(rows live)"
-  printf '%s\n' "${out}" | grep -qx 'launch frontend=direct' \
-    || fail "launch frontend lost its direct tag: ${out}"
-  printf '%s\n' "${out}" | grep -qx 'launch backend=direct' \
-    || fail "launch backend lost its direct tag: ${out}"
-  # And nothing else carries one, so a stale array cannot misroute a slow verb.
-  [ "$(printf '%s\n' "${out}" | grep -c '=direct$')" -eq 2 ] \
-    || fail "rows other than the two launches are tagged direct: ${out}"
-  [ "$(printf '%s\n' "${out}" | grep -c '=$')" -ge 5 ] \
-    || fail "rows that should be untagged are not: ${out}"
-}
-
-@test "launch runs from the panel without a popup, and a failure is still seen" {
-  set -eu -o pipefail
-  local fn rd
-  fn=$(sed -n '/^run_selected()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-
-  # The direct branch must come BEFORE the marker file is minted, or every Enter
-  # on such a row leaves one in TMPDIR that nothing ever collects.
-  local d_line m_line
-  d_line=$(printf '%s\n' "${fn}" | grep -n 'DIRECT\[' | head -1 | cut -d: -f1)
-  m_line=$(printf '%s\n' "${fn}" | grep -n 'local marker=' | head -1 | cut -d: -f1)
-  [ -n "${d_line}" ] || fail "run_selected never consults DIRECT"
-  [ -n "${m_line}" ] || fail "no marker line to order against"
-  [ "${d_line}" -lt "${m_line}" ] || fail "the direct branch must precede the marker"
-
-  rd=$(sed -n '/^run_direct()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  [ -n "${rd}" ] || fail "no run_direct"
-  # Success is silent — the pane is a narrow strip and the browser already said
-  # it — but stderr is kept, or a failed launch is indistinguishable from a
-  # successful one. The order is the whole trick; see the behavioural test below.
-  printf '%s' "${rd}" | grep -q '2>&1 >/dev/null' \
-    || fail "run_direct must keep stderr and drop stdout, in that order"
-  # It must not take the pane over: no clear, no mouse handover. That dance is
-  # the inline fallback's, and copying it would restore what this removes.
-  printf '%s' "${rd}" | grep -q '2J' \
-    && fail "the direct path must never clear the pane"
-  printf '%s' "${rd}" | grep -q 'mouse_off' \
-    && fail "the direct path must not hand the terminal over"
-  # A bad approot must not read as success: `cd … && cmd` short-circuits to rc 0
-  # with no output, which would make every run quietly do nothing.
-  printf '%s' "${rd}" | grep -q 'if \[ ! -d "${root}" \]' \
-    || fail "run_direct must fail a missing project instead of short-circuiting"
-  # And the message reaches the user through render, not a printf the next draw
-  # would wipe before it could be read.
-  printf '%s' "${rd}" | grep -q 'NOTICE="\$(printf' \
-    || fail "run_direct must report the captured error through NOTICE"
-  local rn
-  rn=$(sed -n '/^render()/,/^}/p' "${DIR}/tryout/herdr-panel.sh")
-  printf '%s' "${rn}" | grep -q 'NOTICE=""' \
-    || fail "render must clear the notice, so it shows exactly once"
-}
-
-@test "the panel's direct path swallows success output and keeps the error" {
-  set -eu -o pipefail
-  # `2>&1 >/dev/null` is the classic thing to write backwards, and reversed it
-  # drops both streams — a silent-failure bug no grep of the source would catch.
-  # So run the REAL run_direct against a stub ddev, rather than a copy of its
-  # redirection, which would pass however the shipped one is written.
-  mkdir -p "${FAKEROOT}/worktrees/main"
-
-  drive() { # $1=stub body -> "NOTICE=[…]"
-    TRYOUT_PANEL_WORKTREE=main TRYOUT_PANEL_APPROOT="${FAKEROOT}" \
-    /bin/bash -c "
-      eval \"\$(sed '/^build_menu\$/,\$d' '${DIR}/tryout/herdr-panel.sh')\"
-      trap - EXIT INT TERM
-      ddev() { $1 }
-      NOTICE=''
-      run_direct 'launch main'
-      echo \"NOTICE=[\${NOTICE}]\"
-    " 2>/dev/null
-  }
-
-  # Success says nothing: the browser coming forward is the report.
-  run drive "echo 'Opened https://x.ddev.site'; return 0;"
-  assert_success
-  assert_output "NOTICE=[]"
-
-  # Failure keeps stderr, drops the stdout noise, and shows the first real line.
-  run drive "echo 'stdout noise'; echo '' >&2; echo \"No served site 'x'\" >&2; return 1;"
-  assert_success
-  assert_output "NOTICE=[No served site 'x']"
-  refute_output --partial "stdout noise"
-
-  # And a long error is cut to what the strip can hold, rather than wrapping over
-  # the menu it is reporting about.
-  run drive "echo \"Worktree 'x' is not served — it has no URL and cannot be opened\" >&2; return 1;"
-  assert_success
-  local n
-  n="${output#NOTICE=[}"; n="${n%]}"
-  [ "${#n}" -le 24 ] || fail "notice is ${#n} chars; the pane is a ~25-column strip"
-  [ "${#n}" -gt 0 ]  || fail "a long error must still say something"
-}
-
-@test "the panel offers download where there is a site to update" {
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely" \
-           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/TYPO3-Instances/live"
-  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/live/.tryout-site"
-
-  run panel_menu live "${FAKEROOT}"
-  assert_success
-  assert_output --partial "download|download live"
-
-  # The primary names itself too — never the sentinel, which reset would choke on.
-  run panel_menu main "${FAKEROOT}"
-  assert_success
-  assert_output --partial "download|download main"
-
-  # A bare checkout has no site, so there is nothing to update.
-  run panel_menu lonely "${FAKEROOT}"
-  assert_success
-  refute_output --partial "ROW download|"
-}
-
-@test "exec is offered only where there is a site to run in" {
-  set -eu -o pipefail
-  # cmd_exec REJECTS a site that is neither primary nor served, so offering it on
-  # a bare checkout would be a row that can only error. It also takes the site
-  # positionally, which is why the primary gets the @primary sentinel rather than
-  # an empty string — empty would shift the command into the site's place.
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely" \
-           "${FAKEROOT}/worktrees/live" "${FAKEROOT}/TYPO3-Instances/live"
-  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/live/.tryout-site"
-
-  # Served: its own name.
-  run panel_menu live "${FAKEROOT}"
-  assert_success
-  assert_output --partial "exec|exec live"
-
-  # Primary: its own name, not the sentinel. A bare or sentinel site follows the
-  # typo3-core symlink at run time, which is how a panel came to switch whichever
-  # worktree happened to be primary rather than its own.
-  run panel_menu main "${FAKEROOT}"
-  assert_success
-  assert_output --partial "exec|exec main"
-  refute_output --partial "@primary"
-
-  # Bare checkout: not offered at all.
-  run panel_menu lonely "${FAKEROOT}"
-  assert_success
-  refute_output --partial "ROW exec|"
-}
-
-@test "an unserved worktree is offered no command that needs a site" {
-  set -eu -o pipefail
-  # Most worktrees are just checkouts. checkout/reset/patch need a site, so on
-  # one of those they would fail — or worse, silently act on the primary.
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/lonely"
-
-  run panel_menu lonely "${FAKEROOT}"
-  assert_success
-  assert_line "STATE=unserved"
-  # The two ways to give it a site are exactly what it offers instead.
-  assert_output --partial "worktree serve|worktree serve lonely"
-  assert_output --partial "worktree use|worktree use lonely"
-  refute_output --partial "ROW checkout|"
-  refute_output --partial "ROW reset|"
-  refute_output --partial "ROW patch|"
-}
-
-@test "a served worktree carries its own site, so nothing asks which one" {
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/worktrees/benni" \
-           "${FAKEROOT}/TYPO3-Instances/benni"
-  printf 'php=8.3\n' > "${FAKEROOT}/TYPO3-Instances/benni/.tryout-site"
-
-  run panel_menu benni "${FAKEROOT}"
-  assert_success
-  assert_line "STATE=served"
-  # Every site-scoped verb names the site, which is what suppresses the prompt.
-  assert_output --partial "reset|reset benni"
-  assert_output --partial "patch|patch --site benni"
-  # checkout takes --site, because the branch has to come first positionally.
-  assert_output --partial "checkout|checkout --site benni"
-}
-
-@test "each verb gets the site form it actually accepts" {
-  set -eu -o pipefail
-  # cmd_reset hands its argument straight to the container, and unlike cmd_patch
-  # and cmd_delete it does NOT blank "@primary" first — the container's parser
-  # would reject it.
-  mkdir -p "${FAKEROOT}/worktrees/main"
-
-  run panel_menu main "${FAKEROOT}"
-  assert_success
-  assert_line "STATE=primary"
-  # Every scoped row names THIS worktree, the primary included: a siteless command
-  # resolves through the typo3-core symlink when it runs, so it would switch
-  # whichever worktree is primary at that moment rather than this one.
-  assert_output --partial "checkout|checkout --site main"
-  assert_output --partial "reset|reset main"
-  assert_output --partial "exec|exec main"
-  # reset passes its argument straight through without blanking the sentinel, so
-  # that literal must never reach it — a real name is what it wants.
-  refute_output --partial "@primary"
-}
-
 @test "the overlay requires exactly the sysexts on disk, nothing by branch name" {
   set -eu -o pipefail
   # typo3/theme-camino used to be appended whenever the branch looked like main or
@@ -4096,109 +2413,11 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
   assert_output "True"
 }
 
-@test "the agent's tab is found by position, not by its label" {
-  set -eu -o pipefail
-  # ensure_first_tab_label names it "Claude" when an agent is running and "Shell"
-  # when none is, and a user can rename it again — so keying on any label would
-  # lose the panel's home the moment one of those happened.
-  fake_herdr_tabs '{"result":{"tabs":[
-    {"tab_id":"w1:t1","label":"Claude"},
-    {"tab_id":"w1:t2","label":"Terminal"}]}}'
-  run_with_fake_herdr 'herdr_agent_tab_id w1'
-  assert_success
-  assert_output "w1:t1"
-
-  # Same answer with no agent, where the first tab is called Shell...
-  fake_herdr_tabs '{"result":{"tabs":[
-    {"tab_id":"w1:t1","label":"Shell"},
-    {"tab_id":"w1:t2","label":"Terminal"}]}}'
-  run_with_fake_herdr 'herdr_agent_tab_id w1'
-  assert_success
-  assert_output "w1:t1"
-
-  # ...and with a name nobody predicted.
-  fake_herdr_tabs '{"result":{"tabs":[
-    {"tab_id":"w1:t1","label":"my notes"},
-    {"tab_id":"w1:t2","label":"Terminal"}]}}'
-  run_with_fake_herdr 'herdr_agent_tab_id w1'
-  assert_success
-  assert_output "w1:t1"
-
-  # A workspace with no tabs answers nothing rather than a bogus id.
-  fake_herdr_tabs '{"result":{"tabs":[]}}'
-  run_with_fake_herdr 'herdr_agent_tab_id w1'
-  assert_success
-  assert_output ""
-}
-
-@test "an already-open workspace still gets its tab and panel" {
-  set -eu -o pipefail
-  # Open is not the same as complete. A workspace opened by hand, or before the
-  # Terminal tab and the panel existed, is missing whatever came later — and the
-  # early return for "already open" is what kept it that way: `ddev tryout herdr
-  # <name>` skips the reconcile pass, so nothing else ever reached it. That is
-  # how worktrees/main ended up as the one workspace with no tryout panel.
-  local fn
-  fn=$(sed -n '/^open_worktree_in_herdr()/,/^}/p' "${DIR}/tryout/functions.sh")
-
-  # The skip branch, from "is open" to its return, must do the backfill.
-  local skip
-  # Comments stripped: they name these helpers while explaining them, so a grep
-  # over the raw text passes even when the call itself is gone.
-  skip=$(printf '%s\n' "${fn}" | sed -n '/herdr_worktree_is_open/,/^    fi$/p' \
-         | grep -v '^[[:space:]]*#')
-  [ -n "${skip}" ] || fail "no already-open branch"
-  printf '%s' "${skip}" | grep -q 'ensure_panel_pane' \
-    || fail "an open workspace must still get the panel"
-  printf '%s' "${skip}" | grep -q 'ensure_terminal_tab' \
-    || fail "an open workspace must still get its Terminal tab"
-  # Each is a no-op when already present, so this is safe to run every time —
-  # but it must not abort the run when one fails, since other worktrees follow.
-  printf '%s' "${skip}" | grep -q 'ensure_panel_pane .* || true' \
-    || fail "a backfill failure must not end the run"
-  # It must find the workspace by DIRECTORY, not by label. A workspace old enough
-  # to be missing the tab and the panel is old enough to be missing the
-  # core-<name> label too, so looking it up by that label found nothing and the
-  # whole branch did nothing — which is exactly how worktrees/main stayed broken
-  # through a fix that was supposed to repair it.
-  printf '%s' "${skip}" | grep -q 'herdr_workspace_id_for_dir' \
-    || fail "the backfill must find the workspace by directory, not by label"
-  printf '%s' "${skip}" | grep -qE 'herdr_workspace_id "' \
-    && fail "a label lookup cannot find a workspace whose label is the problem"
-  # And it adopts the label, so everything keyed on it finds the workspace after.
-  printf '%s' "${skip}" | grep -q 'workspace rename' \
-    || fail "the backfill must adopt the core-<name> label"
-  # An agent too, when the workspace has none and one was asked for.
-  printf '%s' "${skip}" | grep -q 'start_agent_in_pane' \
-    || fail "a workspace with no agent must get one"
-  printf '%s' "${skip}" | grep -q 'use_agent' \
-    || fail "--no-agent must still be honoured on the backfill"
-  printf '%s' "${skip}" | grep -q 'herdr_workspace_has_agent' \
-    || fail "an agent already running must not be restarted"
-}
-
-@test "the backfill starts its agent in the worktree, not in the panel" {
-  set -eu -o pipefail
-  # The panel pane sits in the PROJECT ROOT, not the worktree — that is deliberate,
-  # so its popup's relative path resolves. Starting claude there would run it in
-  # the wrong directory, so the pane is chosen by cwd and the panel excluded by
-  # label. Both conditions matter: cwd alone still matches nothing useful if the
-  # panel ever moved, and label alone would match the Terminal pane.
-  local fn
-  fn=$(sed -n '/^herdr_workspace_agent_pane()/,/^}/p' "${DIR}/tryout/functions.sh")
-  [ -n "${fn}" ] || fail "no herdr_workspace_agent_pane"
-  printf '%s' "${fn}" | grep -q '.cwd == \$d' \
-    || fail "the agent pane must be the one sitting in the worktree"
-  printf '%s' "${fn}" | grep -q '(.label // "") != \$l' \
-    || fail "the panel must be excluded: it lives in the project root"
-}
-
 @test "worktree add takes its name from the loop, never from a flag" {
   set -eu -o pipefail
-  # The panel runs `worktree add --herdr`. Reading $1 as the name BEFORE stripping
-  # flags made the name the literal string "--herdr" — non-empty, so the prompt
-  # below never fired, and it was delegated as the worktree name. Verified live:
-  # the container received `worktree add --herdr 13.4` and git failed on it.
+  # Reading $1 as the name BEFORE stripping flags made a leading flag the name —
+  # non-empty, so the prompt below never fired, and it was delegated as the
+  # worktree name; git then failed on it in the container.
   local body
   body=$(sed -n '/^cmd_worktree()/,/^}/p' "${DIR}/commands/host/tryout" \
          | sed -n '/^        add)/,/^            ;;/p' | grep -v '^[[:space:]]*#')
@@ -4218,11 +2437,11 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
 
 @test "a worktree name can never start with a hyphen" {
   set -eu -o pipefail
-  # It becomes a directory, a git branch and a herdr label — none of which take a
-  # leading hyphen — and it is exactly what a mis-parsed flag looks like. The old
-  # regex ^[A-Za-z0-9._-]+$ accepted "--herdr" quite happily.
+  # It becomes a directory and a git ref — neither takes a leading hyphen — and
+  # it is exactly what a mis-parsed flag looks like. The old regex
+  # ^[A-Za-z0-9._-]+$ accepted "--serve" quite happily.
   local n
-  for n in --herdr -x - --serve; do
+  for n in --serve -x - --php; do
     run helper_eval "validate_worktree_name '${n}'"
     assert_failure
   done
@@ -4289,63 +2508,14 @@ import json; print('typo3/theme-camino' in json.load(open('${proj14}/composer.tr
     || fail "postgres counts its tables differently"
 }
 
-@test "every workspace reports its own branch to the sidebar" {
-  set -eu -o pipefail
-  # herdr's own `branch` row is computed from the workspace's repo_root, which for
-  # a linked worktree points at the ORIGIN CLONE — so it rendered only for the one
-  # checkout owning the repo, and that value is not on the API's worktree struct to
-  # correct. A custom token is the way in.
-  local fn
-  fn=$(sed -n '/^set_workspace_branch_token()/,/^}/p' "${DIR}/tryout/functions.sh" \
-       | grep -v '^[[:space:]]*#')
-  [ -n "${fn}" ] || fail "no set_workspace_branch_token"
-
-  printf '%s' "${fn}" | grep -q 'workspace report-metadata' \
-    || fail "the token is reported through report-metadata"
-  printf '%s' "${fn}" | grep -q 'wt_branch=' \
-    || fail "a CUSTOM token: --token branch= does not feed herdr's built-in row"
-  # The branch comes from the worktree, not from wherever the command runs.
-  printf '%s' "${fn}" | grep -q 'core_worktree_dir' \
-    || fail "the branch must be read from that worktree's checkout"
-  # An empty token makes the row vanish, and half a project's worktrees are
-  # typically detached — so they say so instead.
-  printf '%s' "${fn}" | grep -q 'b="detached"' \
-    || fail "a detached checkout must still report something"
-
-  # Set wherever the add-on already knows both the workspace and the worktree.
-  local callers
-  callers=$(grep -c 'set_workspace_branch_token "' "${DIR}/tryout/functions.sh" || true)
-  [ "${callers}" -ge 3 ] \
-    || fail "expected it on every open and reconcile path, found ${callers}"
-
-  # And refreshed after the verbs that move a branch.
-  local run
-  # Comments stripped and the PATTERN pinned: "checkout" also appears in the
-  # comment explaining why it is there, so a bare grep passes without the arm.
-  run=$(sed -n '/^case "${rc}:${VERB}" in/,/^esac$/p' "${DIR}/tryout/herdr-panel-run.sh" \
-        | grep -v '^[[:space:]]*#')
-  printf '%s' "${run}" | grep -q '0:checkout' \
-    || fail "checkout moves the branch, so it must refresh too"
-}
-
 @test "nothing pays for a dirty check it does not print" {
   set -eu -o pipefail
   # list_core_worktrees runs two `git diff` calls per worktree. A TYPO3 Core
   # checkout is ~20k tracked files, so on a Mutagen project that is ~3.8s per
-  # worktree cold — 24s over eight, and the whole of the "reloading workspaces…"
-  # pause after a panel command. The reconcile threw the answer away with
-  # `cut -f1`; status read it into a variable and never printed it.
-  local herdr_fn status_fn
-  herdr_fn=$(sed -n '/^cmd_herdr()/,/^}/p' "${DIR}/commands/host/tryout" \
-             | grep -v '^[[:space:]]*#')
+  # worktree cold. status read the answer into a variable and never printed it.
+  local status_fn
   status_fn=$(sed -n '/^ctr_status_body()/,/^}/p' "${DIR}/tryout/commands.sh" \
               | grep -v '^[[:space:]]*#')
-
-  # The reconcile wants names, so it asks for names.
-  printf '%s' "${herdr_fn}" | grep -q 'list_core_worktrees' \
-    && fail "the reconcile must not run a dirty check for names it discards"
-  printf '%s' "${herdr_fn}" | grep -q 'core_worktree_names' \
-    || fail "the reconcile must use the cheap helper"
 
   # status prints name, branch and head — never the dirty flag.
   printf '%s' "${status_fn}" | grep -qE '\blist_core_worktrees\b' \
@@ -4522,134 +2692,10 @@ card_eval() { # $1=root $2=code
   assert_output --partial "clean"
 }
 
-@test "a pane labelled tryout counts as a panel only if it runs one" {
-  set -eu -o pipefail
-  # `pane process-info` answers for ANY live pane, a bare shell included, so it can
-  # only spot a pane whose process is GONE — never one running the wrong thing.
-  # Closing a panel with q or esc drops it back to its shell and leaves the label,
-  # and that read as healthy: seven of eight panels sat like that while every
-  # `ddev tryout herdr` reported success and every test in this file passed.
-  # The terminal title carries the running command, which is what tells them apart.
-  fake_herdr_tabs '{"result":{"tabs":[]}}' '{"result":{"panes":[
-    {"pane_id":"w1:p3","label":"tryout",
-     "terminal_title":"bash /p/.ddev/tryout/herdr-panel.sh"},
-    {"pane_id":"w2:p3","label":"tryout",
-     "terminal_title":"jochen@laptop"},
-    {"pane_id":"w3:p3","label":"tryout"}]}}'
-
-  run_with_fake_herdr 'panel_pane_is_running w1:p3 && echo yes || echo no'
-  assert_success
-  assert_output "yes"
-
-  # A shell wearing the label is NOT a panel — the whole point.
-  run_with_fake_herdr 'panel_pane_is_running w2:p3 && echo yes || echo no'
-  assert_success
-  assert_output "no"
-
-  # No title at all is not a panel either, and must not error.
-  run_with_fake_herdr 'panel_pane_is_running w3:p3 && echo yes || echo no'
-  assert_success
-  assert_output "no"
-
-  # Neither is a pane that is not there.
-  run_with_fake_herdr 'panel_pane_is_running gone:p9 && echo yes || echo no'
-  assert_success
-  assert_output "no"
-}
-
-@test "both panel routes agree on what alive means" {
-  set -eu -o pipefail
-  # ensure_panel_pane decides whether to replace a panel; herdr-panel-open.sh
-  # decides whether one is already open and only needs focusing. With the weak
-  # test, the second focused a bare shell instead of docking a panel.
-  local fn open
-  fn=$(sed -n '/^ensure_panel_pane()/,/^}/p' "${DIR}/tryout/functions.sh" \
-       | grep -v '^[[:space:]]*#')
-  open=$(sed -n '/^pane_is_alive()/,/^}/p' "${DIR}/tryout/herdr-panel-open.sh" \
-         | grep -v '^[[:space:]]*#')
-
-  printf '%s' "${fn}" | grep -q 'panel_pane_is_running' \
-    || fail "ensure_panel_pane must check the pane runs the panel"
-  printf '%s' "${open}" | grep -q 'herdr-panel' \
-    || fail "the toggle must check the same thing"
-
-  # Neither may fall back to "any live process".
-  local f
-  for f in tryout/functions.sh tryout/herdr-panel-open.sh; do
-    run grep -n 'result != null' "${DIR}/${f}"
-    assert_failure
-  done
-}
-
-@test "the panel script is retried until it is actually running" {
-  set -eu -o pipefail
-  # `pane run` types into the pane's shell, and `pane split` answers before that
-  # shell has reached its prompt — so a first attempt can be typed into nothing.
-  # herdr answering ok proves only that it delivered the keystrokes. This is the
-  # same race start_agent_in_pane already retries for, and it is how panes end up
-  # labelled but bare.
-  local fn
-  fn=$(sed -n '/^ensure_panel_pane()/,/^}/p' "${DIR}/tryout/functions.sh" \
-       | grep -v '^[[:space:]]*#')
-
-  printf '%s' "${fn}" | grep -q 'pane run' \
-    || fail "the panel has to be started somehow"
-  # Fired once and forgotten is what left the panes bare.
-  printf '%s' "${fn}" | grep -q 'pane run .* || return 1' \
-    && fail "one attempt is not enough: the keystrokes can be lost"
-  # It must confirm, not assume.
-  printf '%s' "${fn}" | grep -q 'panel_pane_is_running "${new}"' \
-    || fail "the start must be confirmed before it is believed"
-  # And give up rather than spin forever: a panel that never starts must not hang
-  # `ddev tryout herdr` for the worktrees queued behind it. Pin the BOUND, not the
-  # word "attempt", which survives in the increment.
-  printf '%s' "${fn}" | grep -qE '\[ "\$\{attempt\}" -ge [0-9]+ \] && break' \
-    || fail "the retry must be bounded"
-}
-
-@test "the panel pane is docked once, beside the agent" {
-  set -eu -o pipefail
-  # It sits next to the agent, not in the Terminal tab: the panel drives the
-  # worktree the agent is working in, so it belongs where you are looking. Keyed
-  # on the FIRST tab rather than its label, which ensure_first_tab_label sets to
-  # "Claude" or "Shell" and a user may change again.
-  local fn
-  fn=$(sed -n '/^ensure_panel_pane()/,/^}/p' "${DIR}/tryout/functions.sh")
-  printf '%s' "${fn}" | grep -q 'herdr_agent_tab_id' \
-    || fail "the panel must dock beside the agent"
-  printf '%s' "${fn}" | grep -q 'herdr_terminal_tab_id' \
-    && fail "the panel no longer docks into the Terminal tab"
-  # The split target is the agent's pane, never a panel already sitting there —
-  # splitting that would nest one panel inside another.
-  printf '%s' "${fn}" | grep -q '(.label // "") != \$l' \
-    || fail "the split target must exclude the panel itself"
-  # An existing panel is MOVED, not closed and redocked: closing kills a running
-  # panel, and every workspace opened before this has one in the Terminal tab.
-  printf '%s' "${fn}" | grep -q 'pane move' \
-    || fail "a panel in the old place must be moved, not recreated"
-  # Both ways of placing it leave focus alone: a reconcile pass runs over every
-  # workspace, and without this each one would pull focus onto its panel.
-  local placements nofocus code
-  code=$(printf '%s\n' "${fn}" | grep -v '^[[:space:]]*#')
-  placements=$(printf '%s\n' "${code}" | grep -c 'pane \(split\|move\)' || true)
-  nofocus=$(printf '%s\n' "${code}" | grep -c '\-\-no-focus' || true)
-  [ "${placements}" -eq "${nofocus}" ] \
-    || fail "${placements} placement(s) but ${nofocus} --no-focus"
-  # Idempotent: the backfill runs on every bare `ddev tryout herdr`.
-  printf '%s' "${fn}" | grep -q 'PANEL_PANE_LABEL' \
-    || fail "it must look for an existing panel before docking another"
-  # And it carries the session, or a bare herdr inside the panel means the
-  # DEFAULT one — the bug that made the panel open where nobody was looking.
-  printf '%s' "${fn}" | grep -q 'TRYOUT_PANEL_SESSION' \
-    || fail "the panel must be told which session it lives in"
-  printf '%s' "${fn}" | grep -q 'TRYOUT_PANEL_WORKTREE' \
-    || fail "the panel must be told which worktree it drives"
-}
-
 @test "checkout takes --site, so the branch can still be asked for" {
   set -eu -o pipefail
-  # A served worktree's panel knows the site but not the branch, and positionally
-  # the branch comes first — hence a flag.
+  # A caller may know the site but not the branch, and positionally the branch
+  # comes first — hence a flag.
   run bash -c "
     set -- --site benni 13.4
     args=(); site=''
@@ -4731,279 +2777,26 @@ card_eval() { # $1=root $2=code
   printf '%s\n' "${body}" | grep -q 'add-on get' || fail "no next step given"
 }
 
-# --- keeping herdr in step with the worktrees -------------------------------
-# `ddev tryout herdr` used to only ever ADD: it opened a workspace per worktree
-# and skipped the ones already open. Nothing closed a workspace whose worktree
-# had been removed — its pane sat in a directory that no longer existed.
-
-# A herdr stub that answers `workspace list` with the given JSON and logs every
-# other call, so a test can see exactly what was closed.
-fake_herdr() {
-  mkdir -p "${FAKEROOT}/bin"
-  printf '%s' "$1" > "${FAKEROOT}/ws.json"
-  cat > "${FAKEROOT}/bin/herdr" <<FAKE
-#!/usr/bin/env bash
-# Drop the leading "--session <name>" the wrapper adds.
-[ "\$1" = "--session" ] && shift 2
-if [ "\$1" = "workspace" ] && [ "\$2" = "list" ]; then
-  cat "${FAKEROOT}/ws.json"
-  exit 0
-fi
-echo "CALL: \$*" >> "${FAKEROOT}/calls.log"
-FAKE
-  chmod +x "${FAKEROOT}/bin/herdr"
-  : > "${FAKEROOT}/calls.log"
-}
-
-@test "a workspace whose worktree is gone is an orphan; one still on disk is not" {
-  set -eu -o pipefail
-  # v13 exists on disk, v12 does not.
-  mkdir -p "${FAKEROOT}/worktrees/v13"
-  ln -s worktrees/v13 "${FAKEROOT}/typo3-core"
-  fake_herdr '{"result":{"workspaces":[
-    {"workspace_id":"w1","label":"core-v13"},
-    {"workspace_id":"w2","label":"core-v12"}
-  ]}}'
-
-  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    herdr_orphan_workspaces
-  "
-  assert_success
-  assert_output --partial "w2"
-  assert_output --partial "core-v12"
-  refute_output --partial "core-v13"
-}
-
-@test "workspaces that are not ours are never touched, however stale they look" {
-  # The session is per project, but a user may have opened anything in it. Only
-  # the core-<name> label marks a workspace as one this command manages.
-  set -eu -o pipefail
-  fake_herdr '{"result":{"workspaces":[
-    {"workspace_id":"w1","label":"my-notes"},
-    {"workspace_id":"w2","label":"worktrees/main"},
-    {"workspace_id":"w3","label":"core-gone"}
-  ]}}'
-
-  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    herdr_orphan_workspaces
-  "
-  assert_success
-  assert_output --partial "core-gone"
-  refute_output --partial "my-notes"
-  # Labelled like a directory, but not our scheme — leave it alone.
-  refute_output --partial "worktrees/main"
-}
-
-@test "close_orphan_workspaces closes each orphan once, by id, and says so" {
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main"
-  fake_herdr '{"result":{"workspaces":[
-    {"workspace_id":"w1","label":"core-main"},
-    {"workspace_id":"w2","label":"core-v12"},
-    {"workspace_id":"w3","label":"core-bugfix"}
-  ]}}'
-
-  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    close_orphan_workspaces
-  "
-  assert_success
-  assert_output --partial "core-v12"
-  assert_output --partial "core-bugfix"
-
-  run cat "${FAKEROOT}/calls.log"
-  assert_line "CALL: workspace close w2"
-  assert_line "CALL: workspace close w3"
-  # main is still on disk, so it is left open.
-  refute_output --partial "close w1"
-}
-
-@test "nothing is closed when every worktree is still there" {
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main"
-  fake_herdr '{"result":{"workspaces":[{"workspace_id":"w1","label":"core-main"}]}}'
-
-  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    close_orphan_workspaces
-  "
-  assert_success
-  run cat "${FAKEROOT}/calls.log"
-  assert_output ""
-}
-
-@test "a single-clone project's one workspace is never an orphan" {
-  # Before any worktree exists, typo3-core/ is a plain clone and the workspace is
-  # labelled after its branch — herdr_checkout_dir resolves that to typo3-core/.
-  set -eu -o pipefail
-  git init -q "${FAKEROOT}/typo3-core"
-  git -C "${FAKEROOT}/typo3-core" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-  git -C "${FAKEROOT}/typo3-core" branch -M main
-  fake_herdr '{"result":{"workspaces":[{"workspace_id":"w1","label":"core-main"}]}}'
-
-  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    herdr_orphan_workspaces
-  "
-  assert_success
-  assert_output ""
-}
-
-@test "herdr syncs on a bare run, and leaves other workspaces alone when named" {
-  set -eu -o pipefail
-  local body
-  body=$(sed -n '/^cmd_herdr() {/,/^}$/p' "${DIR}/commands/host/tryout")
-  [ -n "${body}" ] || fail "no cmd_herdr()"
-  printf '%s\n' "${body}" | grep -q 'close_orphan_workspaces' \
-    || fail "cmd_herdr never closes orphaned workspaces"
-  # Guarded on no worktree having been named: a targeted command must not close
-  # workspaces that have nothing to do with it.
-  printf '%s\n' "${body}" | grep -q '\[ -z "\${only}" \] && close_orphan_workspaces' \
-    || fail "the cleanup is not guarded by an empty \${only}"
-  # …and it runs after the open loop, so a rename settles in one command.
-  local open_at close_at
-  open_at=$(printf '%s\n' "${body}" | grep -n 'open_worktree_in_herdr' | head -1 | cut -d: -f1)
-  close_at=$(printf '%s\n' "${body}" | grep -n 'close_orphan_workspaces' | head -1 | cut -d: -f1)
-  [ "${open_at}" -lt "${close_at}" ] || fail "orphans are closed before the open loop"
-}
-
-# --- the session drifting from the project ----------------------------------
-# Closing orphans is only half of "keep herdr in step". A workspace can also
-# carry the wrong label for a worktree that is genuinely ours (anything opened
-# before the core-<name> scheme), or point somewhere outside the project
-# entirely. The first is adopted — renamed, so its agent and scrollback live —
-# and only the second is closed.
-
-# As fake_herdr, but also answers `pane list`, since a workspace's directory is
-# read from its pane cwd: `workspace create` records no worktree field at all.
-fake_herdr_panes() {
-  mkdir -p "${FAKEROOT}/bin"
-  printf '%s' "$1" > "${FAKEROOT}/ws.json"
-  printf '%s' "$2" > "${FAKEROOT}/panes.json"
-  cat > "${FAKEROOT}/bin/herdr" <<FAKE
-#!/usr/bin/env bash
-[ "\$1" = "--session" ] && shift 2
-if [ "\$1" = "workspace" ] && [ "\$2" = "list" ]; then cat "${FAKEROOT}/ws.json"; exit 0; fi
-if [ "\$1" = "pane" ] && [ "\$2" = "list" ]; then cat "${FAKEROOT}/panes.json"; exit 0; fi
-echo "CALL: \$*" >> "${FAKEROOT}/calls.log"
-FAKE
-  chmod +x "${FAKEROOT}/bin/herdr"
-  : > "${FAKEROOT}/calls.log"
-}
-
-@test "a workspace on our worktree but mislabelled is adopted, not closed" {
-  # This is the wC/'worktrees/main' shape: same directory, older label. Closing
-  # it would kill a live agent and open a duplicate beside it.
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main"
-  fake_herdr_panes \
-    '{"result":{"workspaces":[{"workspace_id":"wC","label":"worktrees/main"}]}}' \
-    "{\"result\":{\"panes\":[{\"pane_id\":\"wC:p1\",\"workspace_id\":\"wC\",\"cwd\":\"${FAKEROOT}/worktrees/main\"}]}}"
-
-  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    sync_herdr_workspaces
-  "
-  assert_success
-  assert_output --partial "core-main"
-
-  run cat "${FAKEROOT}/calls.log"
-  assert_line "CALL: workspace rename wC core-main"
-  refute_output --partial "workspace close"
-}
-
-@test "a workspace pointing outside the project is closed" {
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/elsewhere"
-  fake_herdr_panes \
-    '{"result":{"workspaces":[
-       {"workspace_id":"wA","label":"core-main"},
-       {"workspace_id":"wB","label":"scratch"}
-     ]}}' \
-    "{\"result\":{\"panes\":[
-       {\"pane_id\":\"wA:p1\",\"workspace_id\":\"wA\",\"cwd\":\"${FAKEROOT}/worktrees/main\"},
-       {\"pane_id\":\"wB:p1\",\"workspace_id\":\"wB\",\"cwd\":\"/tmp\"}
-     ]}}"
-
-  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    sync_herdr_workspaces
-  "
-  assert_success
-  run cat "${FAKEROOT}/calls.log"
-  assert_line "CALL: workspace close wB"
-  # The one that is genuinely ours and correctly labelled is left alone.
-  refute_output --partial "close wA"
-  refute_output --partial "rename wA"
-}
-
-@test "a workspace inside the project but not on a worktree is left alone" {
-  # The project root itself, or packages/ — someone opened it deliberately. It is
-  # not a Core worktree, so this command has no business closing it.
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main" "${FAKEROOT}/packages"
-  fake_herdr_panes \
-    '{"result":{"workspaces":[{"workspace_id":"wP","label":"packages"}]}}' \
-    "{\"result\":{\"panes\":[{\"pane_id\":\"wP:p1\",\"workspace_id\":\"wP\",\"cwd\":\"${FAKEROOT}/packages\"}]}}"
-
-  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    sync_herdr_workspaces
-  "
-  assert_success
-  run cat "${FAKEROOT}/calls.log"
-  assert_output ""
-}
-
-@test "an adopted workspace is not opened a second time" {
-  # The whole point of adopting: herdr_worktree_is_open keys on pane cwd, so once
-  # the label is fixed the open loop must still see it as already open.
-  set -eu -o pipefail
-  mkdir -p "${FAKEROOT}/worktrees/main"
-  fake_herdr_panes \
-    '{"result":{"workspaces":[{"workspace_id":"wC","label":"worktrees/main"}]}}' \
-    "{\"result\":{\"panes\":[{\"pane_id\":\"wC:p1\",\"workspace_id\":\"wC\",\"cwd\":\"${FAKEROOT}/worktrees/main\"}]}}"
-
-  run env DDEV_SITENAME=myproj PATH="${FAKEROOT}/bin:${PATH}" bash -c "
-    export DDEV_APPROOT='${FAKEROOT}'
-    source '${DIR}/tryout/functions.sh' >/dev/null 2>&1
-    herdr_worktree_is_open '${FAKEROOT}/worktrees/main' && echo OPEN
-  "
-  assert_success
-  assert_output --partial "OPEN"
-}
-
-@test "the sync runs before the open loop, so adoption prevents a duplicate" {
-  set -eu -o pipefail
-  local body sync_at open_at
-  body=$(sed -n '/^cmd_herdr() {/,/^}$/p' "${DIR}/commands/host/tryout")
-  printf '%s\n' "${body}" | grep -q 'sync_herdr_workspaces' \
-    || fail "cmd_herdr never reconciles the session"
-  sync_at=$(printf '%s\n' "${body}" | grep -n 'sync_herdr_workspaces' | head -1 | cut -d: -f1)
-  open_at=$(printf '%s\n' "${body}" | grep -n 'open_worktree_in_herdr' | head -1 | cut -d: -f1)
-  [ "${sync_at}" -lt "${open_at}" ] \
-    || fail "adoption must happen before the open loop, or a duplicate is opened"
-}
-
 # --- creating a worktree ----------------------------------------------------
 # Every route must end at <project>/worktrees/<name>, and must ask which branch
 # the checkout is based on rather than silently taking whatever Core is on.
 
+@test "no herdr integration is left in the shipped payload" {
+  set -eu -o pipefail
+  # Removed whole; its replacement comes later. A half-removed helper or flag would
+  # be a command that fails. install.yaml is exempt: its cleanup action names the
+  # files earlier versions shipped, so upgraded projects lose them.
+  run grep -rliE 'herdr|HERDR_' "${DIR}/commands" "${DIR}/tryout" "${DIR}/web-build"
+  assert_failure
+  run grep -E '^[[:space:]]*(cp|ln) .*herdr' "${DIR}/install.yaml"
+  assert_failure
+}
+
 @test "the branch is asked for even when the name came in as an argument" {
   set -eu -o pipefail
-  # Naming a worktree says nothing about which branch it sits on. The popup passes
-  # a name and no branch, so a prompt nested inside `if [ -z "$name" ]` would leave
-  # it silently based on whatever Core happens to be checked out.
+  # Naming a worktree says nothing about which branch it sits on. `worktree add
+  # <name>` passes a name and no branch, so a prompt nested inside
+  # `if [ -z "$name" ]` would leave it silently based on whatever Core is out.
   run helper_eval '
     have_tty() { return 0; }
     ask_branch() { printf "13.4"; }
@@ -5053,39 +2846,20 @@ FAKE
   refute_output --partial "Usage:"
 }
 
-@test "both creation routes ask for the branch outside the name check" {
+@test "worktree add asks for the branch outside the name check" {
   set -eu -o pipefail
   # The regression this guards: `ask_branch` sitting inside `if [ -z "${name}" ]`,
-  # so `herdr new <name>` and `worktree add <name>` never ask.
+  # so `worktree add <name>` never asked and silently took whatever Core was out.
   local f="${DIR}/commands/host/tryout"
   run grep -c 'ask_new_worktree_branch' "${f}"
   assert_success
-  assert_output "2"
-  # And no creation route may still call ask_branch from inside the name guard —
-  # that is the exact shape of the bug: the branch question skipped whenever a
-  # name was already there. Take the whole guard block, not a fixed -A window.
+  assert_output "1"
   local guard
-  guard=$(awk '/^cmd_herdr_new\(\)/,/^}/' "${f}" | awk '/if \[ -z /,/^    fi$/')
-  [ -n "${guard}" ] || fail "could not find the name guard in cmd_herdr_new"
-  if printf '%s\n' "${guard}" | grep -q 'ask_branch'; then
-    fail "cmd_herdr_new asks for the branch only when the name is missing"
+  guard=$(awk '/^        add\)/,/^            ;;/' "${f}" | awk '/if \[ -z /,/^            fi$/')
+  [ -n "${guard}" ] || fail "could not find the name guard in worktree add"
+  if printf '%s\n' "${guard}" | grep -q 'ask_new_worktree_branch'; then
+    fail "worktree add asks for the branch only when the name is missing"
   fi
-}
-
-@test "worktree_name_from_ref strips a branch down to a directory name" {
-  set -eu -o pipefail
-  # herdr names its own checkouts on a worktree/<slug> branch.
-  run helper worktree_name_from_ref "worktree/curious-fox"
-  assert_output "curious-fox"
-  run helper worktree_name_from_ref "refs/heads/bugfix-9421"
-  assert_output "bugfix-9421"
-  # An already-prefixed name must not become worktrees/worktrees/x.
-  run helper worktree_name_from_ref "typo3-core-v13"
-  assert_output "v13"
-  # Anything a directory cannot hold becomes a dash — including the slash of a
-  # branch prefix that is not one of herdr's own, which stays part of the name.
-  run helper worktree_name_from_ref "feature/TYPO3 v14!"
-  assert_output "feature-TYPO3-v14-"
 }
 
 @test "patch asks which site first, and lists that site's branch" {
@@ -5328,98 +3102,6 @@ FAKE
   printf '%s' "${copies}" | grep -q '\*' \
     && fail "a wildcard copy defeats the point: ${copies}"
   :
-}
-
-@test "the panel start is confirmed after a wait, never straight after pane run" {
-  set -eu -o pipefail
-  # `pane run` answers in ~17ms; the pane's terminal title — all
-  # panel_pane_is_running has to go on — takes ~700ms to appear. Checking with no
-  # wait between them therefore reported "not running" every single time, however
-  # well the panel had started, and the retry then typed the command AT A LIVE
-  # PANEL. Those keystrokes end in a newline, which the panel reads as Enter, so it
-  # ran the selected row: `status` on a fresh panel. Measured on a real herdr
-  # session; this is the whole bug.
-  # Scoped to the START loop: panel_pane_is_running is also used far above, on the
-  # existing-panel branch, where no pane run precedes it.
-  local fn
-  fn=$(sed -n '/^ensure_panel_pane()/,/^}/p' "${DIR}/tryout/functions.sh" \
-       | grep -v '^[[:space:]]*#' | sed -n '/pane run/,$p')
-
-  # A wait has to sit between starting it and judging it.
-  local run_line check_line sleep_line
-  run_line=$(printf '%s' "${fn}" | grep -n 'pane run' | head -1 | cut -d: -f1)
-  check_line=$(printf '%s' "${fn}" | grep -n 'panel_pane_is_running' | head -1 | cut -d: -f1)
-  sleep_line=$(printf '%s' "${fn}" | grep -n 'sleep' | head -1 | cut -d: -f1)
-  [ -n "${run_line}" ] && [ -n "${check_line}" ] || fail "the panel must be started and confirmed"
-  [ -n "${sleep_line}" ] || fail "there must be a wait before the verdict"
-  [ "${sleep_line}" -gt "${run_line}" ] \
-    || fail "the wait belongs after pane run, not before it"
-  [ "${sleep_line}" -lt "${check_line}" ] \
-    || fail "confirming with no wait is the bug: it always fails and retries into a live panel"
-
-  # And it must still give up, or a panel that never starts hangs every worktree
-  # queued behind it.
-  printf '%s' "${fn}" | grep -qE '\[ "\$\{attempt\}" -ge [0-9]+ \] && break' \
-    || fail "the retry must stay bounded"
-}
-
-@test "the panel throws away input that arrived before it could draw" {
-  set -eu -o pipefail
-  # Nothing a human typed can be buffered before the first menu is on screen, so
-  # anything sitting there was typed by something else — `pane run` starts a
-  # command by typing it, newline and all, and that newline reads as Enter. The
-  # drain is what stops a byte the user never pressed from running a row.
-  local script
-  script="${DIR}/tryout/herdr-panel.sh"
-
-  grep -q 'drain_stdin' "${script}" || fail "the panel must drain stdin at startup"
-
-  # It has to happen BEFORE the loop, or it drains nothing worth draining.
-  local drain_line loop_line
-  drain_line=$(grep -n '^drain_stdin$' "${script}" | head -1 | cut -d: -f1)
-  loop_line=$(grep -n '^while :; do' "${script}" | head -1 | cut -d: -f1)
-  [ -n "${drain_line}" ] || fail "the drain must actually be called, not just defined"
-  [ -n "${loop_line}" ] || fail "the main loop is gone?"
-  [ "${drain_line}" -lt "${loop_line}" ] \
-    || fail "draining after the loop starts is too late"
-
-  # bash 3.2 rejects a fractional -t outright, so a drain written that way would
-  # never run at all — the very trap the existing timeout test guards.
-  local fn
-  fn=$(sed -n '/^drain_stdin()/,/^}/p' "${script}")
-  printf '%s' "${fn}" | grep -qE 'read .*-t +[0-9]+\.' \
-    && fail "a fractional -t makes the drain a runtime error on macOS"
-  printf '%s' "${fn}" | grep -qE 'read .*-t +[0-9]+' \
-    || fail "the drain needs a timeout, or it blocks the panel forever"
-}
-
-@test "every panel colour names its own foreground" {
-  set -eu -o pipefail
-  # A bare attribute — ESC[1m bold, ESC[2m dim — only MODIFIES the colour the pane
-  # already carries, and an unselected row printed with no escape at all keeps
-  # whatever foreground was there. SEL_ON pins the selected row's background to
-  # black, so on a pane whose default foreground is dark the entire menu drew
-  # black on black: the rows were present, the panel just looked empty apart from
-  # the one highlighted row. Nothing here may depend on a colour it did not set.
-  local script="${DIR}/tryout/herdr-panel.sh"
-  # Colour codes contain semicolons, so the value has to be pulled out whole:
-  # take everything between the quotes after NAME=. Several share a line.
-  local bad="" name val
-  for name in BOLD DIM CYAN RED SEL_ON ROW; do
-    val=$(sed -n "s/.*${name}='\\([^']*\\)'.*/\\1/p" "${script}" | head -1)
-    [ -n "${val}" ] || fail "${name} is missing from the palette"
-    # An explicit foreground: a 30-37 / 90-97 SGR code, or a 256-colour 38;5;N.
-    printf '%s' "${val}" | grep -qE '(^|\[|;)(3[0-7]|9[0-7])(m|;)|38;5;[0-9]+' \
-      || bad="${bad} ${name}"
-  done
-  [ -z "${bad}" ] \
-    || fail "these set an attribute but no foreground, so they inherit:${bad}"
-
-  # And the unselected row must actually be painted, not printed bare.
-  local fn
-  fn=$(sed -n '/^render()/,/^}/p' "${script}")
-  printf '%s' "${fn}" | grep -qE 'printf "   \$\{ROW\}' \
-    || fail "an unselected row printed bare inherits the pane's foreground"
 }
 
 @test "the restart runs on the host, and only when the hostname set moved" {
@@ -5710,57 +3392,6 @@ FAKE
   calls=$(grep -c 'typo3 setup --no-interaction' "${f}" || true)
   [ "${calls}" -eq 0 ] \
     || fail "post-start duplicates the setup call instead of delegating: ${calls}"
-}
-
-@test "core_worktree_names includes the root checkout, like the row listers do" {
-  set -eu -o pipefail
-  # The root checkout does not live under worktrees/, so a bare glob cannot see it.
-  # list_core_worktrees and list_core_worktrees_fast were fixed for this
-  # (emit_root_worktree_row); this third lister was missed, and `ddev tryout herdr`
-  # iterates THIS one — so the primary's workspace was silently skipped while
-  # `worktree list` showed it.
-  local root="${FAKEROOT}/wtnames"
-  mkdir -p "${root}/worktrees/v13" "${root}/TYPO3-Instances/primary"
-
-  names() { # <mode>
-    ( export DDEV_APPROOT="${root}"
-      helper_eval "plain_core_name() { echo main; }
-                   active_worktree_name() { echo ${2:-main}; }
-                   core_worktree_names ${1:-all}" ) | tr '\n' ' '
-  }
-
-  # Both checkouts, the root named by its branch.
-  run names all
-  assert_output "main v13 "
-
-  # It must not be double-listed when a worktrees/<name> of that name also exists.
-  mkdir -p "${root}/worktrees/main"
-  run names all
-  [ "$(printf '%s' "${output}" | grep -o 'main' | wc -l | tr -d ' ')" -eq 1 ] \
-    || fail "the root must be listed once, not once per source: ${output}"
-}
-
-@test "the panel reads the served Core from the overlay, not the root's branch" {
-  set -eu -o pipefail
-  # `worktree use` repoints the primary instance's overlay and leaves the root
-  # checkout where it was, so the root's branch keeps answering "the root". The
-  # panel used to ask git for that branch, which made it call the wrong checkout
-  # primary — offering `composer`, which rewrites the overlay against a Core the
-  # root no longer serves.
-  local script="${DIR}/tryout/herdr-panel.sh"
-  local fn
-  fn=$(sed -n '/^worktree_state()/,/^}/p' "${script}" | grep -v '^[[:space:]]*#')
-
-  printf '%s' "${fn}" | grep -q 'TYPO3-Instances/primary/composer.tryout.json' \
-    || fail "the panel must read which Core is served from the primary overlay"
-
-  # The branch is still the fallback for a root-pointing overlay, and only that.
-  local branch_line overlay_line
-  overlay_line=$(printf '%s' "${fn}" | grep -n 'composer.tryout.json' | head -1 | cut -d: -f1)
-  branch_line=$(printf '%s' "${fn}" | grep -n 'branch --show-current' | head -1 | cut -d: -f1)
-  [ -n "${branch_line}" ] || fail "the root's branch is still the fallback"
-  [ "${overlay_line}" -lt "${branch_line}" ] \
-    || fail "asking git first is the bug: the overlay decides"
 }
 
 @test "a site's cache is cleared per site, never always the primary's" {

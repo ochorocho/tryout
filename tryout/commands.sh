@@ -3,8 +3,8 @@
 
 # The bodies of the `ddev tryout` verbs, written for the WEB CONTAINER.
 #
-# commands/host/tryout is the entry point: it owns the terminal (prompts, gum,
-# herdr), validates what it can see on the host, then hands the verb to
+# commands/host/tryout is the entry point: it owns the terminal (prompts, gum),
+# validates what it can see on the host, then hands the verb to
 # tryout-container.sh, which sources this file. In here git, composer, php and
 # the database clients are the container's own, and every path is under
 # /var/www/html — PROJECT_ROOT, since DDEV_APPROOT is set in the container too.
@@ -72,13 +72,6 @@ ctr_status_body() {
         if vendor_core_mismatch; then
             echo -e "${TEXT}             ${WARN} vendor/ was built from a different Core${NC}"
             echo -e "${TEXT}             ${DIM}→ ddev tryout worktree use ${active}${NC}"
-        fi
-        # A checkout outside the project is invisible to every other command, so say so.
-        local stray_count
-        stray_count=$(list_foreign_core_worktrees | grep -c . || true)
-        if [ "${stray_count}" -gt 0 ]; then
-            echo -e "${TEXT}             ${WARN} ${stray_count} checkout(s) outside the project${NC}"
-            echo -e "${TEXT}             ${DIM}→ ddev tryout worktree adopt${NC}"
         fi
     fi
 
@@ -534,8 +527,7 @@ ctr_exec() {
 # ─────────────────────────────────────────────────────────────────────
 # worktree — Manage side-by-side Core checkouts
 # ─────────────────────────────────────────────────────────────────────
-# `adopt` and `help` stay on the host: adopt moves checkouts from a host-only
-# directory, and help is text.
+# `help` stays on the host: it is text.
 ctr_worktree() {
     local sub="${1:-list}"
     shift || true

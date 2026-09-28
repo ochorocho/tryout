@@ -5,7 +5,7 @@ ddev_version_constraint: '>= v1.24.10'
 pre_install_actions:
   - |
     #ddev-description:Check host requirements
-    # The tryout command runs on the HOST — prompts, herdr, tab completion — and
+    # The tryout command runs on the HOST — prompts, tab completion — and
     # reads the Core checkout there (status, completion), so a host
     # git is still a hard requirement (on Windows this is Git Bash, which DDEV
     # finds itself). The work itself runs in the web container.
@@ -138,21 +138,25 @@ post_install_actions:
     if [ -d ../.git ]; then
       mkdir -p ../.git/info
       touch ../.git/info/exclude
-      for entry in /.ddev/ /worktrees/ /TYPO3-Instances/ /packages/ /herdr-plugin.toml; do
+      for entry in /.ddev/ /worktrees/ /TYPO3-Instances/ /packages/; do
         grep -qxF "$entry" ../.git/info/exclude || printf '%s\n' "$entry" >> ../.git/info/exclude
       done
     fi
 
   - |
-    #ddev-description:Install the herdr plugin manifest
-    # herdr reads herdr-plugin.toml from the directory it is pointed at, and the
-    # paths inside it are relative to that directory — so the manifest belongs at
-    # the project root, not under .ddev/. Registering the plugin stays the user's
-    # call: `herdr plugin link <project>` when they want the panel.
-    if [ ! -f ../herdr-plugin.toml ] || grep -q '#ddev-generated' ../herdr-plugin.toml; then
-      cp tryout/herdr-plugin.toml ../herdr-plugin.toml
-    else
-      echo "Skipping herdr-plugin.toml — it has been modified."
+    #ddev-description:Remove files earlier versions shipped
+    # `ddev add-on get` copies the tryout/ directory but never prunes it, so files
+    # dropped from the payload linger in projects installed before — here, the
+    # removed herdr integration. Only our own copies (marker present) go.
+    for f in ../herdr-plugin.toml tryout/herdr-panel.sh tryout/herdr-panel-open.sh \
+             tryout/herdr-panel-run.sh tryout/herdr-plugin.toml; do
+      if [ -f "$f" ] && grep -q '#ddev-generated' "$f"; then
+        rm -f "$f"
+      fi
+    done
+    if [ -f ../.git/info/exclude ]; then
+      grep -vxF /herdr-plugin.toml ../.git/info/exclude > ../.git/info/exclude.tmp 2>/dev/null \
+        && mv ../.git/info/exclude.tmp ../.git/info/exclude
     fi
 
   - |
@@ -171,13 +175,6 @@ post_install_actions:
     printf '        \033[36mddev tryout cs\033[0m      to prepare for Gerrit contribution\n\n'
 
 removal_actions:
-  - |
-    #ddev-description:Remove the herdr plugin manifest
-    # Only ours: a hand-edited manifest (marker gone) is the user's file now.
-    if [ -f ../herdr-plugin.toml ] && grep -q '#ddev-generated' ../herdr-plugin.toml; then
-      rm -f ../herdr-plugin.toml
-    fi
-
   - |
     #ddev-description:Remove the Composer overlay
     if [ -f ../TYPO3-Instances/primary/composer.tryout.json ] && grep -q '#ddev-generated' ../TYPO3-Instances/primary/composer.tryout.json; then
@@ -208,7 +205,7 @@ removal_actions:
     # Only our own lines, and only from info/exclude — the repo's tracked
     # .gitignore is Core's and was never touched.
     if [ -f ../.git/info/exclude ]; then
-      for entry in /.ddev/ /worktrees/ /TYPO3-Instances/ /packages/ /herdr-plugin.toml; do
+      for entry in /.ddev/ /worktrees/ /TYPO3-Instances/ /packages/; do
         grep -vxF "$entry" ../.git/info/exclude > ../.git/info/exclude.tmp 2>/dev/null \
           && mv ../.git/info/exclude.tmp ../.git/info/exclude
       done
