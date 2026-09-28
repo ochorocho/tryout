@@ -6,7 +6,9 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
 use tui_term::widget::PseudoTerminal;
 
 use crate::app::{App, Focus, Listing};
@@ -68,12 +70,119 @@ pub fn areas(area: Rect) -> Areas {
     }
 }
 
+/// The popup a tryout command runs in: most of the screen, centred, so a gum
+/// prompt or a long report has room.
+pub fn popup_rect(area: Rect) -> Rect {
+    let w = (area.width * 4 / 5).max(40).min(area.width);
+    let h = (area.height * 7 / 10).max(10).min(area.height);
+    Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    )
+}
+
+/// Where the command's terminal goes inside the popup's border.
+pub fn popup_inner(area: Rect) -> Rect {
+    Block::bordered().inner(popup_rect(area))
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let a = areas(f.area());
     draw_header(f, app, a.header);
     draw_sidebar(f, app, a.sidebar);
     draw_pane(f, app, a.pane);
     draw_footer(f, app, a.footer);
+    if app.menu.is_some() {
+        draw_menu(f, app, a.pane);
+    }
+    if app.popup.is_some() {
+        draw_popup(f, app, f.area());
+    }
+}
+
+fn draw_menu(f: &mut Frame, app: &App, over: Rect) {
+    let Some(menu) = &app.menu else { return };
+    let label_w = menu
+        .items
+        .iter()
+        .map(|a| a.label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let hint_w = menu
+        .items
+        .iter()
+        .map(|a| a.hint.chars().count())
+        .max()
+        .unwrap_or(0);
+    let w = ((label_w + hint_w + 7) as u16).min(over.width);
+    let h = (menu.items.len() as u16 + 2).min(over.height);
+    let area = Rect::new(over.x + 2, over.y + 1, w, h).intersection(over);
+    let items: Vec<ListItem> = menu
+        .items
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let selected = i == menu.selected;
+            let (label, hint) = if selected {
+                (theme::selected().bold(), theme::selected())
+            } else {
+                (theme::text().bold(), theme::dim())
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!(" {:<label_w$}  ", a.label), label),
+                Span::styled(format!("{:<hint_w$} ", a.hint), hint),
+            ]))
+        })
+        .collect();
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(theme::border(true))
+        .title(Span::styled(
+            format!(" {} ", menu.worktree),
+            theme::text().bold(),
+        ));
+    f.render_widget(Clear, area);
+    let mut state = ListState::default().with_selected(Some(menu.selected));
+    f.render_stateful_widget(List::new(items).block(block), area, &mut state);
+}
+
+fn draw_popup(f: &mut Frame, app: &App, screen: Rect) {
+    let Some(popup) = &app.popup else { return };
+    let area = popup_rect(screen);
+    let title = Span::styled(
+        format!(" {} ", popup.action.command_line()),
+        theme::text().bold(),
+    );
+    let mut block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(theme::border(true))
+        .title(title);
+    let alive = popup.pane.is_alive();
+    block = match popup.pane.exit_code() {
+        Some(0) => block.title_bottom(Span::styled(
+            " done — Enter closes ",
+            Style::new().fg(theme::PRIMARY),
+        )),
+        Some(code) => block
+            .border_style(Style::new().fg(theme::ERROR))
+            .title_bottom(Span::styled(
+                format!(" failed (exit {code}) — Enter closes "),
+                Style::new().fg(theme::ERROR).bold(),
+            )),
+        None => block,
+    };
+    f.render_widget(Clear, area);
+    popup.pane.with_screen(|screen| {
+        let mut term = PseudoTerminal::new(screen).block(block);
+        if !alive {
+            let mut cursor = tui_term::widget::Cursor::default();
+            cursor.hide();
+            term = term.cursor(cursor);
+        }
+        f.render_widget(term, area);
+    });
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -164,7 +273,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             };
             let running = app.panes.get(&w.name).is_some_and(|p| p.is_alive());
             let mut badges = String::new();
-            if w.dirty {
+            if w.dirty() {
                 badges.push_str(" ±");
             }
             if running {
@@ -184,12 +293,19 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" ".repeat(pad), base),
                 Span::styled(badges, badge_style),
             ]);
-            let branch = if w.branch == "(detached)" {
-                "detached"
+            // The branch it is on, or for a detached checkout the one it came
+            // from; "+N" is the patches on top.
+            let at = w
+                .branch
+                .as_deref()
+                .or(w.base.as_deref())
+                .unwrap_or("detached");
+            let patches = if w.patches > 0 {
+                format!(" +{}", w.patches)
             } else {
-                &w.branch
+                String::new()
             };
-            let detail = truncate(&format!("   {branch} · {}", short(&w.head)), width);
+            let detail = truncate(&format!("   {at}{patches} · {}", short(&w.head)), width);
             let second = Line::styled(format!("{detail:<width$}"), sub);
             ListItem::new(vec![first, second])
         })
@@ -248,40 +364,57 @@ fn draw_pane(f: &mut Frame, app: &App, area: Rect) {
         None => {
             let inner = block.inner(area);
             f.render_widget(block, area);
-            f.render_widget(placeholder(app, w), inner);
+            f.render_widget(placeholder(w, inner.width), inner);
         }
     }
 }
 
-fn placeholder<'a>(app: &App, w: &'a crate::worktrees::Worktree) -> Paragraph<'a> {
-    let dir = app.checkout_dir(&w.name);
-    let dir = dir
-        .strip_prefix(&app.root)
-        .ok()
-        .filter(|d| !d.as_os_str().is_empty());
+fn placeholder<'a>(w: &'a crate::worktrees::Worktree, width: u16) -> Paragraph<'a> {
+    // Label column plus the horizontal padding.
+    let room = (width as usize).saturating_sub(9 + 4);
     let row = |label: &str, value: String| {
         Line::from(vec![
             Span::styled(format!("{label:<9}"), theme::dim()),
             Span::styled(value, theme::text()),
         ])
     };
+    let changes = match (w.modified, w.untracked) {
+        (0, 0) => "clean".to_string(),
+        (m, 0) => format!("{m} modified"),
+        (0, u) => format!("{u} untracked"),
+        (m, u) => format!("{m} modified, {u} untracked"),
+    };
     let mut lines = vec![
         Line::default(),
-        row("branch", w.branch.clone()),
-        row("head", w.head.clone()),
+        row("where", w.position()),
         row(
-            "state",
-            if w.dirty {
-                "uncommitted changes".into()
-            } else {
-                "clean".into()
-            },
-        ),
-        row(
-            "dir",
-            dir.map_or("project root".into(), |d| d.display().to_string()),
+            "head",
+            truncate(
+                &format!("{} {}", short(&w.head), w.subject.as_deref().unwrap_or("")),
+                room,
+            ),
         ),
     ];
+    if w.patches > 0 {
+        let noun = if w.patches == 1 { "patch" } else { "patches" };
+        lines.push(row(
+            "patches",
+            format!(
+                "{} {noun} on top of {}",
+                w.patches,
+                w.base.as_deref().unwrap_or("its base")
+            ),
+        ));
+    }
+    lines.push(row("changes", changes));
+    lines.push(row(
+        "dir",
+        if w.dir == "." {
+            "project root".into()
+        } else {
+            w.dir.clone()
+        },
+    ));
     match (&w.url, &w.php) {
         (Some(url), php) => {
             lines.push(row("site", url.clone()));
@@ -305,14 +438,19 @@ fn placeholder<'a>(app: &App, w: &'a crate::worktrees::Worktree) -> Paragraph<'a
 }
 
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
-    let hints: &[(&str, &str)] = match app.focus {
-        Focus::List => &[
+    let running = app.popup.as_ref().map(|p| p.pane.is_alive());
+    let hints: &[(&str, &str)] = match (running, app.menu.is_some(), app.focus) {
+        (Some(true), ..) => &[("", "the command has the keyboard until it ends")],
+        (Some(false), ..) => &[("⏎", "close")],
+        (None, true, _) => &[("↑↓", "select"), ("⏎", "run"), ("esc", "cancel")],
+        (None, false, Focus::List) => &[
             ("↑↓", "select"),
             ("⏎", "shell"),
+            ("a", "actions"),
             ("r", "reload"),
             ("q", "quit"),
         ],
-        Focus::Pane => &[
+        (None, false, Focus::Pane) => &[
             ("^G", "back to the list"),
             ("", "every other key goes to the shell"),
         ],
@@ -377,6 +515,17 @@ mod tests {
     #[test]
     fn layout_at_200x50() {
         insta::assert_snapshot!(render(&loaded(), 200, 50).backend());
+    }
+
+    #[test]
+    fn the_action_menu_over_a_served_worktree() {
+        let mut a = loaded();
+        a.selected = 1;
+        a.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('a'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        insta::assert_snapshot!(render(&a, 100, 26).backend());
     }
 
     #[test]

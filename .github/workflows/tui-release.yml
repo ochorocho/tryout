@@ -1,0 +1,88 @@
+name: tui-release
+# Builds the terminal UI for every platform `ddev tryout ui` downloads for, and
+# publishes them as a GitHub release on a tag `tui-v<version>`.
+#
+# The asset names are a contract with tui_asset_name() in tryout/functions.sh,
+# and the tag with TRYOUT_TUI_VERSION there: bump both, then tag. Every asset
+# gets a .sha256 beside it, which fetch_tui verifies before installing.
+on:
+  push:
+    tags: [ "tui-v*" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - name: Build both architectures and join them into one universal file
+        working-directory: tui
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p ../dist
+          lipo -create -output ../dist/tryout-tui-macos-universal \
+            target/aarch64-apple-darwin/release/tryout-tui \
+            target/x86_64-apple-darwin/release/tryout-tui
+          file ../dist/tryout-tui-macos-universal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/
+
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            asset: tryout-tui-linux-x86_64
+          - target: aarch64-unknown-linux-musl
+            asset: tryout-tui-linux-aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@v2
+      - run: cargo install --locked cargo-zigbuild
+      - name: Build a static binary
+        working-directory: tui
+        run: |
+          cargo zigbuild --release --target ${{ matrix.target }}
+          mkdir -p ../dist
+          cp target/${{ matrix.target }}/release/tryout-tui ../dist/${{ matrix.asset }}
+          file ../dist/${{ matrix.asset }} | tee /dev/stderr | grep -q 'statically linked'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/
+
+  release:
+    needs: [ macos, linux ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: for f in tryout-tui-*; do sha256sum "$f" > "$f.sha256"; done
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/tui-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "tryout-tui ${GITHUB_REF_NAME#tui-v}" \
+            --notes "Terminal UI for ddev tryout. Fetched automatically by \`ddev tryout ui\`."

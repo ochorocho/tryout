@@ -19,6 +19,8 @@ pub struct Pane {
     alive: Arc<AtomicBool>,
     /// Set by the reader whenever output arrived, so the UI redraws only then.
     dirty: Arc<AtomicBool>,
+    /// The program's exit code, once it has one.
+    exit_code: Arc<Mutex<Option<u32>>>,
     size: (u16, u16),
 }
 
@@ -45,9 +47,15 @@ impl Pane {
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK)));
         let alive = Arc::new(AtomicBool::new(true));
         let dirty = Arc::new(AtomicBool::new(true));
+        let exit_code = Arc::new(Mutex::new(None));
         let mut reader = pair.master.try_clone_reader()?;
         {
-            let (parser, alive, dirty) = (parser.clone(), alive.clone(), dirty.clone());
+            let (parser, alive, dirty, code) = (
+                parser.clone(),
+                alive.clone(),
+                dirty.clone(),
+                exit_code.clone(),
+            );
             thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 // EOF or an error both mean the program is gone.
@@ -55,7 +63,10 @@ impl Pane {
                     parser.lock().unwrap().process(&buf[..n]);
                     dirty.store(true, Ordering::Release);
                 }
-                let _ = child.wait();
+                // The code is stored BEFORE alive flips, so whoever sees the
+                // program gone also sees how it ended.
+                let status = child.wait().map(|s| s.exit_code()).unwrap_or(1);
+                *code.lock().unwrap() = Some(status);
                 alive.store(false, Ordering::Release);
                 dirty.store(true, Ordering::Release);
             });
@@ -67,6 +78,7 @@ impl Pane {
             master: pair.master,
             alive,
             dirty,
+            exit_code,
             size: (rows, cols),
         })
     }
@@ -92,6 +104,15 @@ impl Pane {
             .unwrap()
             .screen_mut()
             .set_size(rows, cols);
+    }
+
+    /// How the program ended; None while it runs.
+    pub fn exit_code(&self) -> Option<u32> {
+        if self.is_alive() {
+            None
+        } else {
+            *self.exit_code.lock().unwrap()
+        }
     }
 
     pub fn is_alive(&self) -> bool {
@@ -142,6 +163,15 @@ mod tests {
         assert!(wait_for(&pane, |p| p
             .with_screen(|s| s.contents().contains("hello from the pty"))));
         assert!(wait_for(&pane, |p| !p.is_alive()), "exit was never noticed");
+    }
+
+    #[test]
+    fn the_exit_code_is_kept() {
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "exit 3"]);
+        let pane = Pane::spawn(cmd, 5, 20).unwrap();
+        assert!(wait_for(&pane, |p| p.exit_code().is_some()));
+        assert_eq!(pane.exit_code(), Some(3));
     }
 
     #[test]

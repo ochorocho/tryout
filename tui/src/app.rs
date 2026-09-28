@@ -6,9 +6,10 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::actions::{self, Action, Run};
 use crate::keys;
 use crate::pane::Pane;
-use crate::worktrees::{self, Worktree};
+use crate::worktrees::Worktree;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Listing {
@@ -32,6 +33,21 @@ pub enum Effect {
     Reload,
     /// Start (or restart) the shell for this worktree, then focus it.
     OpenPane(String),
+    /// Run a tryout command: in a popup terminal, or in the background.
+    Run(Action),
+}
+
+/// The command menu for one worktree.
+pub struct Menu {
+    pub worktree: String,
+    pub items: Vec<Action>,
+    pub selected: usize,
+}
+
+/// A tryout command running in a modal terminal of its own, so its prompts work.
+pub struct Popup {
+    pub action: Action,
+    pub pane: Pane,
 }
 
 pub struct App {
@@ -43,6 +59,8 @@ pub struct App {
     pub focus: Focus,
     /// One shell per worktree, kept alive while you look at another.
     pub panes: HashMap<String, Pane>,
+    pub menu: Option<Menu>,
+    pub popup: Option<Popup>,
     pub notice: Option<String>,
 }
 
@@ -66,6 +84,8 @@ impl App {
             selected: 0,
             focus: Focus::List,
             panes: HashMap::new(),
+            menu: None,
+            popup: None,
             notice: None,
         }
     }
@@ -92,11 +112,21 @@ impl App {
     }
 
     pub fn checkout_dir(&self, name: &str) -> PathBuf {
-        worktrees::checkout_dir(&self.root, name)
+        self.worktrees
+            .iter()
+            .find(|w| w.name == name)
+            .map_or_else(|| self.root.clone(), |w| w.checkout_dir(&self.root))
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
         self.notice = None;
+        // Modal first: a popup owns every key, then the menu.
+        if self.popup.is_some() {
+            return self.popup_key(key);
+        }
+        if self.menu.is_some() {
+            return self.menu_key(key);
+        }
         match self.focus {
             Focus::Pane => self.pane_key(key),
             Focus::List => self.list_key(key),
@@ -154,6 +184,10 @@ impl App {
                 Effect::None
             }
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.enter_pane(),
+            KeyCode::Char('a') | KeyCode::Char(' ') => {
+                self.open_menu();
+                Effect::None
+            }
             _ if is_focus_key(&key) => self.enter_pane(),
             _ => Effect::None,
         }
@@ -174,6 +208,83 @@ impl App {
         }
     }
 
+    fn open_menu(&mut self) {
+        if let Some(w) = self.selected() {
+            self.menu = Some(Menu {
+                worktree: w.name.clone(),
+                items: actions::for_worktree(w),
+                selected: 0,
+            });
+        }
+    }
+
+    fn menu_key(&mut self, key: KeyEvent) -> Effect {
+        let Some(menu) = self.menu.as_mut() else {
+            return Effect::None;
+        };
+        let last = menu.items.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.menu = None,
+            KeyCode::Down | KeyCode::Char('j') => menu.selected = (menu.selected + 1).min(last),
+            KeyCode::Up | KeyCode::Char('k') => menu.selected = menu.selected.saturating_sub(1),
+            KeyCode::Enter => {
+                let action = menu.items[menu.selected].clone();
+                self.menu = None;
+                return Effect::Run(action);
+            }
+            _ => {}
+        }
+        Effect::None
+    }
+
+    fn popup_key(&mut self, key: KeyEvent) -> Effect {
+        let Some(popup) = self.popup.as_mut() else {
+            return Effect::None;
+        };
+        // While it runs, every key is the command's — Esc included, which is how
+        // a gum prompt is cancelled.
+        if popup.pane.is_alive() {
+            if let Some(bytes) = keys::to_bytes(key) {
+                popup.pane.write(&bytes);
+            }
+            return Effect::None;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char(' ') => {
+                self.close_popup()
+            }
+            _ => Effect::None,
+        }
+    }
+
+    fn close_popup(&mut self) -> Effect {
+        match self.popup.take() {
+            Some(p) if p.action.changes_worktrees() => {
+                self.listing = Listing::Loading;
+                Effect::Reload
+            }
+            _ => Effect::None,
+        }
+    }
+
+    /// Called every loop. A popup that succeeded closes itself — clicking a
+    /// command and then dismissing a report of its success is friction — unless
+    /// its output is the point. A failure always stays: its output is the only
+    /// place the error is written.
+    pub fn tick(&mut self) -> Effect {
+        let done = self.popup.as_ref().and_then(|p| {
+            (p.pane.exit_code() == Some(0) && p.action.run == (Run::Popup { keep_open: false }))
+                .then_some(p.action.label)
+        });
+        match done {
+            Some(label) => {
+                self.notice = Some(format!("✓ {label}"));
+                self.close_popup()
+            }
+            None => Effect::None,
+        }
+    }
+
     fn move_by(&mut self, delta: isize) {
         if self.worktrees.is_empty() {
             return;
@@ -189,26 +300,31 @@ pub mod tests {
     use crossterm::event::KeyModifiers as M;
 
     pub fn fixture() -> Vec<Worktree> {
-        let wt = |name: &str, branch: &str, primary, url: Option<&str>, dirty| Worktree {
+        let wt = |name: &str, branch: Option<&str>, base: &str, url: Option<&str>| Worktree {
             name: name.into(),
+            dir: if branch.is_some() {
+                ".".into()
+            } else {
+                format!("worktrees/{name}")
+            },
             head: "32d1f513a57".into(),
-            branch: branch.into(),
-            dirty,
+            branch: branch.map(Into::into),
+            base: Some(base.into()),
+            patches: 0,
+            modified: 0,
+            untracked: 0,
+            primary: branch.is_some(),
+            url: url.map(Into::into),
             php: url.map(|_| "8.4".into()),
             db: url.map(|_| format!("db_{name}")),
-            url: url.map(Into::into),
-            primary,
+            subject: Some("[TASK] Raise phpstan to 2.1.17".into()),
         };
+        let mut v13 = wt("v13", None, "13.4", Some("https://v13.demo.ddev.site"));
+        (v13.patches, v13.modified, v13.untracked) = (2, 3, 1);
         vec![
-            wt("main", "main", true, Some("https://demo.ddev.site"), false),
-            wt(
-                "v13",
-                "(detached)",
-                false,
-                Some("https://v13.demo.ddev.site"),
-                true,
-            ),
-            wt("bugfix", "(detached)", false, None, false),
+            wt("main", Some("main"), "main", Some("https://demo.ddev.site")),
+            v13,
+            wt("bugfix", None, "main", None),
         ]
     }
 
@@ -261,6 +377,85 @@ pub mod tests {
         let mut a = App::new(PathBuf::from("/p/demo"));
         a.set_worktrees(Err(anyhow::anyhow!("ddev is not running")));
         assert_eq!(a.listing, Listing::Failed("ddev is not running".into()));
+    }
+
+    fn popup(action_args: &str, keep_open: bool, script: &str) -> Popup {
+        let mut cmd = portable_pty::CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", script]);
+        let action = crate::actions::Action {
+            label: "test",
+            hint: "",
+            args: action_args.split_whitespace().map(String::from).collect(),
+            run: Run::Popup { keep_open },
+        };
+        Popup {
+            action,
+            pane: Pane::spawn(cmd, 5, 30).unwrap(),
+        }
+    }
+
+    fn wait_exit(a: &App) {
+        let t = std::time::Instant::now();
+        while a.popup.as_ref().unwrap().pane.exit_code().is_none() {
+            assert!(t.elapsed().as_secs() < 5, "command never ended");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn the_menu_offers_the_selected_worktrees_commands_and_runs_one() {
+        let mut a = app();
+        press(&mut a, KeyCode::End);
+        press(&mut a, KeyCode::Char('a'));
+        let menu = a.menu.as_ref().unwrap();
+        assert_eq!(menu.worktree, "bugfix");
+        assert_eq!(menu.items[1].args, ["worktree", "serve", "bugfix"]);
+        press(&mut a, KeyCode::Down);
+        let Effect::Run(action) = press(&mut a, KeyCode::Enter) else {
+            panic!("no run")
+        };
+        assert_eq!(action.command_line(), "ddev tryout worktree serve bugfix");
+        assert!(a.menu.is_none());
+    }
+
+    #[test]
+    fn escape_closes_the_menu_and_runs_nothing() {
+        let mut a = app();
+        press(&mut a, KeyCode::Char(' '));
+        assert_eq!(press(&mut a, KeyCode::Esc), Effect::None);
+        assert!(a.menu.is_none());
+    }
+
+    #[test]
+    fn a_successful_popup_closes_itself_and_reloads() {
+        let mut a = app();
+        a.popup = Some(popup("worktree serve x", false, "exit 0"));
+        wait_exit(&a);
+        assert_eq!(a.tick(), Effect::Reload);
+        assert!(a.popup.is_none());
+        assert_eq!(a.notice.as_deref(), Some("✓ test"));
+    }
+
+    #[test]
+    fn a_failed_popup_stays_until_dismissed() {
+        let mut a = app();
+        a.popup = Some(popup("worktree serve x", false, "echo boom; exit 2"));
+        wait_exit(&a);
+        assert_eq!(a.tick(), Effect::None);
+        assert!(a.popup.is_some(), "the error would vanish with it");
+        assert_eq!(press(&mut a, KeyCode::Esc), Effect::Reload);
+        assert!(a.popup.is_none());
+    }
+
+    #[test]
+    fn output_worth_reading_waits_even_on_success() {
+        let mut a = app();
+        a.popup = Some(popup("status", true, "echo report; exit 0"));
+        wait_exit(&a);
+        assert_eq!(a.tick(), Effect::None);
+        assert!(a.popup.is_some());
+        // status changes nothing, so dismissing it does not reload.
+        assert_eq!(press(&mut a, KeyCode::Enter), Effect::None);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! tryout-tui — a terminal workspace for a ddev tryout project: its Core
 //! worktrees on the left, a live shell in the selected one on the right.
 
+mod actions;
 mod app;
 mod keys;
 mod pane;
@@ -17,8 +18,10 @@ use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
 
-use app::{App, Effect, Focus};
+use actions::{Action, Run};
+use app::{App, Effect, Focus, Popup};
 use pane::Pane;
+use portable_pty::CommandBuilder;
 
 type Loaded = Result<Vec<worktrees::Worktree>>;
 
@@ -54,21 +57,36 @@ fn main() -> Result<()> {
 
 fn run(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
     let (tx, rx) = mpsc::channel::<Loaded>();
+    let (notice_tx, notice_rx) = mpsc::channel::<String>();
     spawn_load(&app.root, &tx);
     let mut redraw = true;
 
     loop {
         let size = terminal.size()?;
-        let inner = ui::areas(Rect::new(0, 0, size.width, size.height)).pane_inner;
+        let screen = Rect::new(0, 0, size.width, size.height);
+        let inner = ui::areas(screen).pane_inner;
+        let popup_inner = ui::popup_inner(screen);
         for pane in app.panes.values_mut() {
             pane.resize(inner.height, inner.width);
         }
+        if let Some(p) = app.popup.as_mut() {
+            p.pane.resize(popup_inner.height, popup_inner.width);
+        }
         redraw |= receive(&rx, &mut app);
+        if let Ok(notice) = notice_rx.try_recv() {
+            app.notice = Some(notice);
+            redraw = true;
+        }
         // Every pane's flag is cleared, not just the first dirty one found.
         redraw |= app
             .panes
             .values()
+            .chain(app.popup.as_ref().map(|p| &p.pane))
             .fold(false, |any, p| p.take_dirty() | any);
+        if app.tick() == Effect::Reload {
+            spawn_load(&app.root, &tx);
+            redraw = true;
+        }
 
         if redraw {
             terminal.draw(|f| ui::draw(f, &app))?;
@@ -86,14 +104,23 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
                     Effect::Quit => return Ok(()),
                     Effect::Reload => spawn_load(&app.root, &tx),
                     Effect::OpenPane(name) => open_pane(&mut app, &name, inner),
+                    Effect::Run(action) => match action.run {
+                        Run::Popup { .. } => open_popup(&mut app, action, popup_inner),
+                        Run::Background => run_in_background(&app.root, action, &notice_tx),
+                    },
                 }
             }
-            Event::Paste(text) if app.focus == Focus::Pane => {
-                if let Some(pane) = app
-                    .selected()
-                    .map(|w| w.name.clone())
-                    .and_then(|n| app.panes.get_mut(&n))
-                {
+            Event::Paste(text) => {
+                let target = match (&mut app.popup, app.focus) {
+                    (Some(p), _) => Some(&mut p.pane),
+                    (None, Focus::Pane) => app
+                        .worktrees
+                        .get(app.selected)
+                        .map(|w| w.name.clone())
+                        .and_then(|n| app.panes.get_mut(&n)),
+                    _ => None,
+                };
+                if let Some(pane) = target {
                     pane.write(text.as_bytes());
                 }
             }
@@ -131,4 +158,43 @@ fn open_pane(app: &mut App, name: &str, inner: Rect) {
         }
         Err(e) => app.notice = Some(format!("could not start a shell: {e:#}")),
     }
+}
+
+/// `ddev tryout <args>` on a PTY of its own, at the project root, in a popup.
+fn open_popup(app: &mut App, action: Action, inner: Rect) {
+    let mut cmd = CommandBuilder::new("ddev");
+    cmd.arg("tryout");
+    cmd.args(&action.args);
+    cmd.cwd(&app.root);
+    match Pane::spawn(cmd, inner.height.max(1), inner.width.max(1)) {
+        Ok(pane) => app.popup = Some(Popup { action, pane }),
+        Err(e) => app.notice = Some(format!("could not run {}: {e:#}", action.command_line())),
+    }
+}
+
+/// A command with no terminal: fast and silent on success, so only its failure
+/// is worth a word — and that goes to the footer, since nothing else is open.
+fn run_in_background(root: &Path, action: Action, notices: &Sender<String>) {
+    let (root, notices) = (root.to_path_buf(), notices.clone());
+    thread::spawn(move || {
+        let out = std::process::Command::new("ddev")
+            .arg("tryout")
+            .args(&action.args)
+            .current_dir(&root)
+            .output();
+        let notice = match out {
+            Ok(o) if o.status.success() => format!("✓ {}", action.label),
+            Ok(o) => {
+                let err = worktrees::strip_ansi(&String::from_utf8_lossy(&o.stderr));
+                let last = err
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("failed");
+                format!("{}: {}", action.label, last.trim())
+            }
+            Err(e) => format!("{}: {e}", action.label),
+        };
+        let _ = notices.send(notice);
+    });
 }

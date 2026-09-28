@@ -1,77 +1,72 @@
-//! The worktrees tryout knows about, read from `ddev tryout worktree list --plain`.
+//! The worktrees tryout knows about, read from `ddev tryout worktree list --json`.
 //!
-//! `--plain` is the add-on's machine-readable contract (NAME HEAD BRANCH STATE PHP
-//! DB URL, space-padded) — the same output tests/e2e parses — so the TUI never
-//! re-implements how tryout finds its checkouts.
+//! `--json` is the add-on's machine-readable contract for tools (pinned by its
+//! unit suite), so the TUI never re-implements how tryout finds its checkouts.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Worktree {
     pub name: String,
+    /// Relative to the project root; "." for the root checkout.
+    pub dir: String,
     pub head: String,
-    pub branch: String,
-    pub dirty: bool,
+    /// None when detached — which every worktree tryout creates is.
+    pub branch: Option<String>,
+    /// What it is compared against: the branch it came from.
+    pub base: Option<String>,
+    /// Commits on top of the base: the applied patches.
+    pub patches: u32,
+    pub modified: u32,
+    pub untracked: u32,
+    pub primary: bool,
+    pub url: Option<String>,
     pub php: Option<String>,
     pub db: Option<String>,
-    pub url: Option<String>,
-    pub primary: bool,
+    pub subject: Option<String>,
 }
 
 impl Worktree {
-    /// Served means it has a URL of its own — the primary always does.
+    /// Served means it has a site of its own — the primary always does.
     pub fn served(&self) -> bool {
         self.url.is_some()
     }
+
+    pub fn dirty(&self) -> bool {
+        self.modified > 0 || self.untracked > 0
+    }
+
+    /// "main", or "detached from 14.0" — what a person calls where it stands.
+    pub fn position(&self) -> String {
+        match (&self.branch, &self.base) {
+            (Some(b), _) => b.clone(),
+            (None, Some(base)) => format!("detached from {base}"),
+            (None, None) => "detached".into(),
+        }
+    }
+
+    pub fn checkout_dir(&self, root: &Path) -> PathBuf {
+        if self.dir == "." {
+            root.to_path_buf()
+        } else {
+            root.join(&self.dir)
+        }
+    }
 }
 
-/// Parse `worktree list --plain`. Rows are the indented lines after the NAME
-/// header; the title, blank lines and the dim footer are not rows.
-pub fn parse_plain(output: &str) -> Vec<Worktree> {
-    let clean = strip_ansi(output);
-    let mut rows = Vec::new();
-    let mut in_table = false;
-    for line in clean.lines() {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.first() == Some(&"NAME") {
-            in_table = true;
-            continue;
-        }
-        if !in_table || !line.starts_with("  ") || fields.len() < 6 {
-            in_table = in_table && !line.trim().is_empty();
-            continue;
-        }
-        let dash = |s: &str| (s != "-").then(|| s.to_string());
-        let url = fields
-            .get(6)
-            .filter(|u| u.starts_with("http"))
-            .map(|u| u.to_string());
-        rows.push(Worktree {
-            name: fields[0].to_string(),
-            head: fields[1].to_string(),
-            branch: fields[2].to_string(),
-            dirty: fields[3] == "dirty",
-            php: dash(fields[4]),
-            db: dash(fields[5]),
-            url,
-            primary: line.contains("← primary"),
-        });
-    }
-    rows
-}
-
-/// Where a worktree's checkout lives: worktrees/<name>, or the project root for
-/// the root checkout, which has no directory under worktrees/.
-pub fn checkout_dir(root: &Path, name: &str) -> PathBuf {
-    let nested = root.join("worktrees").join(name);
-    if nested.is_dir() {
-        nested
-    } else {
-        root.to_path_buf()
-    }
+/// Parse `worktree list --json`. Anything DDEV prints around it is skipped: the
+/// array starts at the first line that opens one.
+pub fn parse_json(output: &str) -> Result<Vec<Worktree>> {
+    let start = output
+        .find("\n[")
+        .map(|i| i + 1)
+        .or_else(|| output.starts_with('[').then_some(0))
+        .context("no JSON array in the output — is the add-on older than the TUI?")?;
+    serde_json::from_str(&output[start..]).context("the worktree list is not the JSON expected")
 }
 
 /// The project a path belongs to: the nearest ancestor with the add-on installed.
@@ -86,21 +81,23 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
 /// UI thread.
 pub fn load(root: &Path) -> Result<Vec<Worktree>> {
     let out = Command::new("ddev")
-        .args(["tryout", "worktree", "list", "--plain"])
+        .args(["tryout", "worktree", "list", "--json"])
         .current_dir(root)
         .output()
         .context("could not run ddev — is it installed and on PATH?")?;
     if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        bail!(
-            "ddev tryout worktree list failed: {}",
-            strip_ansi(err.lines().last().unwrap_or("no output"))
-        );
+        let err = strip_ansi(&String::from_utf8_lossy(&out.stderr));
+        let reason = err
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("no output");
+        bail!("ddev tryout worktree list failed: {}", reason.trim());
     }
-    Ok(parse_plain(&String::from_utf8_lossy(&out.stdout)))
+    parse_json(&String::from_utf8_lossy(&out.stdout))
 }
 
-/// Drop CSI escape sequences: the command colours its output even when piped.
+/// Drop CSI escape sequences: ddev colours its messages even when piped.
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -123,44 +120,46 @@ pub fn strip_ansi(s: &str) -> String {
 mod tests {
     use super::*;
 
-    // Captured from a real project, escapes and all.
-    const PLAIN: &str = "\n\u{1b}[1mCore worktrees\u{1b}[0m
-  NAME         HEAD         BRANCH       STATE  PHP   DB         URL
-  main         32d1f513a57  main         clean  8.5   db         https://p.ddev.site ← primary
-  jochen       76a06cdfddc  (detached)   dirty  8.2   db_jochen  https://jochen.p.ddev.site
-  testa        80b2622defc  (detached)   clean  -     -
-
-  \u{1b}[2mserved sites have their own URL, PHP and database;\u{1b}[0m
-  \u{1b}[2mthe primary is whichever worktree 'use' points at\u{1b}[0m
-";
+    // As `ddev tryout worktree list --json` prints it on a real project.
+    pub const JSON: &str = r#"[
+  {"name":"main","dir":".","head":"32d1f513a57","branch":"main","base":"main","patches":0,"modified":0,"untracked":0,"primary":true,"url":"https://p.ddev.site","php":"8.5","db":"db","subject":"[BUGFIX] Add check"},
+  {"name":"jochen","dir":"worktrees/jochen","head":"382f3012dee","branch":null,"base":"14.0","patches":2,"modified":3,"untracked":1,"primary":false,"url":null,"php":null,"db":null,"subject":"[TASK] Set \"version\""}
+]
+"#;
 
     #[test]
-    fn parses_every_row_and_nothing_else() {
-        let rows = parse_plain(PLAIN);
-        let names: Vec<_> = rows.iter().map(|w| w.name.as_str()).collect();
-        assert_eq!(names, ["main", "jochen", "testa"]);
+    fn parses_the_contract() {
+        let rows = parse_json(JSON).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].primary && rows[0].served() && !rows[0].dirty());
+        let j = &rows[1];
+        assert_eq!(j.position(), "detached from 14.0");
+        assert_eq!((j.patches, j.modified, j.untracked), (2, 3, 1));
+        assert!(j.dirty() && !j.served());
+        assert_eq!(j.subject.as_deref(), Some("[TASK] Set \"version\""));
     }
 
     #[test]
-    fn marks_the_primary_and_what_is_served() {
-        let rows = parse_plain(PLAIN);
-        assert!(rows[0].primary && rows[0].served());
-        assert_eq!(rows[1].url.as_deref(), Some("https://jochen.p.ddev.site"));
-        assert!(!rows[1].primary && rows[1].dirty);
-        assert!(!rows[2].served());
-        assert_eq!(rows[2].php, None);
-        assert_eq!(rows[1].php.as_deref(), Some("8.2"));
+    fn skips_whatever_ddev_prints_before_the_array() {
+        let noisy = format!("Custom configuration detected\n  • something\n{JSON}");
+        assert_eq!(parse_json(&noisy).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_old_add_on_gets_a_reason_not_a_parse_error() {
+        let err = parse_json("\nCore worktrees\n  NAME HEAD\n").unwrap_err();
+        assert!(format!("{err:#}").contains("older than the TUI"));
     }
 
     #[test]
     fn the_root_checkout_lives_at_the_project_root() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(root.path().join("worktrees/v13")).unwrap();
+        let rows = parse_json(JSON).unwrap();
+        let root = Path::new("/p");
+        assert_eq!(rows[0].checkout_dir(root), PathBuf::from("/p"));
         assert_eq!(
-            checkout_dir(root.path(), "v13"),
-            root.path().join("worktrees/v13")
+            rows[1].checkout_dir(root),
+            PathBuf::from("/p/worktrees/jochen")
         );
-        assert_eq!(checkout_dir(root.path(), "main"), root.path());
     }
 
     #[test]
