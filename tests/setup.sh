@@ -10,8 +10,9 @@ bats_require_minimum_version 1.8.0
 
 set -eu -o pipefail
 
-# Override this variable for your add-on:
-export GITHUB_REPO=bmack/tryout
+# Override this variable for your add-on. In CI it is the repository the
+# workflow runs in, so a fork tests its own releases rather than upstream's.
+export GITHUB_REPO="${GITHUB_REPOSITORY:-bmack/tryout}"
 
 TEST_BREW_PREFIX="$(brew --prefix 2>/dev/null || true)"
 export BATS_LIB_PATH="${BATS_LIB_PATH:-}:${TEST_BREW_PREFIX}/lib:/usr/lib/bats"

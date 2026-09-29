@@ -51,6 +51,11 @@ teardown() { load teardown.sh; }
 # bats test_tags=release
 @test "install from release" {
   set -eu -o pipefail
+  # A repository with no release yet (a fresh fork) has nothing to install.
+  local auth=()
+  [ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  curl -fsS -o /dev/null ${auth[@]+"${auth[@]}"} "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" \
+    || skip "${GITHUB_REPO} has no release yet — run the release workflow to publish one"
   echo "# ddev add-on get ${GITHUB_REPO} with project ${PROJNAME} in $(pwd)" >&3
   run ddev add-on get "${GITHUB_REPO}"
   assert_success
