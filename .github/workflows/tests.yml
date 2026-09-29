@@ -1,6 +1,8 @@
 name: tests
 on:
   pull_request:
+    # `labeled` too: adding the full-ci label starts the slow jobs below.
+    types: [opened, synchronize, reopened, labeled]
     paths-ignore:
       - "**.md"
   push:
@@ -57,12 +59,15 @@ jobs:
           test_command: bash tests/ci.sh ${{ matrix.suite }}
 
   # Slow: clones TYPO3 Core, runs composer install and sets up a real TYPO3.
-  # Minutes per test, so it is kept off the every-push path.
+  # Minutes per test, so it is kept off the every-push path (see `if:` below).
   # No `name:` on the jobs that `if:` can skip: GitHub renders a skipped job's
   # name without expanding the matrix, so `${{ matrix.* }}` would show as is.
   # Without one it is the job id, and GitHub appends the matrix values itself.
   lifecycle:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Slow, so not on every push: nightly, by hand, or on a PR labelled full-ci.
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     strategy:
       matrix:
         ddev_version: [stable, HEAD]
@@ -82,7 +87,7 @@ jobs:
 
   # Browser tests: does each served worktree URL really render a frontend and log
   # into its backend? A URL returning 200 does not prove either. Gated like
-  # lifecycle — scheduled and on demand only — because it clones Core, provisions a
+  # lifecycle — nightly, by hand, or with full-ci — because it clones Core, provisions a
   # project and downloads a browser. The bats suites are the every-push gate.
   #
   # Self-provisioned rather than via the add-on-test action: the browser suite lives
@@ -90,7 +95,10 @@ jobs:
   # and the project is created here, the same way tests/lifecycle.bats does.
   e2e:
     name: browser e2e
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Slow, so not on every push: nightly, by hand, or on a PR labelled full-ci.
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
 
     steps:
@@ -128,7 +136,10 @@ jobs:
   # The published release, checked nightly so a broken tag is caught even when
   # nobody pushes.
   install-from-release:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Slow, so not on every push: nightly, by hand, or on a PR labelled full-ci.
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     strategy:
       matrix:
         ddev_version: [stable, HEAD]
