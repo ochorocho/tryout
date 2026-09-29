@@ -13,6 +13,7 @@ pub mod git;
 pub mod out;
 pub mod patch;
 pub mod php;
+pub mod poststart;
 pub mod phpjson;
 pub mod proc;
 pub mod prompt;

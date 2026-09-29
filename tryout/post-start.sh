@@ -8,6 +8,13 @@
 
 set -euo pipefail
 
+# During the Rust port only: the lifecycle suite's TRYOUT_IMPL=rust leaves this
+# marker, and the hook then runs the binary's port instead. Removed at the
+# switch-over, when config.tryout.yaml calls `tryout __post-start` directly.
+if [ -f "${DDEV_APPROOT:-/var/www/html}/.ddev/tryout/.impl-rust" ]; then
+    exec "${DDEV_APPROOT:-/var/www/html}/.ddev/tryout/tryout" __post-start
+fi
+
 export TRYOUT_IN_CONTAINER=1
 source "${DDEV_APPROOT:-/var/www/html}/.ddev/tryout/functions.sh"
 

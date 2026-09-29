@@ -82,6 +82,8 @@ use_rust_if_asked() {
   mkdir -p .ddev/tryout/bin
   cp "${DIR}"/tryout/bin/tryout-* .ddev/tryout/bin/
   cp "${DIR}/tryout/tryout" .ddev/tryout/tryout
+  # The post-start hook, too: it runs `tryout __post-start` when this is there.
+  touch .ddev/tryout/.impl-rust
 }
 
 # Clone only what the test needs. `ddev start` runs the post-start hook, which

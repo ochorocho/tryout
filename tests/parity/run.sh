@@ -9,7 +9,7 @@
 #   PARITY_SELFTEST=1                    run bash on both sides: proves the harness
 #                                        itself is deterministic
 #
-# A case is a file in cases/ defining SIDE (host|ctr|complete), ARGS (an array),
+# A case is a file in cases/ defining SIDE (host|ctr|poststart|complete), ARGS,
 # and optionally FILES (paths to compare), CASE_ENV (extra NAME=value), IGNORE
 # (outputs left out of the diff — each an intended fix, said why in the case)
 # and setup() (run in the project first, with the helpers below). SIDE=complete takes CORPUS instead of ARGS: one
@@ -102,6 +102,8 @@ run_case() {
 
     local cmd=()
     case "${impl}:${SIDE}" in
+        bash:poststart) cmd=(bash "${root}/.ddev/tryout/post-start.sh") ;;
+        rust:poststart) cmd=("${bin}" __post-start) ;;
         bash:ctr)  cmd=(bash "${root}/.ddev/tryout/tryout-container.sh") ;;
         bash:host) cmd=(bash "${root}/.ddev/commands/host/tryout") ;;
         rust:ctr)  cmd=("${bin}" ctr) ;;
@@ -109,6 +111,7 @@ run_case() {
         *) echo "bad SIDE '${SIDE}' in ${case_file}" >&2; return 2 ;;
     esac
     [ "${PARITY_SELFTEST:-}" = 1 ] && [ "${impl}" = rust ] && case "${SIDE}" in
+        poststart) cmd=(bash "${root}/.ddev/tryout/post-start.sh") ;;
         ctr)  cmd=(bash "${root}/.ddev/tryout/tryout-container.sh") ;;
         host) cmd=(bash "${root}/.ddev/commands/host/tryout") ;;
     esac

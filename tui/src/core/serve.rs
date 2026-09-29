@@ -191,16 +191,17 @@ pub fn rebuild(ctx: &Ctx, name: &str) -> Step {
     Ok(())
 }
 
-/// The primary's console, run directly from its instance; stdout shown, errors
-/// swallowed — a missing vendor/bin is not this step's failure.
-fn typo3(instance: &Path, args: &[&str]) {
+/// The primary's console, run directly from its instance; stdout shown, stderr
+/// dropped. True on success — callers that only warn may ignore it.
+pub fn typo3(instance: &Path, args: &[&str]) -> bool {
     let _ = std::io::Write::flush(&mut std::io::stdout());
-    let _ = Command::new(instance.join("vendor/bin/typo3"))
+    Command::new(instance.join("vendor/bin/typo3"))
         .args(args)
         .current_dir(instance)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// Where a site's settings.php waits while the site is gone — beside the site
