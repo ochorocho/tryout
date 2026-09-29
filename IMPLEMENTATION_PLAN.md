@@ -33,7 +33,7 @@ Stage 8 is done.
 **Goal**: `prompt.rs` (inquire + no-TTY fallbacks) replacing gum.
 **Success Criteria**: every ui_*/ask_* behaviour the bats suite pins holds.
 **Tests**: piped stdin; real PTY via portable-pty.
-**Status**: Not Started
+**Status**: Complete — inquire on stderr when stdin+stderr are terminals (select, multi-select, text, confirm defaulting to No), the plain-line fallbacks otherwise, a stderr-only spinner; ask_site/worktree/branch/text, ask_new_worktree_branch (kept/fallback/cancel), pick/describe_patches. `tests/prompts.rs` drives Enter, arrow-down and ESC on a real PTY, plus the piped and no-answer paths. Confirm on a PTY is tested with remove/delete in Stage 6.
 
 ## Stage 5: Mutating container verbs
 **Goal**: worktree add/use/remove/rename, checkout, download, reset, composer, patch, exec, delete, serve/unserve, site setup, db, fpm.

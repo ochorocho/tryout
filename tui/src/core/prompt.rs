@@ -2,8 +2,9 @@
 //! can answer, and otherwise falls through to `explain_missing`. Every answer
 //! comes back as a value; None means cancelled or nobody to ask.
 //!
-//! The terminal UI of these prompts is drawn on stderr: DDEV pipes a host
+//! The prompts are drawn on stderr (inquire's screen): DDEV pipes a host
 //! command's stdout, always, so stdin and stderr are what must be terminals.
+//! Without them a piped answer is read as a plain line, as before.
 
 use std::io::{BufRead, IsTerminal, Write};
 
@@ -69,10 +70,17 @@ pub fn clean_answer(s: &str) -> String {
     out
 }
 
-/// Pick one of `items`. With no terminal a piped answer still works.
+/// Pick one of `items`: a list to move through, ESC to cancel. With no
+/// terminal a piped answer still works.
 pub fn choose(prompt: &str, items: &[String]) -> Option<String> {
     if items.is_empty() {
         return None;
+    }
+    if have_tty() {
+        return inquire::Select::new(prompt, items.to_vec())
+            .with_page_size(15)
+            .prompt()
+            .ok();
     }
     if stderr_tty() {
         let mut e = std::io::stderr();
@@ -83,8 +91,46 @@ pub fn choose(prompt: &str, items: &[String]) -> Option<String> {
     (!answer.is_empty()).then_some(answer)
 }
 
-/// Free text; None when empty.
-pub fn input(prompt: &str, _placeholder: &str) -> Option<String> {
+/// Pick several of `items`. None on a cancel or an empty pick.
+pub fn choose_multi(prompt: &str, items: &[String]) -> Option<Vec<String>> {
+    if items.is_empty() {
+        return None;
+    }
+    if have_tty() {
+        let picked = inquire::MultiSelect::new(prompt, items.to_vec())
+            .with_page_size(15)
+            .prompt()
+            .ok()?;
+        return (!picked.is_empty()).then_some(picked);
+    }
+    // One per line until EOF or a blank.
+    if stderr_tty() {
+        let mut e = std::io::stderr();
+        for i in items {
+            let _ = writeln!(e, "  {i}");
+        }
+        let _ = write!(e, "  {prompt} (one per line, blank to finish): ");
+    }
+    let mut got = Vec::new();
+    while let Some(line) = read_line() {
+        let answer: String = line.chars().filter(|c| (*c as u32) >= 0x20).collect();
+        if answer.is_empty() {
+            break;
+        }
+        got.push(answer);
+    }
+    (!got.is_empty()).then_some(got)
+}
+
+/// Free text; None when empty or cancelled.
+pub fn input(prompt: &str, placeholder: &str) -> Option<String> {
+    if have_tty() {
+        let v = inquire::Text::new(prompt)
+            .with_placeholder(placeholder)
+            .prompt()
+            .ok()?;
+        return (!v.is_empty()).then_some(v);
+    }
     if stderr_tty() {
         let _ = write!(std::io::stderr(), "  {prompt}: ");
     }
@@ -211,5 +257,101 @@ mod tests {
         assert_eq!(clean_answer("v13\x1b[A"), "v13");
         assert_eq!(clean_answer("\x1bOAy"), "y");
         assert_eq!(clean_answer("a\x01b"), "ab");
+    }
+}
+
+/// Free text for a missing argument.
+pub fn ask_text(prompt: &str, placeholder: &str) -> Option<String> {
+    input(prompt, placeholder)
+}
+
+/// Pick a branch from the local refs, in picker order (main, releases newest
+/// first, legacy last). The list is fetched first when the clone carried one.
+pub fn ask_branch(ctx: &Ctx, prompt: &str) -> Option<String> {
+    worktree::ensure_branch_refs(ctx);
+    choose(
+        prompt,
+        &super::vsort::picker_order(&ctx.local_core_branches()),
+    )
+}
+
+/// The branch a NEW worktree is based on. Three outcomes, and the difference
+/// matters: a branch already given is kept (not a question); with no terminal it
+/// is the branch in play, silently — `ddev start` and scripts must not block;
+/// a cancel is None, and the caller stops.
+pub fn ask_new_worktree_branch(ctx: &Ctx, given: &str, usage: &str) -> Option<String> {
+    if !given.is_empty() {
+        return Some(given.into());
+    }
+    if !have_tty() {
+        return Some(ctx.branch().into());
+    }
+    let picked = ask_branch(ctx, "Based on which branch?").filter(|b| !b.is_empty());
+    if picked.is_none() {
+        explain_missing(usage);
+    }
+    picked
+}
+
+/// Pick several open changes; answers with their numbers.
+pub fn pick_patches(prompt: &str, changes: &[super::gerrit::Change]) -> Vec<u64> {
+    let labels: Vec<String> = changes
+        .iter()
+        .map(|c| {
+            format!(
+                "{:<7} {} {} {}",
+                c.number,
+                pad_display(&c.subject, 68),
+                pad_display(&c.owner, 18),
+                c.scores
+            )
+        })
+        .collect();
+    choose_multi(prompt, &labels)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+        .collect()
+}
+
+/// "<number> - <subject>" for each picked change, or the bare number when it is
+/// not in the list (a hand-typed one).
+pub fn describe_patches(picked: &[u64], changes: &[super::gerrit::Change]) -> Vec<String> {
+    picked
+        .iter()
+        .map(|n| match changes.iter().find(|c| c.number == *n) {
+            Some(c) if !c.subject.is_empty() => format!("{n} - {}", c.subject),
+            _ => n.to_string(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod ask_tests {
+    use super::*;
+    use crate::core::ctx::DdevEnv;
+
+    #[test]
+    fn an_explicitly_given_branch_is_not_asked_about() {
+        let ctx = Ctx::new("/nonexistent", DdevEnv::default());
+        assert_eq!(
+            ask_new_worktree_branch(&ctx, "13.4", "usage").as_deref(),
+            Some("13.4")
+        );
+    }
+
+    #[test]
+    fn picked_patches_come_back_as_numbers_described_by_their_subjects() {
+        let c = |n, s: &str| super::super::gerrit::Change {
+            number: n,
+            subject: s.into(),
+            owner: "Ada".into(),
+            scores: String::new(),
+        };
+        let changes = [c(91234, "[BUGFIX] One"), c(91000, "[TASK] Two")];
+        assert_eq!(
+            describe_patches(&[91000, 5], &changes),
+            ["91000 - [TASK] Two".to_string(), "5".to_string()]
+        );
     }
 }
