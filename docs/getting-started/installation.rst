@@ -68,22 +68,22 @@ The ``post-start`` hook runs six numbered steps and prints each one. On the
 first start all six do work; on later starts most of them report that there
 is nothing to do.
 
-#. **Clone TYPO3 Core.** If ``typo3-core/`` has no ``.git``, the repository is
+1. **Clone TYPO3 Core.** If ``typo3-core/`` has no ``.git``, the repository is
    cloned from ``https://github.com/typo3/typo3.git`` on the branch resolved
    for this instance, and a ``gerrit`` remote is added beside ``origin``. This
    is the slow step — several minutes on a first run.
-#. **Apply patches.** If ``TRYOUT_PATCHES`` is set, Core is reset to the
+2. **Apply patches.** If ``TRYOUT_PATCHES`` is set, Core is reset to the
    current branch and each listed change is cherry-picked. See
    :doc:`/core/patches`.
-#. **Composer install.** Dependencies are resolved from the two path
+3. **Composer install.** Dependencies are resolved from the two path
    repositories; every system extension is symlinked out of the Core clone.
-#. **TYPO3 setup.** Only when ``config/system/settings.php`` is absent. The
+4. **TYPO3 setup.** Only when ``config/system/settings.php`` is absent. The
    database driver and server type are derived from the DDEV configuration,
    and ``vendor/bin/typo3 setup`` runs non-interactively with the admin
    credentials from ``.ddev/config.yaml``.
-#. **Extension setup and cache flush.** ``typo3 extension:setup`` followed by
+5. **Extension setup and cache flush.** ``typo3 extension:setup`` followed by
    ``typo3 cache:flush``.
-#. **Render the documentation.** This manual is rendered into ``.site/`` and
+6. **Render the documentation.** This manual is rendered into ``.site/`` and
    served at ``/_docs/``. The step never fails a start — a broken link in the
    manual is not a reason for an instance not to come up — and it is skipped
    entirely with ``TRYOUT_DOCS=0``. On the first start it also installs the

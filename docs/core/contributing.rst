@@ -61,11 +61,11 @@ The username
 
 It is resolved in this order, and the first answer wins:
 
-#. The command argument — ``ddev cs setup jdoe``.
-#. The ``TRYOUT_GERRIT_USER`` environment variable.
-#. ``git config tryout.gerritUser`` in the Core clone, cached by a previous
+1. The command argument — ``ddev cs setup jdoe``.
+2. The ``TRYOUT_GERRIT_USER`` environment variable.
+3. ``git config tryout.gerritUser`` in the Core clone, cached by a previous
    setup.
-#. An interactive prompt.
+4. An interactive prompt.
 
 Whatever is resolved is written back to ``tryout.gerritUser``, so you are asked
 once per Core clone. To carry it across instances, put it in the gitignored

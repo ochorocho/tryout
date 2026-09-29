@@ -35,12 +35,12 @@ is changed.
 
 One command covers three things:
 
-#. The Core clone is fetched, checked out on the target branch and hard-reset
+1. The Core clone is fetched, checked out on the target branch and hard-reset
    to ``origin/<branch>``, followed by ``git clean -fd`` and a cleared
    ``var/cache/``.
-#. ``composer.json`` is regenerated for that branch, and ``composer.lock`` is
+2. ``composer.json`` is regenerated for that branch, and ``composer.lock`` is
    deleted.
-#. The instance is rebuilt: ``composer install``, ``typo3 extension:setup``,
+3. The instance is rebuilt: ``composer install``, ``typo3 extension:setup``,
    cache flush.
 
 .. warning::
@@ -63,15 +63,15 @@ is on disk.
 
 ``.ddev/scripts/sync-composer.php`` does exactly that:
 
-#. It reads every ``typo3-core/typo3/sysext/*/composer.json`` and collects the
+1. It reads every ``typo3-core/typo3/sysext/*/composer.json`` and collects the
    package names.
-#. It drops the existing requirements whose names start with ``typo3/cms-`` or
+2. It drops the existing requirements whose names start with ``typo3/cms-`` or
    ``typo3/theme-`` — the managed ones — and keeps everything else, so a
    package you required from ``packages/`` survives.
-#. It adds every discovered system extension at ``@dev``.
-#. On ``main`` and on branches numbered 14 or higher it adds
+3. It adds every discovered system extension at ``@dev``.
+4. On ``main`` and on branches numbered 14 or higher it adds
    ``typo3/theme-camino``.
-#. It sorts the result and writes it back.
+5. It sorts the result and writes it back.
 
 Finally it deletes ``composer.lock``. That is not tidiness: without it, the
 next ``composer install`` would try to satisfy a lock file that still names an
@@ -91,9 +91,9 @@ Pinning the branch
 
 The active branch is resolved in this order:
 
-#. ``TRYOUT_BRANCH``, if it is set
-#. the branch currently checked out in ``typo3-core/``
-#. ``main``
+1. ``TRYOUT_BRANCH``, if it is set
+2. the branch currently checked out in ``typo3-core/``
+3. ``main``
 
 For a fresh instance only the first two apply, and the environment variable is
 the only one that exists before the clone. Set it in

@@ -150,16 +150,16 @@ How resolution works
 
 Worth knowing when a change refuses to resolve:
 
-#. ``https://review.typo3.org/changes/<number>?o=CURRENT_REVISION`` is
+1. ``https://review.typo3.org/changes/<number>?o=CURRENT_REVISION`` is
    requested **from inside the web container**, because ``curl`` and ``jq`` are
    guaranteed to be there and not on every host.
-#. Gerrit prefixes its JSON with the XSSI guard ``)]}'``; the first line is
+2. Gerrit prefixes its JSON with the XSSI guard ``)]}'``; the first line is
    dropped before parsing.
-#. Four values are read out: the subject, the ref of the current revision
+3. Four values are read out: the subject, the ref of the current revision
    (``refs/changes/47/56947/12``), its patchset number and the change status.
-#. The ref is fetched from the ``gerrit`` remote — anonymously over HTTPS, so
+4. The ref is fetched from the ``gerrit`` remote — anonymously over HTTPS, so
    no account is needed to test a patch.
-#. Before cherry-picking, the ``Change-Id`` footer of the fetched commit is
+5. Before cherry-picking, the ``Change-Id`` footer of the fetched commit is
    compared against every commit in ``origin/<branch>..HEAD`` to detect a
    change that is already applied.
 

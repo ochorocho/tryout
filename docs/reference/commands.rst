@@ -190,11 +190,11 @@ failed probe does not undo the setup.
 
 The username is resolved in this order:
 
-#. the command argument
-#. the ``TRYOUT_GERRIT_USER`` environment variable
-#. ``git config tryout.gerritUser`` in the Core clone, cached from a previous
+1. the command argument
+2. the ``TRYOUT_GERRIT_USER`` environment variable
+3. ``git config tryout.gerritUser`` in the Core clone, cached from a previous
    run
-#. an interactive prompt
+4. an interactive prompt
 
 doctor
 ------

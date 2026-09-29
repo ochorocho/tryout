@@ -179,9 +179,9 @@ Branch resolution
 ``functions.sh`` resolves the active branch once, when it is sourced, and every
 command downstream uses that answer:
 
-#. ``TRYOUT_BRANCH`` if set,
-#. else the branch currently checked out in ``typo3-core/``,
-#. else ``main``.
+1. ``TRYOUT_BRANCH`` if set,
+2. else the branch currently checked out in ``typo3-core/``,
+3. else ``main``.
 
 The second rule is why ``ddev tryout checkout 14.3`` sticks without any further
 configuration, and why the variable is only genuinely needed before the first
@@ -193,15 +193,15 @@ Generating ``composer.json``
 ``sync-composer.php`` runs inside the container, where the project root is
 ``/var/www/html`` unless ``PROJECT_ROOT`` says otherwise. It:
 
-#. globs ``typo3-core/typo3/sysext/*/composer.json`` and reads each ``name``;
-#. keeps every existing requirement whose name does **not** start with
+1. globs ``typo3-core/typo3/sysext/*/composer.json`` and reads each ``name``;
+2. keeps every existing requirement whose name does **not** start with
    ``typo3/cms-`` or ``typo3/theme-``, so packages you required from
    ``packages/`` survive;
-#. adds every discovered system extension at ``@dev``;
-#. adds ``typo3/theme-camino`` on ``main`` and on branches numbered 14 or
+3. adds every discovered system extension at ``@dev``;
+4. adds ``typo3/theme-camino`` on ``main`` and on branches numbered 14 or
    higher;
-#. sorts the requirements and writes the file back;
-#. deletes ``composer.lock``.
+5. sorts the requirements and writes the file back;
+6. deletes ``composer.lock``.
 
 The last point is load-bearing. A lock file that still references an extension
 the new branch removed makes the next ``composer install`` fail, and the error
