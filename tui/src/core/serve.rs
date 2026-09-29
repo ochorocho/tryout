@@ -210,17 +210,21 @@ pub fn saved_settings(ctx: &Ctx, name: &str) -> std::path::PathBuf {
     ctx.instances_dir().join(format!(".{name}.settings.php"))
 }
 
-fn setup_args(ctx: &Ctx) -> (Vec<String>, &'static str) {
+/// `typo3 setup` and the database settings it reads from the environment.
+/// config.tryout.yaml sets TYPO3_DB_PORT=3306 for the whole container (it
+/// cannot know the database type), so the driver and port for Postgres are
+/// passed here.
+fn setup_args(ctx: &Ctx) -> (Vec<String>, [(&'static str, &'static str); 2]) {
     let server_type =
         if ctx.env.webserver_type.starts_with("apache") || ctx.env.webserver_type.is_empty() {
             "apache"
         } else {
             "other"
         };
-    let driver = if ctx.env.is_postgres() {
-        "postgres"
+    let (driver, port) = if ctx.env.is_postgres() {
+        ("postgres", "5432")
     } else {
-        "mysqli"
+        ("mysqli", "3306")
     };
     (
         vec![
@@ -230,7 +234,7 @@ fn setup_args(ctx: &Ctx) -> (Vec<String>, &'static str) {
             "--force".into(),
             format!("--server-type={server_type}"),
         ],
-        driver,
+        [("TYPO3_DB_DRIVER", driver), ("TYPO3_DB_PORT", port)],
     )
 }
 
@@ -267,11 +271,15 @@ pub fn setup_typo3(ctx: &Ctx, name: &str) -> Step {
         ));
         return Err(Failed);
     }
-    let (args, driver) = setup_args(ctx);
+    let (args, db_env) = setup_args(ctx);
     out::info(format!(
         "Running TYPO3 setup for '{name}' (db {db_name}, PHP {php})..."
     ));
-    if exec(ctx, name, &args, &[("TYPO3_DB_DRIVER", driver)], false) != 0 {
+    if exec(ctx, name, &args, &db_env, false) != 0 {
+        // A half-finished setup can leave settings.php behind; kept, it would
+        // read as "already configured" on every later start, over an empty
+        // database. It did not exist before this run, so it goes.
+        let _ = std::fs::remove_file(&settings);
         out::error(format!("TYPO3 setup failed for {name}"));
         return Err(Failed);
     }
@@ -576,9 +584,9 @@ pub fn delete_site(ctx: &Ctx, name: &str) -> Step {
     out::info("[3/4] Removing settings.php...");
     let _ = std::fs::remove_file(site::dir(ctx, name).join("config/system/settings.php"));
     out::success("Configuration removed");
-    let (args, driver) = setup_args(ctx);
+    let (args, db_env) = setup_args(ctx);
     out::info("[4/4] Running TYPO3 setup + extension:setup...");
-    if exec(ctx, name, &args, &[("TYPO3_DB_DRIVER", driver)], false) != 0 {
+    if exec(ctx, name, &args, &db_env, false) != 0 {
         out::error(format!("TYPO3 setup failed for {name}"));
         return Err(Failed);
     }
@@ -590,4 +598,32 @@ pub fn delete_site(ctx: &Ctx, name: &str) -> Step {
     }
     out::success("Setup complete");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::ctx::DdevEnv;
+
+    #[test]
+    fn setup_gets_the_driver_and_port_of_the_projects_database() {
+        let ctx = |db: &str| {
+            Ctx::new(
+                std::path::Path::new("/p"),
+                DdevEnv {
+                    database: db.into(),
+                    ..DdevEnv::default()
+                },
+            )
+        };
+        // The container's TYPO3_DB_PORT says 3306 whatever the database is.
+        assert_eq!(
+            setup_args(&ctx("postgres:16")).1,
+            [("TYPO3_DB_DRIVER", "postgres"), ("TYPO3_DB_PORT", "5432")]
+        );
+        assert_eq!(
+            setup_args(&ctx("mariadb:10.11")).1,
+            [("TYPO3_DB_DRIVER", "mysqli"), ("TYPO3_DB_PORT", "3306")]
+        );
+    }
 }

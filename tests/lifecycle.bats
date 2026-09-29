@@ -610,6 +610,63 @@ table_count() {
   assert_output --partial "No session running"
 }
 
+# One statement against a database of the project's Postgres, as DDEV's db user
+# (a superuser there); the bare answer on stdout.
+pg() {
+  ddev exec env PGPASSWORD=db psql -h db -U db -d "$1" -tAc "$2"
+}
+
+# bats test_tags=lifecycle,postgres
+@test "on Postgres, sites get their own database, and a kept one is restored" {
+  set -eu -o pipefail
+  run ddev config --database=postgres:16
+  assert_success
+  addon_start
+
+  # The primary is set up on Postgres, through TYPO3's own pdo_pgsql driver.
+  assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
+  run pg db "SELECT count(*) > 0 FROM information_schema.tables WHERE table_schema='public'"
+  assert_success
+  assert_output "t"
+
+  # A served worktree gets a database of its own, populated by its own setup.
+  run ddev tryout worktree add side 13.4 --serve
+  assert_success
+  run pg postgres "SELECT 1 FROM pg_database WHERE datname='db_side'"
+  assert_output "1"
+  run pg db_side "SELECT count(*) > 0 FROM information_schema.tables WHERE table_schema='public'"
+  assert_output "t"
+  assert_backend_loads "https://side.${PROJNAME}.ddev.site/typo3/"
+  run ddev tryout exec side vendor/bin/typo3 --version
+  assert_success
+  assert_output --partial "TYPO3 CMS 13.4"
+
+  # Unserve keeps the database; serving again must see its tables — Postgres
+  # answers that per database — and restore the site rather than set it up
+  # into a populated database, which TYPO3 refuses.
+  run ddev tryout worktree unserve side
+  assert_success
+  run pg postgres "SELECT 1 FROM pg_database WHERE datname='db_side'"
+  assert_output "1"
+  run ddev tryout worktree serve side
+  assert_success
+  assert_output --partial "restored — existing database kept"
+  assert_backend_loads "https://side.${PROJNAME}.ddev.site/typo3/"
+
+  # A fresh install drops and recreates it, and sets it up again.
+  run ddev tryout delete side --yes
+  assert_success
+  assert_output --partial "Database db_side recreated"
+  run pg db_side "SELECT count(*) > 0 FROM information_schema.tables WHERE table_schema='public'"
+  assert_output "t"
+
+  # --drop-db really drops it.
+  run ddev tryout worktree unserve side --drop-db
+  assert_success
+  run pg postgres "SELECT count(*) FROM pg_database WHERE datname='db_side'"
+  assert_output "0"
+}
+
 # bats test_tags=lifecycle
 @test "serving works when DDEV has to write the hostname into /etc/hosts" {
   set -eu -o pipefail

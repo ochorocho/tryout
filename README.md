@@ -1104,6 +1104,7 @@ bats tests/unit.bats      # seconds — the shims, launcher and install.yaml, no
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
 bats tests/lifecycle.bats # much longer — every command, against a real project
+bats tests/lifecycle.bats --filter-tags postgres   # the same on Postgres
 bats tests --filter-tags '!release,!lifecycle'   # the fast suites
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
