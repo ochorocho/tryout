@@ -213,7 +213,8 @@ pub struct App {
     /// A job stopped at a password prompt (sudo, for DDEV's hosts file), and
     /// what has been typed for it so far.
     pub password: Option<PasswordPrompt>,
-    /// Commands running and done, one at a time, in the Activity panel.
+    /// Commands queued, running (side by side where they do not conflict) and
+    /// done, in the Activity panel.
     pub jobs: Jobs,
     /// The job whose log fills the right pane, while it does.
     pub log_view: Option<u64>,

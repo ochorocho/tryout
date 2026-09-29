@@ -62,8 +62,15 @@ pick list (branches: main, then releases newest first), a Gerrit change browser
 runs only on an explicit `y`. The answers become one fully-argued `ddev tryout …`
 command, queued as a **job** (`jobs.rs`).
 
-Jobs run one at a time (a second waits, visibly) on a pseudo-terminal with echo
-off. tryout itself never asks once given its arguments, but DDEV runs `sudo` to
+Jobs run side by side where they do not conflict (`Claim` in `actions.rs`):
+one job per worktree at a time, and anything that can `ddev restart` (which ends
+every running `ddev exec`), rewrites the webserver config or writes the
+primary's overlay runs alone. A waiting job's row names what it waits for, and
+nothing overtakes an earlier job it conflicts with. The git writes that every
+worktree shares — fetch, config, worktree metadata — take a lock of their own
+(`core::git::lock_for`, `.git/tryout.lock`), so two jobs queue on it for
+seconds instead of failing on git's `.lock` files. Each job runs on a
+pseudo-terminal with echo off. tryout itself never asks once given its arguments, but DDEV runs `sudo` to
 add a hostname to `/etc/hosts`: a password prompt marks the job as waiting and
 opens a masked popup, whose answer goes to that job and nowhere else. Their progress comes
 from the add-on's event lines — with `TRYOUT_EVENTS=1` every `info`/`success`/
@@ -126,7 +133,7 @@ verb acts on whichever Core is primary when it runs, not the one you selected.
 - `actions.rs` — which commands a worktree is offered, and how each runs
 - `forms.rs` — the native questions: text, pick list, checkbox, the Gerrit change
   browser, confirmation
-- `jobs.rs` — the one-at-a-time queue on a PTY, the event parser, password
+- `jobs.rs` — the queue (parallel by claim) on PTYs, the event parser, password
   prompts, logs, retry
 - `pane.rs` — a program on a real PTY (`portable-pty`), screen emulated by `vt100`,
   exit code kept

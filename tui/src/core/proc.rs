@@ -46,6 +46,7 @@ pub fn capture(program: &str, args: &[&str], dir: Option<&Path>) -> Option<Outpu
 
 /// `git -C <dir> <args>` with its output shown.
 pub fn git(dir: &Path, args: &[&str]) -> bool {
+    let _lock = super::git::lock_for(dir, args);
     let d = dir.to_string_lossy();
     let mut all = vec!["-C", &d];
     all.extend_from_slice(args);
@@ -54,6 +55,7 @@ pub fn git(dir: &Path, args: &[&str]) -> bool {
 
 /// `git -C <dir> <args>` with stdout shown and stderr discarded (`2>/dev/null`).
 pub fn git_no_stderr(dir: &Path, args: &[&str]) -> bool {
+    let _lock = super::git::lock_for(dir, args);
     flush();
     Command::new("git")
         .arg("-C")

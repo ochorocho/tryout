@@ -47,8 +47,8 @@ To update the add-on later, run `ddev add-on get bmack/tryout` again; to remove 
 ### What it runs on
 
 macOS and Linux (on Windows: WSL2). There is nothing else to install: `ddev tryout`
-is one program, shipped inside the add-on as a build per platform
-(`.ddev/tryout/bin/`), and `.ddev/tryout/tryout` runs the one for your machine — on
+is one program, shipped inside the add-on as a build per platform (`.ddev/tryout/bin/`), and `.ddev/tryout/tryout` runs
+the one for your machine — on
 the host and in the web container alike.
 
 ### Installing from the repository
@@ -113,8 +113,8 @@ ddev add-on list --installed
 ### Adding tryout to an existing project
 
 tryout can be installed into a project that already has its own `composer.json`.
-It never rewrites that file: Composer is pointed at an overlay
-(`composer.tryout.json`) which pulls your `composer.json` in as an include, so your
+It never rewrites that file: Composer is pointed at an overlay (`composer.tryout.json`) which pulls your `composer.json`
+in as an include, so your
 own dependencies keep resolving alongside the Core sysexts.
 
 ### Migrating from the old template layout
@@ -210,8 +210,8 @@ primary.
 ### Keeping an installed project up to date
 
 `ddev add-on get` copies the add-on into a project once; it is not refreshed
-afterwards. A project installed before an update therefore keeps the older command
-*and* the older tab-completion — both still work, they just offer the previous set
+afterwards. A project installed before an update therefore keeps the older command *and* the older tab-completion — both
+still work, they just offer the previous set
 of verbs and flags, which looks a lot like completion being broken. `ddev tryout
 status` says so when it notices:
 
@@ -340,8 +340,8 @@ Check the state at any time:
 ddev tryout cs doctor
 ```
 
-Doctor reports whether each piece is wired up and probes Gerrit SSH live
-(requires a public key uploaded at https://review.typo3.org/settings/#SSHKeys) —
+Doctor reports whether each piece is wired up and probes Gerrit SSH live (requires a public key uploaded
+at https://review.typo3.org/settings/#SSHKeys) —
 twice: from inside the container, where `ddev auth ssh` supplies the keys, and
 from the host, whose own agent is what a `git push` from a host shell uses.
 
@@ -351,7 +351,7 @@ To persist it across instances, set it in `.ddev/config.local.yaml`:
 
 ```yaml
 web_environment:
-  - TRYOUT_GERRIT_USER=jdoe
+    - TRYOUT_GERRIT_USER=jdoe
 ```
 
 To revert everything:
@@ -390,8 +390,8 @@ ddev tryout patch
 [↑↓ to move, space to select one, → to all, ← to none, type to filter]
 ```
 
-The columns are the change number, its subject, its owner and its review state
-(`CR` is Code-Review, `V` is Verified). Changes still marked work-in-progress are
+The columns are the change number, its subject, its owner and its review state (`CR` is Code-Review, `V` is Verified).
+Changes still marked work-in-progress are
 prefixed `WIP`. Typing filters the list, Enter applies what is ticked. Everything
 picked is applied in the order shown, with a single rebuild at the end, and you
 are asked once afterwards whether to add them to your patch list so they come back
@@ -436,7 +436,7 @@ list their change IDs in `.ddev/config.tryout-patches.yaml`:
 
 ```yaml
 web_environment:
-  - TRYOUT_PATCHES=56947,12345
+    - TRYOUT_PATCHES=56947,12345
 ```
 
 On start the Core is reset to the current branch and the listed patches
@@ -446,7 +446,8 @@ are cherry-picked in order.
 
 Important
 
-TYPO3 uses a `main`-based commit workflow. Usually only mergers commit to a non-main branch only. Even if your fix targets an earlier version, please provide patches against `main`.
+TYPO3 uses a `main`-based commit workflow. Usually only mergers commit to a non-main branch only. Even if your fix
+targets an earlier version, please provide patches against `main`.
 
 By default tryout clones the `main` branch (latest development). To work
 against a different major version:
@@ -473,7 +474,7 @@ To pin the branch via environment variable (e.g. in `.ddev/config.local.yaml`):
 
 ```yaml
 web_environment:
-  - TRYOUT_BRANCH=14.3
+    - TRYOUT_BRANCH=14.3
 ```
 
 ## Custom Extensions
@@ -584,13 +585,26 @@ The overlay declares two path repositories:
 
 ```json
 {
-  "repositories": [
-    { "type": "path", "url": "../../packages/*" },
-    { "type": "path", "url": "../../typo3/sysext/*", "options": { "symlink": true } }
-  ],
-  "extra": {
-    "merge-plugin": { "include": ["composer.json"] }
-  }
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../../packages/*"
+        },
+        {
+            "type": "path",
+            "url": "../../typo3/sysext/*",
+            "options": {
+                "symlink": true
+            }
+        }
+    ],
+    "extra": {
+        "merge-plugin": {
+            "include": [
+                "composer.json"
+            ]
+        }
+    }
 }
 ```
 
@@ -672,8 +686,8 @@ On every `ddev start` the post-start script runs inside the web container, as an
 ### Gerrit Integration
 
 Patches are resolved through the Gerrit REST API at `https://review.typo3.org`.
-Given a change number (e.g. `56947`), the API returns the latest patchset ref
-(e.g. `refs/changes/47/56947/12`). That ref is fetched and cherry-picked.
+Given a change number (e.g. `56947`), the API returns the latest patchset ref (e.g. `refs/changes/47/56947/12`). That
+ref is fetched and cherry-picked.
 
 Merged or abandoned changes are detected and skipped. Conflicts abort the
 cherry-pick automatically and report the failure.
@@ -756,8 +770,8 @@ Gerrit hooks and commit template for all of them.
 
 ### Serving several sites at once
 
-`use` gives you one site at the project URL. To have every worktree reachable
-**at the same time**, each on its own hostname, PHP version and database, serve
+`use` gives you one site at the project URL. To have every worktree reachable **at the same time**, each on its own
+hostname, PHP version and database, serve
 it instead:
 
 ```bash
@@ -777,8 +791,8 @@ shared.
 A new hostname needs a `ddev restart` — DDEV owns the routing rule and the TLS
 certificate, and both are keyed on the set of hostnames — so `serve`, `unserve`,
 `rename` and `add --serve` **restart DDEV themselves** whenever that set changed.
-Pass `--no-restart`, or set `TRYOUT_NO_RESTART=1`, to skip it and restart later.
-**Re-serving a site that already exists applies immediately**, with no restart:
+Pass `--no-restart`, or set `TRYOUT_NO_RESTART=1`, to skip it and restart later. **Re-serving a site that already exists
+applies immediately**, with no restart:
 the webserver is reloaded in place, and the other sites keep serving throughout. So changing a
 served site's PHP version, for instance, costs a reload rather than a full
 container rebuild:
@@ -870,8 +884,8 @@ where both the host and the container can see it.
 Output is meant to be read by people: `ddev tryout worktree list` draws one card
 per worktree — its base branch, the patches on top, uncommitted changes and the
 site it serves. **For scripting, use
-`ddev tryout worktree list --plain`** — space-padded columns
-(`NAME HEAD BRANCH STATE PHP DB URL`), which is the format the Playwright suite
+`ddev tryout worktree list --plain`** — space-padded columns (`NAME HEAD BRANCH STATE PHP DB URL`), which is the format
+the Playwright suite
 parses and the one that stays stable — or **`--json`**, one array with a fixed set
 of keys (`name dir head branch base patches modified untracked primary url php db
 subject php_versions changes`; `branch` is `null` for a detached checkout, `dir` is
@@ -898,8 +912,7 @@ With `TRYOUT_EVENTS=1` any command also prints its progress as
 Every tryout command for the selected worktree is behind `a` or a right-click.
 The TUI asks what a command needs itself, in a form: names, branches, Gerrit
 changes, and a confirmation naming what a destructive command removes. It then
-runs the command as a job in the Activity panel, one at a time, while you keep
-working. If a command asks for your password (DDEV does, now and then, for
+runs the command as a job in the Activity panel while you keep working. If a command asks for your password (DDEV does, now and then, for
 `/etc/hosts`), a popup asks for it.
 
 The keys below apply while the **list** has the focus — the worktrees, agents
@@ -908,42 +921,42 @@ and Activity. Once you are in a shell, every key goes to that shell except
 
 ### Moving around
 
-| Keyboard | Mouse | Does |
-|---|---|---|
-| `↑` `↓` or `k` `j` | click a worktree | select a worktree |
-| `Home` / `End` | | first / last worktree |
-| `Enter`, `→` or `l` | click in the pane | into the worktree's active shell (a new one if it has none) |
-| `Ctrl-G` | | out of the shell, back to the list |
-| `{` / `}` | drag the border between list and pane | narrow / widen the list (double-click the border resets it) |
-| `r` | | reload the list |
+| Keyboard            | Mouse                                 | Does                                                        |
+|---------------------|---------------------------------------|-------------------------------------------------------------|
+| `↑` `↓` or `k` `j`  | click a worktree                      | select a worktree                                           |
+| `Home` / `End`      |                                       | first / last worktree                                       |
+| `Enter`, `→` or `l` | click in the pane                     | into the worktree's active shell (a new one if it has none) |
+| `Ctrl-G`            |                                       | out of the shell, back to the list                          |
+| `{` / `}`           | drag the border between list and pane | narrow / widen the list (double-click the border resets it) |
+| `r`                 |                                       | reload the list                                             |
 
 ### Shells and tabs
 
-| Keyboard | Mouse | Does |
-|---|---|---|
-| `t` | click `+` after the tabs | open a new shell tab in the selected worktree |
-| `1` … `9` | click a tab | switch to that tab |
-| `[` / `]` | | previous / next tab |
-| `<` / `>` | drag a tab | move the tab left / right |
-| `,` | double-click a tab | rename it (Enter keeps it, Esc cancels, an empty name goes back to its program's title) |
-| `w` | | close the tab |
+| Keyboard  | Mouse                    | Does                                                                                    |
+|-----------|--------------------------|-----------------------------------------------------------------------------------------|
+| `t`       | click `+` after the tabs | open a new shell tab in the selected worktree                                           |
+| `1` … `9` | click a tab              | switch to that tab                                                                      |
+| `[` / `]` |                          | previous / next tab                                                                     |
+| `<` / `>` | drag a tab               | move the tab left / right                                                               |
+| `,`       | double-click a tab       | rename it (Enter keeps it, Esc cancels, an empty name goes back to its program's title) |
+| `w`       |                          | close the tab                                                                           |
 
 ### Commands
 
-| Keyboard | Mouse | Does |
-|---|---|---|
-| `a` or `Space` | right-click a worktree | the commands for that worktree (the right-click menu leaves out Status and Regenerate the overlay) |
-| `+` | click **+ new** above the list | create a worktree: asks its name, the branch, and whether to serve it now |
-| | click the URL in the title | open that site in the browser |
+| Keyboard       | Mouse                          | Does                                                                                               |
+|----------------|--------------------------------|----------------------------------------------------------------------------------------------------|
+| `a` or `Space` | right-click a worktree         | the commands for that worktree (the right-click menu leaves out Status and Regenerate the overlay) |
+| `+`            | click **+ new** above the list | create a worktree: asks its name, the branch, and whether to serve it now                          |
+|                | click the URL in the title     | open that site in the browser                                                                      |
 
 Inside the menu:
 
-| Keyboard | Does |
-|---|---|
-| `↑` `↓` or `k` `j` | choose |
+| Keyboard            | Does                                                        |
+|---------------------|-------------------------------------------------------------|
+| `↑` `↓` or `k` `j`  | choose                                                      |
 | `Enter`, `→` or `l` | run it, or open a submenu (marked ▸, e.g. **Serve on PHP**) |
-| `←`, `Esc` or `h` | out of a submenu |
-| `Esc` or `q` | close the menu |
+| `←`, `Esc` or `h`   | out of a submenu                                            |
+| `Esc` or `q`        | close the menu                                              |
 
 The menu offers what fits the worktree: Serve, Serve on PHP ▸, Open site, Open
 backend, Make primary, Unserve (with or without its database), Update from its
@@ -953,15 +966,15 @@ An entry ending in … asks something first.
 
 ### Forms
 
-| Keyboard | Does |
-|---|---|
-| `Tab` / `Shift-Tab` | next / previous field |
-| `Enter` | submit |
-| `Esc` | cancel |
-| typing, `Backspace`, `Ctrl-U` | edit a text field (`Ctrl-U` clears it) |
-| typing, `↑` `↓` | in a branch list: filter, then choose |
-| `Space` | toggle a checkbox |
-| `y` | confirm a destructive command; any other key cancels |
+| Keyboard                      | Does                                                 |
+|-------------------------------|------------------------------------------------------|
+| `Tab` / `Shift-Tab`           | next / previous field                                |
+| `Enter`                       | submit                                               |
+| `Esc`                         | cancel                                               |
+| typing, `Backspace`, `Ctrl-U` | edit a text field (`Ctrl-U` clears it)               |
+| typing, `↑` `↓`               | in a branch list: filter, then choose                |
+| `Space`                       | toggle a checkbox                                    |
+| `y`                           | confirm a destructive command; any other key cancels |
 
 ### Applying Gerrit changes
 
@@ -978,57 +991,65 @@ to Gerrit, not just this page, shortly after you stop typing:
 Terms combine, so `owner:jdoe -is:wip cache` works. `Tab` moves between the search
 box and the list.
 
-| Keyboard | Mouse | Does |
-|---|---|---|
-| typing, `Backspace` | | edit the search (in the search box, `Space` types a space) |
-| `↓` or `Tab` | | from the search box into the list |
-| `↑` `↓` | wheel | choose a change (`↑` on the first row goes back to the search) |
-| `Space` | click a change | tick or untick it |
-| `PgUp` / `PgDn`, or `←` / `→` in the list | click `‹ previous` / `next ›` | turn the page (ticks are kept across pages) |
-| a letter | | from the list back to the search, typing it |
-| `Enter` | | apply the ticked changes in the order you ticked them, or the selected one if none is ticked |
-| `Esc` | | cancel |
+| Keyboard                                  | Mouse                         | Does                                                                                         |
+|-------------------------------------------|-------------------------------|----------------------------------------------------------------------------------------------|
+| typing, `Backspace`                       |                               | edit the search (in the search box, `Space` types a space)                                   |
+| `↓` or `Tab`                              |                               | from the search box into the list                                                            |
+| `↑` `↓`                                   | wheel                         | choose a change (`↑` on the first row goes back to the search)                               |
+| `Space`                                   | click a change                | tick or untick it                                                                            |
+| `PgUp` / `PgDn`, or `←` / `→` in the list | click `‹ previous` / `next ›` | turn the page (ticks are kept across pages)                                                  |
+| a letter                                  |                               | from the list back to the search, typing it                                                  |
+| `Enter`                                   |                               | apply the ticked changes in the order you ticked them, or the selected one if none is ticked |
+| `Esc`                                     |                               | cancel                                                                                       |
 
 ### Activity and logs
 
-| Keyboard | Mouse | Does |
-|---|---|---|
-| `L` | click an Activity row | open that command's log |
-| `R` | click ↻ on a failed row | run the failed command again |
+| Keyboard | Mouse                   | Does                         |
+|----------|-------------------------|------------------------------|
+| `L`      | click an Activity row   | open that command's log      |
+| `R`      | click ↻ on a failed row | run the failed command again |
+
+Commands on different worktrees run side by side: a patch on `v13` does not
+wait for a rebuild of `main`. Two on the same worktree take turns, and serve,
+unserve, rename, remove, Make primary and Regenerate the overlay run **alone** —
+they can restart DDEV, which would end every other command, or rewrite
+configuration every site shares. A command that has to wait says what for
+(`Serve v13 · after Reset main`), and nothing jumps ahead of an earlier one it
+conflicts with, so commands on one worktree keep the order you gave them.
 
 A command that succeeded leaves the list after 5 seconds, and a failed one stays
 until you retry it. Inside the log:
 
-| Keyboard | Mouse | Does |
-|---|---|---|
-| `↑` `↓` or `k` `j` | wheel (3 lines) | scroll a line |
-| `PgUp` / `PgDn`, or `b` / `Space` | | scroll a page |
-| `Home` / `End`, or `g` / `G` | | top / bottom |
-| `r` | click **↻ retry (r)** | run the command again |
-| `Esc`, `q` or `Enter` | | close the log |
+| Keyboard                          | Mouse                 | Does                  |
+|-----------------------------------|-----------------------|-----------------------|
+| `↑` `↓` or `k` `j`                | wheel (3 lines)       | scroll a line         |
+| `PgUp` / `PgDn`, or `b` / `Space` |                       | scroll a page         |
+| `Home` / `End`, or `g` / `G`      |                       | top / bottom          |
+| `r`                               | click **↻ retry (r)** | run the command again |
+| `Esc`, `q` or `Enter`             |                       | close the log         |
 
 ### Agents
 
-| Keyboard | Mouse | Does |
-|---|---|---|
-| `n` | click an agent | go to the next agent that needs you: waiting first, then working, then idle |
+| Keyboard | Mouse          | Does                                                                        |
+|----------|----------------|-----------------------------------------------------------------------------|
+| `n`      | click an agent | go to the next agent that needs you: waiting first, then working, then idle |
 
 ### Popups
 
-| Popup | Keyboard |
-|---|---|
-| **Password**, when a command asks for one | type it (shown as •), `Enter` sends it to that command, `Esc` or `Ctrl-C` cancels. It is not stored. |
-| **Rename tab** | the old name starts selected, so typing replaces it; `←` `→` `Home` `End` keep it; `Ctrl-U` clears it; `Enter` / `Esc` |
-| **Close the session?** | `y` closes, any other key keeps it |
+| Popup                                     | Keyboard                                                                                                               |
+|-------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
+| **Password**, when a command asks for one | type it (shown as •), `Enter` sends it to that command, `Esc` or `Ctrl-C` cancels. It is not stored.                   |
+| **Rename tab**                            | the old name starts selected, so typing replaces it; `←` `→` `Home` `End` keep it; `Ctrl-U` clears it; `Enter` / `Esc` |
+| **Close the session?**                    | `y` closes, any other key keeps it                                                                                     |
 
 While a popup or form is open, clicks outside it do nothing.
 
 ### The session
 
-| Keyboard | Does |
-|---|---|
+| Keyboard        | Does                                                 |
+|-----------------|------------------------------------------------------|
 | `q` or `Ctrl-C` | detach: shells, agents and running commands carry on |
-| `Q`, then `y` | close the session and everything in it |
+| `Q`, then `y`   | close the session and everything in it               |
 
 **It runs as a session, like tmux.** The next `ddev tryout ui` picks the session
 up exactly as you left it; only `Q` or `ddev tryout ui stop` ends it. One terminal

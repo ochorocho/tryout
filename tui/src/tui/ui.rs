@@ -922,7 +922,14 @@ fn draw_activity(f: &mut Frame, app: &App, area: Rect) {
                     Style::new().fg(theme::ACCENT),
                     step.clone().unwrap_or_else(|| "starting…".into()),
                 ),
-                JobState::Queued => ("…", Style::new().fg(theme::MUTED), "waiting".into()),
+                // What it waits for: two jobs on one worktree, or one that runs alone.
+                JobState::Queued => (
+                    "…",
+                    Style::new().fg(theme::MUTED),
+                    app.jobs
+                        .blocked_by(j.id)
+                        .map_or("waiting".into(), |b| format!("after {}", b.label)),
+                ),
                 JobState::Done {
                     ok: true, took: t, ..
                 } => ("✓", Style::new().fg(theme::PRIMARY), took(*t)),
@@ -2070,6 +2077,34 @@ mod tests {
             Some(MenuHit::Sub(2))
         );
         insta::assert_snapshot!(render(&a, 100, 30).backend());
+    }
+
+    #[test]
+    fn a_queued_row_says_what_it_waits_for() {
+        use crate::tui::actions::{Action, Run};
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = loaded();
+        a.root = dir.path().to_path_buf();
+        a.jobs = crate::tui::jobs::Jobs::new(crate::tui::jobs::tests::fake(dir.path()));
+        let act = |label: &str, args: &str| Action {
+            label: label.into(),
+            hint: String::new(),
+            args: args.split_whitespace().map(String::from).collect(),
+            run: Run::Job { reveal: false },
+        };
+        a.jobs.enqueue(&act("Reset main", "reset main"), false);
+        a.jobs
+            .enqueue(&act("Serve v13", "worktree serve v13"), false);
+        a.jobs.tick(dir.path());
+        let t = render(&a, 100, 30);
+        let text: String = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Serve v13 · after Reset main"), "{text}");
     }
 
     #[test]

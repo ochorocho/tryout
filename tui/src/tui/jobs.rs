@@ -1,5 +1,6 @@
-//! Commands as background jobs: `ddev tryout …` run fully argued, one at a time,
-//! their progress read from the add-on's `@@tryout` event lines (TRYOUT_EVENTS=1)
+//! Commands as background jobs: `ddev tryout …` run fully argued, side by side
+//! where they do not conflict (`Claim`: one job per worktree, and whatever can
+//! restart DDEV or rewrite shared config alone), their progress read from the add-on's `@@tryout` event lines (TRYOUT_EVENTS=1)
 //! and the rest kept as a log. The UI asks its questions before a job exists,
 //! so tryout itself never waits on input.
 //!
@@ -18,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use crate::tui::actions::Action;
+use crate::tui::actions::{Action, Claim};
 
 /// How long a success stays in the Activity panel: long enough to see the
 /// tick. A failure stays, for its log and its retry.
@@ -66,6 +67,8 @@ pub struct Job {
     /// It reported a step done that changes what the list shows (a patch
     /// applied, a worktree created) — before the job itself has finished.
     pub progressed: bool,
+    /// What it needs to itself while it runs.
+    pub claim: Claim,
 }
 
 impl Job {
@@ -174,6 +177,7 @@ impl Jobs {
             reveal,
             waiting: None,
             progressed: false,
+            claim: Claim::of(&action.args),
         });
         self.sort();
         id
@@ -214,11 +218,12 @@ impl Jobs {
         if !matches!(job.state, JobState::Done { .. }) {
             return None;
         }
-        let (label, args, reveal, changes) = (
+        let (label, args, reveal, changes, claim) = (
             job.label.clone(),
             job.args.clone(),
             job.reveal,
             job.changes_worktrees,
+            job.claim.clone(),
         );
         let new = self.next_id;
         self.next_id += 1;
@@ -233,13 +238,26 @@ impl Jobs {
             reveal,
             waiting: None,
             progressed: false,
+            claim,
         });
         self.sort();
         Some(new)
     }
 
-    /// Take in what the runners reported, start the next job when none runs,
-    /// and hand back the ones that just finished.
+    /// The job a queued one waits for: a running one or an earlier queued one
+    /// whose claim conflicts with its own. None once it may start.
+    pub fn blocked_by(&self, id: u64) -> Option<&Job> {
+        let job = self.get(id).filter(|j| j.state == JobState::Queued)?;
+        self.list.iter().find(|o| {
+            o.id != job.id
+                && (matches!(o.state, JobState::Running { .. })
+                    || (o.state == JobState::Queued && o.id < job.id))
+                && o.claim.conflicts(&job.claim)
+        })
+    }
+
+    /// Take in what the runners reported, start every queued job nothing it
+    /// conflicts with is ahead of, and hand back the ones that just finished.
     pub fn tick(&mut self, cwd: &Path) -> Vec<Job> {
         let mut finished = Vec::new();
         while let Ok(report) = self.rx.try_recv() {
@@ -275,18 +293,32 @@ impl Jobs {
                 }
             }
         }
-        if !self.running()
-            && let Some(job) = self.list.iter_mut().find(|j| j.state == JobState::Queued)
-        {
+        // In queue order, so nothing overtakes a job it conflicts with.
+        let mut queued: Vec<u64> = self
+            .list
+            .iter()
+            .filter(|j| j.state == JobState::Queued)
+            .map(|j| j.id)
+            .collect();
+        queued.sort_unstable();
+        let mut started = false;
+        for id in queued {
+            if self.blocked_by(id).is_some() {
+                continue;
+            }
+            let Some(job) = self.list.iter_mut().find(|j| j.id == id) else {
+                continue;
+            };
             job.state = JobState::Running {
                 step: None,
                 since: Instant::now(),
             };
+            started = true;
             if let Some(w) = spawn(&self.program, cwd, job.id, &job.args, &self.tx) {
                 self.writers.insert(job.id, w);
             }
         }
-        if !finished.is_empty() {
+        if started || !finished.is_empty() {
             self.sort();
             self.trim();
         }
@@ -526,24 +558,94 @@ fi
         done
     }
 
+    /// A job for `ddev tryout <line>`.
+    fn command(line: &str) -> Action {
+        Action {
+            label: line.into(),
+            hint: String::new(),
+            args: line.split_whitespace().map(String::from).collect(),
+            run: Run::Background,
+        }
+    }
+
+    fn running(jobs: &Jobs, id: u64) -> bool {
+        matches!(jobs.get(id).unwrap().state, JobState::Running { .. })
+    }
+
     #[test]
-    fn jobs_run_one_at_a_time_in_order() {
+    fn jobs_that_conflict_run_one_at_a_time_in_order() {
         let dir = tempfile::tempdir().unwrap();
         let mut jobs = Jobs::new(fake(dir.path()));
         let a = jobs.enqueue(&action("first"), false);
         let b = jobs.enqueue(&action("second"), false);
         jobs.tick(dir.path());
-        assert!(matches!(
-            jobs.get(a).unwrap().state,
-            JobState::Running { .. }
-        ));
+        assert!(running(&jobs, a));
         assert_eq!(
             jobs.get(b).unwrap().state,
             JobState::Queued,
             "the second waits"
         );
+        assert_eq!(jobs.blocked_by(b).map(|j| j.id), Some(a));
         let done = until_done(&mut jobs, dir.path(), 2);
         assert_eq!(done.iter().map(|j| j.id).collect::<Vec<_>>(), [a, b]);
+    }
+
+    #[test]
+    fn jobs_on_different_worktrees_run_side_by_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut jobs = Jobs::new(fake(dir.path()));
+        let a = jobs.enqueue(&command("patch --site main 91003"), false);
+        let b = jobs.enqueue(&command("reset v13"), false);
+        let c = jobs.enqueue(&command("status"), false);
+        jobs.tick(dir.path());
+        assert!(running(&jobs, a) && running(&jobs, b) && running(&jobs, c));
+        until_done(&mut jobs, dir.path(), 3);
+    }
+
+    #[test]
+    fn a_second_job_on_one_worktree_waits_but_does_not_hold_up_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut jobs = Jobs::new(fake(dir.path()));
+        let a = jobs.enqueue(&command("patch --site v13 91003"), false);
+        let b = jobs.enqueue(&command("reset v13"), false);
+        let c = jobs.enqueue(&command("download main"), false);
+        jobs.tick(dir.path());
+        assert!(running(&jobs, a) && running(&jobs, c));
+        assert_eq!(jobs.get(b).unwrap().state, JobState::Queued);
+        assert_eq!(jobs.blocked_by(b).map(|j| j.id), Some(a));
+        let done = until_done(&mut jobs, dir.path(), 3);
+        assert_eq!(
+            done.last().map(|j| j.id),
+            Some(b),
+            "it runs after the first"
+        );
+    }
+
+    #[test]
+    fn what_runs_alone_waits_for_all_and_holds_back_what_comes_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut jobs = Jobs::new(fake(dir.path()));
+        let a = jobs.enqueue(&command("reset main"), false);
+        let serve = jobs.enqueue(&command("worktree serve v13"), false);
+        // Conflicts with nothing running — but must not overtake the serve.
+        let b = jobs.enqueue(&command("reset v14"), false);
+        jobs.tick(dir.path());
+        assert!(running(&jobs, a));
+        assert_eq!(jobs.blocked_by(serve).map(|j| j.id), Some(a));
+        assert_eq!(jobs.blocked_by(b).map(|j| j.id), Some(serve));
+        // Once the serve starts, it is alone.
+        let t = Instant::now();
+        while !running(&jobs, serve) {
+            assert!(
+                t.elapsed() < Duration::from_secs(10),
+                "the serve never started"
+            );
+            jobs.tick(dir.path());
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!running(&jobs, a) && !running(&jobs, b));
+        let done = until_done(&mut jobs, dir.path(), 2);
+        assert_eq!(done.iter().map(|j| j.id).collect::<Vec<_>>(), [serve, b]);
     }
 
     #[test]
@@ -749,6 +851,7 @@ fi
             reveal: false,
             waiting: None,
             progressed: false,
+            claim: Claim::Alone,
         };
         for i in 0..LOG_LINES + 10 {
             take_line(&mut job, format!("line {i}"));
