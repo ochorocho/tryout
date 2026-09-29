@@ -20,6 +20,9 @@ use serde::Deserialize;
 
 use crate::tui::actions::Action;
 
+/// How long a success stays in the Activity panel: long enough to see the
+/// tick. A failure stays, for its log and its retry.
+pub const SUCCESS_LINGERS: Duration = Duration::from_secs(5);
 /// How many finished jobs the Activity panel keeps.
 const KEEP_DONE: usize = 5;
 /// A log longer than this keeps its tail: a composer install can run to
@@ -39,6 +42,8 @@ pub enum JobState {
         ok: bool,
         code: Option<i32>,
         took: Duration,
+        /// When it finished: a success leaves the list a little later.
+        at: Instant,
     },
 }
 
@@ -170,6 +175,15 @@ impl Jobs {
         id
     }
 
+    /// Drop the successes that finished `after` ago or longer — except `keep`,
+    /// whose log is open.
+    pub fn expire(&mut self, after: Duration, keep: Option<u64>) {
+        self.list.retain(|j| match j.state {
+            JobState::Done { ok: true, at, .. } => Some(j.id) == keep || at.elapsed() < after,
+            _ => true,
+        });
+    }
+
     /// The newest job that failed, if the newest finished one did.
     pub fn last_failed(&self) -> Option<u64> {
         self.list
@@ -240,6 +254,7 @@ impl Jobs {
                             ok: code == Some(0),
                             code,
                             took,
+                            at: Instant::now(),
                         };
                         finished.push(job.clone());
                     }
@@ -681,6 +696,25 @@ fi
         assert_eq!(job.state, JobState::Queued);
         let done = until_done(&mut jobs, dir.path(), 1);
         assert_eq!(done[0].id, again);
+    }
+
+    #[test]
+    fn a_success_leaves_after_a_while_a_failure_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut jobs = Jobs::new(fake(dir.path()));
+        let (ok, open, bad) = (
+            jobs.enqueue(&action("fine"), false),
+            jobs.enqueue(&action("read"), false),
+            jobs.enqueue(&action("fail"), false),
+        );
+        until_done(&mut jobs, dir.path(), 3);
+        jobs.expire(Duration::from_secs(60), None);
+        assert_eq!(jobs.list().len(), 3, "not yet");
+        jobs.expire(Duration::ZERO, Some(open));
+        let left: Vec<u64> = jobs.list().iter().map(|j| j.id).collect();
+        assert!(!left.contains(&ok), "the success went");
+        assert!(left.contains(&open), "the one being read stays");
+        assert!(left.contains(&bad), "the failure stays");
     }
 
     #[test]

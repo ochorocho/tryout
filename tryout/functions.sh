@@ -2595,6 +2595,11 @@ apply_patch() {
     # Check if already applied via Change-Id
     local gerrit_change_id
     gerrit_change_id=$(git -C "${CORE_DIR}" log -1 --format=%b FETCH_HEAD | grep '^Change-Id:' | head -1 | awk '{print $2}')
+    # Which change this Change-Id is: a cherry-picked patchset carries only the
+    # Change-Id, and the worktree list names the patches on top by number.
+    if [ -n "${gerrit_change_id}" ]; then
+        git -C "${CORE_DIR}" config "tryout.change-${gerrit_change_id}" "${change_id}" 2>/dev/null || true
+    fi
     if [ -n "${gerrit_change_id}" ]; then
         if git -C "${CORE_DIR}" log --format=%b "origin/${BRANCH}..HEAD" | grep -q "^Change-Id: ${gerrit_change_id}$"; then
             info "Change ${change_id} is already applied — skipping"

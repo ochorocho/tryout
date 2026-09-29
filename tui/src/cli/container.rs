@@ -735,8 +735,22 @@ fn card(ctx: &Ctx, r: &worktree::Row) -> String {
     }
     if count > 0 {
         let noun = if count == 1 { "patch" } else { "patches" };
+        // The Gerrit changes among them, by number, when tryout applied them.
+        let changes = worktree::changes_on_top(ctx, &dir, &r.branch);
+        let which = if changes.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({})",
+                changes
+                    .iter()
+                    .map(|n| format!("#{n}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        };
         s.push_str(&format!(
-            "  {YELLOW}{count} {noun} on top{NC} {DIM}{TEXT}·{NC} {TEXT}{subject}{NC}\n"
+            "  {YELLOW}{count} {noun} on top{which}{NC} {DIM}{TEXT}·{NC} {TEXT}{subject}{NC}\n"
         ));
     } else if !subject.is_empty() {
         s.push_str(&format!("  {DIM}{TEXT}{subject}{NC}\n"));

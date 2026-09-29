@@ -1,6 +1,7 @@
 //! Core checkouts: the root clone (the primary) and the worktrees nested under
 //! worktrees/<name>.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use super::ctx::Ctx;
@@ -188,6 +189,59 @@ mod tests {
     }
 
     #[test]
+    fn the_patches_on_top_are_named_by_the_changes_tryout_applied() {
+        let d = core_repo();
+        let c = Ctx::new(d.path(), DdevEnv::default());
+        let g = |a: &[&str]| {
+            let ok = Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
+                .arg(d.path())
+                .args(a)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "{a:?}");
+        };
+        g(&[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "[BUGFIX] From Gerrit",
+            "-m",
+            "Change-Id: I00aa",
+        ]);
+        g(&[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "[TASK] By hand",
+            "-m",
+            "Change-Id: I00bb",
+        ]);
+        g(&[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "[TASK] Also Gerrit",
+            "-m",
+            "Change-Id: I00CC",
+        ]);
+        super::super::patch::remember(d.path(), "I00aa", "91234");
+        super::super::patch::remember(d.path(), "I00CC", "90001");
+        assert_eq!(changes_on_top(&c, d.path(), "main"), [91234, 90001]);
+        let info = &infos(&c, &[])[0];
+        assert_eq!(
+            (info.patches, info.changes.clone()),
+            (3, vec![91234, 90001])
+        );
+        assert!(infos_json(&infos(&c, &[])).contains(r#""changes":[91234,90001]"#));
+    }
+
+    #[test]
     fn a_path_that_is_not_a_checkout_is_clean() {
         let none = tempfile::tempdir().unwrap();
         assert!(!is_dirty(none.path()));
@@ -262,6 +316,41 @@ pub fn worktree_names(ctx: &Ctx) -> Vec<String> {
 /// applied patches. Detached checkouts answer from the remote branches that
 /// contain HEAD, attached ones from their upstream.
 pub fn base_info(dir: &Path, branch: &str) -> (String, u32) {
+    let (base, count, _) = base_and_upstream(dir, branch);
+    (base, count)
+}
+
+/// The Gerrit changes among a checkout's patches on top, for one checkout.
+pub fn changes_on_top(ctx: &Ctx, dir: &Path, branch: &str) -> Vec<u64> {
+    let (_, count, upstream) = base_and_upstream(dir, branch);
+    if count == 0 {
+        return Vec::new();
+    }
+    applied_changes(dir, &upstream, &super::patch::remembered(&ctx.root))
+}
+
+/// The Gerrit change numbers of the commits on top of the base, oldest first,
+/// as far as tryout applied them (see `patch::remember`).
+fn applied_changes(dir: &Path, upstream: &str, known: &HashMap<String, u64>) -> Vec<u64> {
+    let mut ids: Vec<u64> = git::lines(
+        dir,
+        &[
+            "log",
+            "--reverse",
+            "--format=%b",
+            &format!("{upstream}..HEAD"),
+        ],
+    )
+    .iter()
+    .filter_map(|l| l.strip_prefix("Change-Id:"))
+    .filter_map(|id| known.get(&id.trim().to_lowercase()).copied())
+    .collect();
+    ids.dedup();
+    ids
+}
+
+/// `base_info`, plus the upstream ref the count was taken against.
+fn base_and_upstream(dir: &Path, branch: &str) -> (String, u32, String) {
     let (base, upstream) = if branch == "(detached)" {
         let base = detect_detached_base_branch(dir);
         let up = format!("origin/{base}");
@@ -275,7 +364,7 @@ pub fn base_info(dir: &Path, branch: &str) -> (String, u32) {
     let count = git::out(dir, &["rev-list", "--count", &format!("{upstream}..HEAD")])
         .and_then(|c| c.parse().ok())
         .unwrap_or(0);
-    (base, count)
+    (base, count, upstream)
 }
 
 /// What a worktree serves: (url, php, db), all empty when nothing.
@@ -323,6 +412,10 @@ pub struct Info {
     /// Core). Absent from an older add-on.
     #[serde(default)]
     pub php_versions: Vec<String>,
+    /// The Gerrit changes among the patches on top, oldest first — the ones
+    /// tryout applied. Absent from an older add-on.
+    #[serde(default)]
+    pub changes: Vec<u64>,
 }
 
 /// Every checkout with its state. `available` is the PHP versions the web image
@@ -331,10 +424,12 @@ pub fn infos(ctx: &Ctx, available: &[String]) -> Vec<Info> {
     // Each checkout costs a `git status` — about two seconds on a cold Core tree
     // — so they are read side by side, not one after another.
     let rows = rows(ctx);
+    let known = super::patch::remembered(&ctx.root);
+    let known = &known;
     std::thread::scope(|scope| {
         let handles: Vec<_> = rows
             .into_iter()
-            .map(|r| scope.spawn(move || info(ctx, r, available)))
+            .map(|r| scope.spawn(move || info(ctx, r, available, known)))
             .collect();
         handles
             .into_iter()
@@ -343,7 +438,7 @@ pub fn infos(ctx: &Ctx, available: &[String]) -> Vec<Info> {
     })
 }
 
-fn info(ctx: &Ctx, r: Row, available: &[String]) -> Info {
+fn info(ctx: &Ctx, r: Row, available: &[String], known: &HashMap<String, u64>) -> Info {
     let some = |s: String| (!s.is_empty()).then_some(s);
     let dir = ctx.core_checkout_dir(&r.name);
     let rel = match dir.strip_prefix(&ctx.root) {
@@ -351,7 +446,12 @@ fn info(ctx: &Ctx, r: Row, available: &[String]) -> Info {
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(_) => dir.to_string_lossy().into_owned(),
     };
-    let (base, patches) = base_info(&dir, &r.branch);
+    let (base, patches, upstream) = base_and_upstream(&dir, &r.branch);
+    let changes = if patches > 0 {
+        applied_changes(&dir, &upstream, known)
+    } else {
+        Vec::new()
+    };
     let (modified, untracked) = change_counts(&dir);
     let (url, php, db) = site_info(ctx, &r.name, r.active);
     let subject = git::out(&dir, &["log", "-1", "--format=%s"]).unwrap_or_default();
@@ -371,6 +471,7 @@ fn info(ctx: &Ctx, r: Row, available: &[String]) -> Info {
         db: some(db),
         subject: some(subject),
         php_versions: super::php::matching(&constraint, available),
+        changes,
     }
 }
 
@@ -386,7 +487,7 @@ pub fn infos_json(infos: &[Info]) -> String {
         }
         let phps: Vec<String> = w.php_versions.iter().map(|v| json_str(v)).collect();
         s.push_str(&format!(
-            "\n  {{\"name\":{},\"dir\":{},\"head\":{},\"branch\":{},\"base\":{},\"patches\":{},\"modified\":{},\"untracked\":{},\"primary\":{},\"url\":{},\"php\":{},\"db\":{},\"subject\":{},\"php_versions\":[{}]}}",
+            "\n  {{\"name\":{},\"dir\":{},\"head\":{},\"branch\":{},\"base\":{},\"patches\":{},\"modified\":{},\"untracked\":{},\"primary\":{},\"url\":{},\"php\":{},\"db\":{},\"subject\":{},\"php_versions\":[{}],\"changes\":[{}]}}",
             json_str(&w.name),
             json_str(&w.dir),
             json_str(&w.head),
@@ -401,6 +502,7 @@ pub fn infos_json(infos: &[Info]) -> String {
             opt(&w.db),
             opt(&w.subject),
             phps.join(","),
+            w.changes.iter().map(u64::to_string).collect::<Vec<_>>().join(","),
         ));
     }
     s.push_str("\n]\n");

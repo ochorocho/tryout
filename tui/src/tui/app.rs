@@ -636,6 +636,10 @@ impl App {
         for job in self.jobs.tick(&self.root.clone()) {
             reload |= self.job_finished(&job);
         }
+        // A success has made its point after a few seconds; the one whose log
+        // is open stays until it is closed.
+        self.jobs
+            .expire(crate::tui::jobs::SUCCESS_LINGERS, self.log_view);
         if reload {
             self.listing = Listing::Loading;
             return Effect::Reload;
@@ -1229,9 +1233,12 @@ pub mod tests {
             db: url.map(|_| format!("db_{name}")),
             subject: Some("[TASK] Raise phpstan to 2.1.17".into()),
             php_versions: Vec::new(),
+            changes: Vec::new(),
         };
         let mut v13 = wt("v13", None, "13.4", Some("https://v13.demo.ddev.site"));
         (v13.patches, v13.modified, v13.untracked) = (2, 3, 1);
+        // One applied from Gerrit by tryout, one cherry-picked by hand.
+        v13.changes = vec![91234];
         vec![
             wt("main", Some("main"), "main", Some("https://demo.ddev.site")),
             v13,

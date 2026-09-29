@@ -968,18 +968,26 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(badges, badge_style),
             ]);
             // The branch it is on, or for a detached checkout the one it came
-            // from; "+N" is the patches on top.
+            // from; then the patches on top, the PHP it is served on, and the
+            // commit — the part a narrow list cuts first.
             let at = w
                 .branch
                 .as_deref()
                 .or(w.base.as_deref())
                 .unwrap_or("detached");
-            let patches = if w.patches > 0 {
-                format!(" +{}", w.patches)
+            let mut detail = format!("   {at}{}", patch_badge(w));
+            if w.served()
+                && let Some(php) = &w.php
+            {
+                detail.push_str(&format!(" · PHP {php}"));
+            }
+            // The commit only whole: a cut hash says nothing.
+            let with_head = format!("{detail} · {}", short(&w.head));
+            let detail = if with_head.chars().count() <= width {
+                with_head
             } else {
-                String::new()
+                truncate(&detail, width)
             };
-            let detail = truncate(&format!("   {at}{patches} · {}", short(&w.head)), width);
             let second = Line::styled(format!("{detail:<width$}"), sub);
             ListItem::new(vec![first, second])
         })
@@ -1168,6 +1176,16 @@ pub fn in_pane_body(screen: Rect, app: &App, col: u16, row: u16) -> bool {
         .contains(ratatui::layout::Position::new(col, row))
 }
 
+/// The patches on top, as the list shows them: the Gerrit changes tryout
+/// applied by number, any others as "+N".
+fn patch_badge(w: &crate::tui::worktrees::Worktree) -> String {
+    let named: String = w.changes.iter().map(|n| format!(" #{n}")).collect();
+    match (w.patches as usize).saturating_sub(w.changes.len()) {
+        0 => named,
+        n => format!("{named} +{n}"),
+    }
+}
+
 fn placeholder<'a>(w: &'a crate::tui::worktrees::Worktree, width: u16) -> Paragraph<'a> {
     // Label column plus the horizontal padding.
     let room = (width as usize).saturating_sub(9 + 4);
@@ -1196,12 +1214,22 @@ fn placeholder<'a>(w: &'a crate::tui::worktrees::Worktree, width: u16) -> Paragr
     ];
     if w.patches > 0 {
         let noun = if w.patches == 1 { "patch" } else { "patches" };
+        let named: Vec<String> = w.changes.iter().map(|n| format!("#{n}")).collect();
+        let by_hand = (w.patches as usize).saturating_sub(w.changes.len());
+        let which = match (named.is_empty(), by_hand) {
+            (true, _) => String::new(),
+            (false, 0) => format!(": {}", named.join(" ")),
+            (false, n) => format!(": {} and {n} more", named.join(" ")),
+        };
         lines.push(row(
             "patches",
-            format!(
-                "{} {noun} on top of {}",
-                w.patches,
-                w.base.as_deref().unwrap_or("its base")
+            truncate(
+                &format!(
+                    "{} {noun} on top of {}{which}",
+                    w.patches,
+                    w.base.as_deref().unwrap_or("its base")
+                ),
+                room,
             ),
         ));
     }
@@ -1363,6 +1391,25 @@ mod tests {
         assert!(log_retry_at(a.screen, &a, at, 22), "{bottom}");
         assert!(!log_retry_at(a.screen, &a, at, 21));
         assert!(!log_retry_at(a.screen, &a, 40, 22));
+    }
+
+    #[test]
+    fn a_served_worktree_shows_its_php_and_its_gerrit_changes() {
+        let mut a = loaded();
+        a.selected = 1;
+        let t = render(&a, 120, 24);
+        let text: String = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("13.4 #91234 +1 · PHP 8.4"), "the list row");
+        assert!(
+            text.contains("2 patches on top of 13.4: #91234 and 1 more"),
+            "the details"
+        );
     }
 
     #[test]

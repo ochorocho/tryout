@@ -13,7 +13,9 @@ pub fn state_dir(ctx: &Ctx) -> std::path::PathBuf {
 }
 
 pub fn run(ctx: &Ctx) -> Step {
-    out::print(&format!("\n{BOLD}TYPO3 tryout — Post-Start Setup{NC}\n═══════════════════════════════════════\n\n"));
+    out::print(&format!(
+        "\n{BOLD}TYPO3 tryout — Post-Start Setup{NC}\n═══════════════════════════════════════\n\n"
+    ));
     let branch = ctx.branch().to_string();
 
     if !ctx.has_core() {
@@ -37,14 +39,22 @@ pub fn run(ctx: &Ctx) -> Step {
     // PHP versions the image has: the TUI's PHP menus come from this.
     let state = state_dir(ctx);
     let _ = std::fs::create_dir_all(&state);
-    let _ = std::fs::write(state.join("php-versions"), php::available_versions().join(" ") + "\n");
+    let _ = std::fs::write(
+        state.join("php-versions"),
+        php::available_versions().join(" ") + "\n",
+    );
 
-    let patches: String =
-        std::env::var("TRYOUT_PATCHES").unwrap_or_default().chars().filter(|c| !c.is_whitespace()).collect();
+    let patches: String = std::env::var("TRYOUT_PATCHES")
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     if patches.is_empty() {
         out::info("[2/5] No patches configured");
     } else {
-        out::info(format!("[2/5] Resetting core to origin/{branch} and applying patches: {patches}"));
+        out::info(format!(
+            "[2/5] Resetting core to origin/{branch} and applying patches: {patches}"
+        ));
         worktree::reset_to_base(ctx, &ctx.root, &branch, PRIMARY_SITE);
         if patch::apply_all(&ctx.root, &branch, &patches).is_err() {
             out::warn("Some patches failed to apply — check output above");

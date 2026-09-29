@@ -322,7 +322,13 @@ impl Server {
             self.last_spin = Instant::now();
             self.redraw = true;
         }
-        if self.app.tick() == Effect::Reload {
+        // A success leaving the Activity list is a change nothing else draws.
+        let jobs_before = self.app.jobs.list().len();
+        let effect = self.app.tick();
+        if self.app.jobs.list().len() != jobs_before {
+            self.redraw = true;
+        }
+        if effect == Effect::Reload {
             self.load();
             self.redraw = true;
         }

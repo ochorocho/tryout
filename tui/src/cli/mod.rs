@@ -33,7 +33,11 @@ pub fn main(args: Vec<String>) -> i32 {
         Some("__post-start") => {
             let mut ctx = Ctx::from_env(approot().unwrap_or_else(|| PathBuf::from(CONTAINER_ROOT)));
             ctx.in_container = true;
-            if crate::core::poststart::run(&ctx).is_ok() { 0 } else { 1 }
+            if crate::core::poststart::run(&ctx).is_ok() {
+                0
+            } else {
+                1
+            }
         }
         Some("__complete") => {
             complete::run(&args[1..]);

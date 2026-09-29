@@ -50,7 +50,7 @@ Also: TUI jobs run on a pseudo-terminal (echo off) so DDEV's `sudo` can ask; a p
 ## Stage 7: Container lifecycle
 **Goal**: `__post-start`, `__fpm`, php-versions snapshot.
 **Success Criteria**: full lifecycle matrix, `tests/e2e`, both webserver types.
-**Status**: In Progress — `tryout __post-start` ported (5 steps + `.ddev/tryout/.state/php-versions` for the host), 4 parity cases (first start, again, patch list, wrong PHP); `__fpm` live since Stage 5. A branch-only `.impl-rust` marker (written by the lifecycle Rust leg) makes post-start.sh exec the binary. Full lifecycle on Rust running.
+**Status**: Complete — `tryout __post-start` ported (5 steps + `.ddev/tryout/.state/php-versions` for the host), 4 parity cases; `__fpm` live since Stage 5. With the `.impl-rust` marker the whole lifecycle suite ran on Rust alone (hook, verbs, FPM): 12/13 green, the /etc/hosts test skipped locally (needs passwordless sudo; runs in CI).
 
 ## Stage 8: Switch-over
 **Goal**: delete the bash/PHP, shims + launcher, install.yaml, release workflow commits binaries, docs.

@@ -133,11 +133,16 @@ pub fn apply(core: &Path, branch: &str, change: &str) -> (Outcome, String) {
         return (Outcome::Error, r.subject);
     }
     let body = git::out(core, &["log", "-1", "--format=%b", "FETCH_HEAD"]).unwrap_or_default();
-    if let Some(id) = body
+    let change_id = body
         .lines()
         .find_map(|l| l.strip_prefix("Change-Id:"))
-        .and_then(|s| s.split_whitespace().next())
-    {
+        .and_then(|s| s.split_whitespace().next());
+    // Which change a Change-Id is, for the listing: a cherry-picked patchset
+    // carries only its Change-Id, never its number.
+    if let Some(id) = change_id {
+        remember(core, id, change);
+    }
+    if let Some(id) = change_id {
         let applied = git::out(
             core,
             &["log", "--format=%b", &format!("origin/{branch}..HEAD")],
@@ -169,6 +174,32 @@ pub fn apply(core: &Path, branch: &str, change: &str) -> (Outcome, String) {
         out::error(format!("  → Verify: {GERRIT_URL}{change}"));
         (Outcome::Conflict, r.subject)
     }
+}
+
+/// Note a Change-Id's change number in the shared git config (every worktree
+/// reads the same one), so a listing can name the patches on top offline.
+pub fn remember(core: &Path, change_id: &str, number: &str) {
+    if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) {
+        git::ok(
+            core,
+            &["config", &format!("tryout.change-{change_id}"), number],
+        );
+    }
+}
+
+/// Every Change-Id → change number noted so far.
+pub fn remembered(core: &Path) -> std::collections::HashMap<String, u64> {
+    git::lines(core, &["config", "--get-regexp", r"^tryout\.change-"])
+        .iter()
+        .filter_map(|l| {
+            let (k, v) = l.split_once(' ')?;
+            // git lowercases variable names; Change-Ids are compared lowercased.
+            Some((
+                k.strip_prefix("tryout.change-")?.to_lowercase(),
+                v.trim().parse().ok()?,
+            ))
+        })
+        .collect()
 }
 
 /// Apply TRYOUT_PATCHES in order, stopping at the first failure. Returns how
