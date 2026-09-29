@@ -5,7 +5,7 @@ use super::out::{BOLD, CYAN, DIM, GREEN, NC, RED, TEXT, YELLOW};
 use super::{contrib, git, worktree};
 
 /// The report's lines, framed by the caller.
-pub fn body(ctx: &Ctx, patches_env: &str) -> Vec<String> {
+pub fn body(ctx: &Ctx, patches: &str) -> Vec<String> {
     let ok = format!("{GREEN}✓{TEXT}");
     let warn = format!("{YELLOW}!{TEXT}");
     let fail = format!("{RED}✗{TEXT}");
@@ -77,7 +77,6 @@ pub fn body(ctx: &Ctx, patches_env: &str) -> Vec<String> {
         }
     }
 
-    let patches: String = patches_env.chars().filter(|c| !c.is_whitespace()).collect();
     if patches.is_empty() {
         line(format!("  Config:    {DIM}no patches configured"));
     } else {
@@ -146,8 +145,7 @@ pub fn body(ctx: &Ctx, patches_env: &str) -> Vec<String> {
     l
 }
 
-/// A titled block: the title in bold, then the lines. (The web image has no
-/// gum, so this is what `status` always looked like where it runs.)
+/// A titled block: the title in bold, then the lines.
 pub fn boxed(title: &str, lines: &[String]) -> String {
     let mut s = format!("{BOLD}{title}{NC}\n");
     for l in lines {

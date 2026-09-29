@@ -1,5 +1,5 @@
-//! `sort -V`: GNU's version order (gnulib `filevercmp`), which the bash listed
-//! branches and PHP versions with. Digit runs compare as numbers, letters sort
+//! `sort -V`: GNU's version order (gnulib `filevercmp`), for branches and PHP
+//! versions. Digit runs compare as numbers, letters sort
 //! before other characters, `~` before everything, and a file-like suffix
 //! (`.tar.gz`) only breaks ties. Equal versions fall back to a byte compare, as
 //! sort does without `-s`.

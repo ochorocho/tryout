@@ -1,5 +1,4 @@
-//! Gerrit's REST API (review.typo3.org), over HTTPS from Rust instead of curl
-//! and jq. Every answer starts with the `)]}'` XSSI guard line, which is
+//! Gerrit's REST API (review.typo3.org), over HTTPS. Every answer starts with the `)]}'` XSSI guard line, which is
 //! stripped before parsing.
 
 use std::time::Duration;
@@ -63,7 +62,7 @@ pub struct Change {
 }
 
 impl Change {
-    /// The TSV row the bash listing printed.
+    /// The row `patch --list` prints: number, subject, owner, scores, tab-separated.
     pub fn tsv(&self) -> String {
         format!(
             "{}\t{}\t{}\t{}",
@@ -221,9 +220,10 @@ fn score(change: &Value, label: &str) -> Option<&'static str> {
     }
 }
 
-/// No newlines or tabs: they would break the row format.
+/// One line with no control characters: Gerrit text is anyone's to write, and
+/// a newline or tab would break the row format besides.
 fn one_line(s: &str) -> String {
-    s.replace(['\n', '\t'], " ")
+    super::out::printable(s)
 }
 
 /// `patch --list --json`: the changes as one JSON array of objects.

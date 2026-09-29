@@ -20,7 +20,7 @@ pub fn run(argv: &[String]) {
     // A panic must not reach stderr: DDEV would list its message as candidates.
     std::panic::set_hook(Box::new(|_| {}));
     if let Ok(out) = std::panic::catch_unwind(|| candidates(&ctx, argv)) {
-        super::host::print(&out);
+        crate::core::out::print(&out);
     }
 }
 

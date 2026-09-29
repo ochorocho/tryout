@@ -30,13 +30,15 @@ pub type Loader = fn(&Path) -> Loaded;
 /// How long to wait for a client message before looking for pane output
 /// again. Short enough that a busy pane scrolls smoothly, long enough to idle.
 const TICK: Duration = Duration::from_millis(16);
+/// The same with nobody attached: jobs still start and finish, and tabs are
+/// still reaped, but nothing is drawn, so there is no need to hurry.
+const IDLE_TICK: Duration = Duration::from_millis(250);
 
 /// How often the agents pane asks `ps` what each tab is running.
 const AGENT_POLL: Duration = Duration::from_secs(1);
 
 /// The branch list, as the loader delivers it.
 type Branches = Result<Vec<String>>;
-/// The open Gerrit changes, as the loader delivers them.
 /// A page of open changes, with the search and page it answers.
 type Patches = (String, u32, Result<worktrees::PatchPage>);
 
@@ -134,6 +136,10 @@ struct Server {
     patches: (Sender<Patches>, Receiver<Patches>),
     last_poll: Instant,
     polling: bool,
+    /// A list load is out, and whether another was asked for meanwhile: loads
+    /// never overlap, so an older answer cannot land after a newer one.
+    loading: bool,
+    load_again: bool,
     /// The tab a mouse press started on, until the button comes up.
     dragging: Option<u64>,
     redraw: bool,
@@ -161,6 +167,8 @@ impl Server {
             patches: mpsc::channel(),
             last_poll: Instant::now() - AGENT_POLL,
             polling: false,
+            loading: false,
+            load_again: false,
             dragging: None,
             redraw: true,
             last_spin: Instant::now(),
@@ -174,7 +182,12 @@ impl Server {
             if self.redraw && self.client.is_some() {
                 self.draw();
             }
-            let next = match incoming.recv_timeout(TICK) {
+            let wait = if self.client.is_some() {
+                TICK
+            } else {
+                IDLE_TICK
+            };
+            let next = match incoming.recv_timeout(wait) {
                 Ok(Incoming::Connected(id, stream, first)) => self.attach(id, stream, first),
                 Ok(Incoming::Msg(id, msg)) if self.client.as_ref().is_some_and(|c| c.id == id) => {
                     self.message(msg)
@@ -286,6 +299,10 @@ impl Server {
         if let Ok(result) = self.loads.1.try_recv() {
             self.app.set_worktrees(result);
             self.redraw = true;
+            self.loading = false;
+            if std::mem::take(&mut self.load_again) {
+                self.load();
+            }
         }
         while let Ok((search, page, result)) = self.patches.1.try_recv() {
             self.app.set_patches(&search, page, result);
@@ -341,7 +358,12 @@ impl Server {
         }
     }
 
-    fn load(&self) {
+    fn load(&mut self) {
+        if self.loading {
+            self.load_again = true;
+            return;
+        }
+        self.loading = true;
         let (root, tx, loader) = (self.app.root.clone(), self.loads.0.clone(), self.loader);
         thread::spawn(move || {
             let _ = tx.send(loader(&root));
@@ -423,9 +445,7 @@ impl Server {
             Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
                 self.redraw = true;
                 let (col, row) = (m.column, m.row);
-                // A popup that waits for keys (password, tab name, close the
-                // session?) takes no clicks, and lets none through behind it.
-                if app.password.is_some() || app.rename.is_some() || app.confirm_close {
+                if app.popup_open() {
                     return Next::Go;
                 }
                 // An open form takes the click: a change ticks, the page bar pages;

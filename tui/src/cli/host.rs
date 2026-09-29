@@ -1,16 +1,14 @@
 //! The host side of `ddev tryout`: resolve arguments (asking where someone can
 //! answer), then either do the host-only work or delegate to the container.
 
-use std::io::Write;
-
 use crate::core::ctx::Ctx;
 use crate::core::ctx::PRIMARY_SITE;
-use crate::core::out::{self, DIM, NC, RED, YELLOW};
+use crate::core::out::{self, DIM, NC, RED, YELLOW, print};
 use crate::core::prompt::{self, explain_missing};
 use crate::core::{ddev, gerrit, serve, site, status, webserver, worktree};
 
 use super::verbs::{self, Verb};
-use super::{Exit, Res, help, reject_args, require_core};
+use super::{Exit, Res, help, reject_args, require_core, require_served};
 
 pub fn run(ctx: &Ctx, args: &[String]) -> Res {
     let (action, rest) = match args.split_first() {
@@ -41,12 +39,6 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
         Verb::Reset => reset(ctx, rest),
         Verb::Delete => delete(ctx, rest),
     }
-}
-
-pub fn print(s: &str) {
-    let mut o = std::io::stdout().lock();
-    let _ = o.write_all(s.as_bytes());
-    let _ = o.flush();
 }
 
 fn delegate(ctx: &Ctx, args: &[&str]) -> Res {
@@ -158,11 +150,7 @@ fn launch(ctx: &Ctx, args: &[String]) -> Res {
     }
 
     let target = site::for_name(ctx, &target);
-    if !site::is_served(ctx, &target) {
-        out::error(format!("No served site '{target}'"));
-        out::error("  → ddev tryout worktree list");
-        return Err(Exit(1));
-    }
+    require_served(ctx, &target)?;
     let mut url = if site::is_primary(&target) && !ctx.env.primary_url.is_empty() {
         ctx.env.primary_url.clone()
     } else {
@@ -177,15 +165,13 @@ fn launch(ctx: &Ctx, args: &[String]) -> Res {
 
 // ─── patch ──────────────────────────────────────────────────────────────────
 
-/// The branch whose open changes a site should be offered: the project's for
-/// the primary, the site's own base otherwise; "-" is every branch.
+/// The branch whose open changes a site should be offered: the base of the
+/// Core it runs on; "-" is every branch.
 fn patch_branch_for(ctx: &Ctx, target: &str, all: bool) -> String {
     if all {
         "-".into()
-    } else if !target.is_empty() && !site::is_primary(target) {
-        worktree::detect_detached_base_branch(&site::core_dir(ctx, target))
     } else {
-        ctx.branch().to_string()
+        site::core_and_base(ctx, target).1
     }
 }
 
@@ -241,10 +227,7 @@ fn patch(ctx: &Ctx, args: &[String]) -> Res {
 
     let mut target = site::for_name(ctx, &target);
     // A configured list is a deliberate choice: apply it rather than asking.
-    let configured = std::env::var("TRYOUT_PATCHES")
-        .unwrap_or_default()
-        .chars()
-        .any(|c| !c.is_whitespace());
+    let configured = !crate::core::patch::configured().is_empty();
     if configured || !prompt::have_tty() {
         let mut a = vec!["patch"];
         if !target.is_empty() {
@@ -492,16 +475,16 @@ fn delete(ctx: &Ctx, args: &[String]) -> Res {
             }
         }
     }
+    // The active worktree's name means the primary, here as everywhere.
+    if target != "--all" {
+        target = site::for_name(ctx, &target);
+    }
     let sites: Vec<String> = if target == "--all" {
         std::iter::once(PRIMARY_SITE.to_string())
             .chain(site::served_names(ctx))
             .collect()
-    } else if !target.is_empty() && !site::is_primary(&site::for_name(ctx, &target)) {
-        if !site::is_served(ctx, &target) {
-            out::error(format!("No served site '{target}'"));
-            out::error("  → ddev tryout worktree list");
-            return Err(Exit(1));
-        }
+    } else if !site::is_primary(&target) {
+        require_served(ctx, &target)?;
         vec![target.clone()]
     } else {
         vec![PRIMARY_SITE.to_string()]
@@ -577,11 +560,7 @@ fn exec(ctx: &Ctx, args: &[String]) -> Res {
         return Err(Exit(1));
     }
     let target = site::for_name(ctx, &target);
-    if !site::is_primary(&target) && !site::is_served(ctx, &target) {
-        out::error(format!("No served site '{target}'"));
-        out::error("  → ddev tryout worktree list");
-        return Err(Exit(1));
-    }
+    require_served(ctx, &target)?;
     let mut a = vec!["exec", target.as_str()];
     a.extend(cmd.iter().map(String::as_str));
     delegate(ctx, &a)
@@ -745,10 +724,8 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
             Exit(1)
         })?;
     }
-    worktree::validate_name(&name).map_err(|lines| {
-        for l in lines {
-            out::error(l);
-        }
+    worktree::validate_name(&name).map_err(|l| {
+        crate::core::fail(l);
         Exit(1)
     })?;
     // Asked whether or not the name came in: naming a worktree says nothing
@@ -762,9 +739,8 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
         a.push(&branch);
     }
     a.extend(flags.iter().map(String::as_str));
-    delegate(ctx, &a).map_err(|_| Exit(1))?;
-    let _ = restart_if_hosts_changed(ctx, &before, no_restart);
-    Ok(())
+    delegate(ctx, &a)?;
+    restart_if_hosts_changed(ctx, &before, no_restart)
 }
 
 /// Remove ALWAYS asks: it deletes the directory, and git's refusal to drop a

@@ -6,9 +6,9 @@ use crate::core::ctx::{Ctx, PRIMARY_SITE};
 use crate::core::out::{self, BOLD, CYAN, DIM, GREEN, NC, TEXT, YELLOW};
 use crate::core::{Step, git, patch, php, proc, prompt, serve, site, status, vsort, worktree};
 
-use super::host::print;
 use super::verbs::{self, Verb};
-use super::{Exit, Res, require_core};
+use super::{Exit, Res, require_core, require_served};
+use crate::core::out::print;
 
 pub fn run(ctx: &Ctx, args: &[String]) -> Res {
     let (action, rest) = match args.split_first() {
@@ -18,7 +18,7 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
     let verb = verbs::find(action).filter(|s| !s.host_only).map(|s| s.verb);
     match verb {
         Some(Verb::Status) => {
-            let lines = status::body(ctx, &std::env::var("TRYOUT_PATCHES").unwrap_or_default());
+            let lines = status::body(ctx, &patch::configured());
             print(&format!(
                 "\n{}\n",
                 status::boxed("TYPO3 tryout — Status", &lines)
@@ -121,6 +121,9 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
             if name.is_empty() {
                 return usage("ddev tryout worktree remove <name> [--force]");
             }
+            // Checked first: the site and its database must not go for a
+            // worktree that then stays.
+            step(worktree::removable(ctx, name))?;
             // A served site owns a tree and a database; they go first.
             if site::is_served(ctx, name) {
                 out::warn(format!(
@@ -191,16 +194,6 @@ fn php_flag(args: &[String]) -> String {
     php
 }
 
-/// A served site's name, or an error when nothing is served under it.
-fn served(ctx: &Ctx, name: &str) -> Res {
-    if site::is_primary(name) || site::is_served(ctx, name) {
-        return Ok(());
-    }
-    out::error(format!("No served site '{name}'"));
-    out::error("  → ddev tryout worktree list");
-    Err(Exit(1))
-}
-
 fn basename(p: &std::path::Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -220,7 +213,7 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
             a => branch = a.to_string(),
         }
     }
-    step(worktree::validate_name(&name).map_err(serve::report))?;
+    step(worktree::validate_name(&name).map_err(crate::core::fail))?;
     // A named PHP version only takes effect on a served site.
     if !php.is_empty() {
         serve_it = true;
@@ -253,18 +246,8 @@ fn download(ctx: &Ctx, args: &[String]) -> Res {
             a => target = a.to_string(),
         }
     }
-    let mut core = ctx.root.clone();
-    let mut branch = ctx.branch().to_string();
-    if !site::is_primary(&target) {
-        served(ctx, &target)?;
-        core = site::core_dir(ctx, &target);
-        // A legacy worktree created attached still tracks its base; a detached
-        // one has no upstream and answers from the remote branches instead.
-        branch = git::out(&core, &["rev-parse", "--abbrev-ref", "@{upstream}"])
-            .map(|u| u.strip_prefix("origin/").unwrap_or(&u).to_string())
-            .filter(|b| !b.is_empty())
-            .unwrap_or_else(|| worktree::detect_detached_base_branch(&core));
-    }
+    require_served(ctx, &target)?;
+    let (core, branch) = site::core_and_base(ctx, &target);
     let site_arg = if site::is_primary(&target) {
         String::new()
     } else {
@@ -292,7 +275,7 @@ fn download(ctx: &Ctx, args: &[String]) -> Res {
             basename(&core)
         ));
         out::warn("All local changes and applied patches will be lost.");
-        worktree::reset_to_base(ctx, &core, &branch, &target);
+        step(worktree::reset_to_base(ctx, &core, &branch, &target))?;
         out::success(format!("Reset to origin/{branch}"));
         return step(serve::rebuild(ctx, &target));
     }
@@ -341,11 +324,11 @@ fn checkout(ctx: &Ctx, args: &[String]) -> Res {
     if target_branch.is_empty() {
         return usage("ddev tryout checkout <branch>");
     }
+    step(worktree::validate_branch(&target_branch).map_err(crate::core::fail))?;
     require_core(ctx)?;
-    let mut core = ctx.root.clone();
+    require_served(ctx, &target)?;
+    let core = site::core_dir(ctx, &target);
     if !site::is_primary(&target) {
-        served(ctx, &target)?;
-        core = site::core_dir(ctx, &target);
         out::info(format!("Switching site '{target}' ({})", basename(&core)));
     }
     prompt::spin("Fetching latest branches", || {
@@ -365,7 +348,7 @@ fn checkout(ctx: &Ctx, args: &[String]) -> Res {
         out::error(format!("Branch '{target_branch}' does not exist on origin"));
         let mut branches: Vec<String> = git::lines(&core, &["ls-remote", "--heads", "origin"])
             .iter()
-            .filter_map(|l| l.rsplit('/').next().map(String::from))
+            .filter_map(|l| l.split_once("refs/heads/").map(|(_, b)| b.to_string()))
             .collect();
         vsort::sort(&mut branches);
         let list: String = branches.iter().map(|b| format!("  {b}\n")).collect();
@@ -471,12 +454,9 @@ fn patch(ctx: &Ctx, args: &[String]) -> Res {
             a => ids.push(a.to_string()),
         }
     }
-    let mut core = ctx.root.clone();
-    let mut branch = ctx.branch().to_string();
+    require_served(ctx, &target)?;
+    let (core, branch) = site::core_and_base(ctx, &target);
     if !site::is_primary(&target) {
-        served(ctx, &target)?;
-        core = site::core_dir(ctx, &target);
-        branch = worktree::detect_detached_base_branch(&core);
         out::info(format!(
             "Patching site '{target}' ({}, base {branch})",
             basename(&core)
@@ -504,11 +484,7 @@ fn patch(ctx: &Ctx, args: &[String]) -> Res {
         }
         return if failed { Err(Exit(1)) } else { Ok(()) };
     }
-    let list: String = std::env::var("TRYOUT_PATCHES")
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
+    let list = patch::configured();
     if list.is_empty() {
         out::info("No patches configured.");
         print(
@@ -528,13 +504,8 @@ Configure in .ddev/config.tryout-patches.yaml:\n  TRYOUT_PATCHES=56947,12345\n",
 fn reset(ctx: &Ctx, args: &[String]) -> Res {
     require_core(ctx)?;
     let target = args.first().cloned().unwrap_or_else(|| PRIMARY_SITE.into());
-    let mut core = ctx.root.clone();
-    let mut branch = ctx.branch().to_string();
-    if !site::is_primary(&target) {
-        served(ctx, &target)?;
-        core = site::core_dir(ctx, &target);
-        branch = worktree::detect_detached_base_branch(&core);
-    }
+    require_served(ctx, &target)?;
+    let (core, branch) = site::core_and_base(ctx, &target);
     print("\n");
     out::info(format!(
         "Resetting {} to latest origin/{branch}...",
@@ -542,7 +513,7 @@ fn reset(ctx: &Ctx, args: &[String]) -> Res {
     ));
     print("\n");
     out::info("[1/2] Resetting git repository...");
-    worktree::reset_to_base(ctx, &core, &branch, &target);
+    step(worktree::reset_to_base(ctx, &core, &branch, &target))?;
     out::success(format!("Git reset to origin/{branch}"));
     out::info("[2/2] Rebuilding...");
     step(serve::rebuild(ctx, &target))?;
@@ -569,28 +540,14 @@ fn delete(ctx: &Ctx, args: &[String]) -> Res {
             .chain(site::served_names(ctx))
             .collect()
     } else if !target.is_empty() {
-        if !site::is_served(ctx, &target) {
-            out::error(format!("No served site '{target}'"));
-            out::error("  → ddev tryout worktree list");
-            return Err(Exit(1));
-        }
+        require_served(ctx, &target)?;
         vec![target.clone()]
     } else {
         vec![PRIMARY_SITE.to_string()]
     };
+    // The host asked; here there is nobody to ask.
     if !yes {
-        print(&serve::delete_warning(ctx, &target, &sites));
-        match prompt::confirm("Are you sure?") {
-            prompt::Confirm::Yes => {}
-            prompt::Confirm::No => {
-                out::info("Aborted.");
-                return Ok(());
-            }
-            prompt::Confirm::NoTty => {
-                out::error("Refusing without confirmation — pass --yes");
-                return Err(Exit(1));
-            }
-        }
+        return usage("ddev tryout delete [<site>|--all] --yes");
     }
     for s in &sites {
         print("\n");
@@ -613,11 +570,7 @@ fn exec(ctx: &Ctx, args: &[String]) -> Res {
     let Some((target, cmd)) = args.split_first().filter(|(_, c)| !c.is_empty()) else {
         return usage("ddev tryout exec <site> <command> ...");
     };
-    if !site::is_primary(target) && !site::is_served(ctx, target) {
-        out::error(format!("No served site '{target}'"));
-        out::error("  → ddev tryout worktree list");
-        return Err(Exit(1));
-    }
+    require_served(ctx, target)?;
     match serve::exec(ctx, target, cmd, &[], false) {
         0 => Ok(()),
         c => Err(Exit(c)),
@@ -728,8 +681,9 @@ fn card(ctx: &Ctx, r: &worktree::Row) -> String {
         r.head
     ));
 
-    let mut subject =
-        crate::core::git::out(&dir, &["log", "-1", "--format=%s"]).unwrap_or_default();
+    let mut subject = crate::core::git::out(&dir, &["log", "-1", "--format=%s"])
+        .map(|s| crate::core::out::printable(&s))
+        .unwrap_or_default();
     if subject.chars().count() > 70 {
         subject = format!("{}…", subject.chars().take(69).collect::<String>());
     }

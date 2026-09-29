@@ -11,7 +11,8 @@
 
 self="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 root="${self%/.ddev/commands/host/autocomplete}"
-if [ "${root}" != "${self}" ] && [ -x "${root}/.ddev/tryout/tryout" ]; then
-    DDEV_APPROOT="${root}" "${root}/.ddev/tryout/tryout" __complete "$@" 2>/dev/null
+# Through bash: the launcher still runs when an unzip lost its executable bit.
+if [ "${root}" != "${self}" ] && [ -f "${root}/.ddev/tryout/tryout" ]; then
+    DDEV_APPROOT="${root}" bash "${root}/.ddev/tryout/tryout" __complete "$@" 2>/dev/null
 fi
 exit 0

@@ -31,7 +31,7 @@ pub fn inspect(ctx: &Ctx) -> Setup {
             .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     };
     let tmpl = git::out(&ctx.root, &["config", "--get", "commit.template"]).unwrap_or_default();
-    // Joined as text, as the bash did: an absolute template path does not count.
+    // Joined as text: an absolute template path does not count.
     let template = !tmpl.is_empty()
         && std::path::Path::new(&format!("{}/{tmpl}", ctx.root.display())).is_file();
     Setup {
@@ -141,6 +141,16 @@ pub fn resolve_user(core: &Path, given: &str) -> Result<String, Failed> {
         out::error(
             "  → ddev tryout cs setup <username>   or   export TRYOUT_GERRIT_USER=<username>",
         );
+        return Err(Failed);
+    }
+    // It goes to ssh as `<user>@host`: a leading '-' would be an ssh option.
+    let valid = !user.starts_with('-')
+        && user
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._@-".contains(&b));
+    if !valid {
+        out::error(format!("Invalid Gerrit username '{user}'"));
+        out::error("  → the username shown at https://review.typo3.org/settings/");
         return Err(Failed);
     }
     git::ok(core, &["config", "tryout.gerritUser", &user]);
@@ -296,8 +306,7 @@ impl SshReason {
 
 /// Can `user` authenticate to Gerrit over SSH? The verdict comes from SSH
 /// itself; whether an agent holds a key only classifies a failure — a key on
-/// disk authenticates just as well. The port probe is a plain TCP connect (not
-/// bash's /dev/tcp, which macOS kills for external hosts).
+/// disk authenticates just as well. The port probe is a plain TCP connect.
 pub fn diagnose_ssh(user: &str) -> Result<(), SshReason> {
     if user.is_empty() {
         return Err(SshReason::NoUser);
@@ -399,9 +408,13 @@ pub fn setup(ctx: &Ctx, given_user: &str) -> Step {
     let template = ctx.tryout_dir().join("gitmessage.txt");
     if template.is_file() {
         let rel = ".ddev/tryout/gitmessage.txt";
-        git::ok(core, &["config", "commit.template", rel]);
-        let _ = std::fs::remove_file(format!("{}message.txt", git_dir.display()));
-        out::success(format!("Commit template wired to {DIM}{rel}{NC}"));
+        if git::ok(core, &["config", "commit.template", rel]) {
+            // The template an older version copied into the checkout.
+            let _ = std::fs::remove_file(core.join(".gitmessage.txt"));
+            out::success(format!("Commit template wired to {DIM}{rel}{NC}"));
+        } else {
+            out::warn("Could not set commit.template");
+        }
     } else {
         out::warn(format!(
             "Commit template not found at {}",
@@ -415,8 +428,12 @@ pub fn setup(ctx: &Ctx, given_user: &str) -> Step {
         "ssh://{user}@{}:{GERRIT_SSH_PORT}/{GERRIT_PROJECT}",
         ssh_host()
     );
-    git::ok(core, &["remote", "set-url", "--push", "origin", &push]);
-    out::success(format!("Push URL set: {DIM}{push}{NC}"));
+    if git::ok(core, &["remote", "set-url", "--push", "origin", &push]) {
+        out::success(format!("Push URL set: {DIM}{push}{NC}"));
+    } else {
+        out::error("Could not set the push URL on origin");
+        out::error(format!("  → git remote set-url --push origin {push}"));
+    }
     out::print("\n");
     out::info("[6/6] Configuring commit author identity...");
     configure_author_identity(core, &user);

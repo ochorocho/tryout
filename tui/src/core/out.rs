@@ -92,7 +92,7 @@ pub fn print(s: &str) {
     let _ = out.flush();
 }
 
-/// A plain line on stdout (what the bash `echo -e` printed).
+/// A plain line on stdout.
 pub fn print_line(s: &str) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{s}");
@@ -119,6 +119,20 @@ pub fn event(level: Level, msg: &str) -> String {
         level.name(),
         json_str(&strip_sgr(msg))
     )
+}
+
+/// Text from elsewhere (a Gerrit subject or name, a commit message) made safe
+/// to print on one line: whitespace controls become spaces, every other
+/// control character — ESC above all, which could retitle the terminal, write
+/// the clipboard or rewrite the line — is dropped.
+pub fn printable(s: &str) -> String {
+    s.chars()
+        .filter_map(|c| match c {
+            '\n' | '\t' | '\r' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect()
 }
 
 /// Drop `ESC[…m` colour sequences, and their spelled-out `\033[…m` form.
@@ -152,7 +166,7 @@ fn sgr_len(s: &str) -> Option<usize> {
     (body.as_bytes()[end] == b'm').then_some(end + 2)
 }
 
-/// A JSON string literal, as the bash `json_str` wrote it: quotes, backslashes,
+/// A JSON string literal: quotes, backslashes,
 /// tab, newline and CR escaped, every other control character dropped, and
 /// non-ASCII left as UTF-8.
 pub fn json_str(s: &str) -> String {

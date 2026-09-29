@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::ctx::Ctx;
-use super::{git, vsort};
+use super::out::{self, DIM, NC};
+use super::{Failed, Step, fail, git, proc, vsort};
 
 const ADD_USAGE: &str = "  → ddev tryout worktree add <name> [<branch>]";
 
@@ -34,7 +35,39 @@ pub fn validate_name(name: &str) -> Result<(), Vec<String>> {
     if name == "." || name == ".." {
         return Err(vec![format!("Invalid worktree name '{name}'")]);
     }
+    // It becomes a hostname label (63) and, prefixed, a database name (64).
+    if name.len() > 60 {
+        return Err(vec![format!(
+            "Invalid worktree name '{name}' (at most 60 characters)"
+        )]);
+    }
+    // Its site would be TYPO3-Instances/primary: the primary instance itself.
+    if name == super::ctx::PRIMARY_INSTANCE {
+        return Err(vec![
+            format!("Invalid worktree name '{name}' (the primary instance is called that)"),
+            ADD_USAGE.into(),
+        ]);
+    }
     Ok(())
+}
+
+/// A branch name as a git argument: one that git would never take as an
+/// option or a refspec. Core's branches are `main` and `<major>.<minor>`.
+pub fn validate_branch(branch: &str) -> Result<(), Vec<String>> {
+    let ok = !branch.is_empty()
+        && !branch.starts_with(['-', '/', '.'])
+        && !branch.contains("..")
+        && branch
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._/-".contains(&b));
+    if ok {
+        Ok(())
+    } else {
+        Err(vec![
+            format!("Invalid branch name '{branch}'"),
+            "  → ddev tryout checkout   (lists available branches)".into(),
+        ])
+    }
 }
 
 /// For a detached HEAD, the branch it was based on: the newest release branch
@@ -162,6 +195,28 @@ mod tests {
             validate_name("..").unwrap_err(),
             ["Invalid worktree name '..'"]
         );
+        assert!(validate_name("primary").unwrap_err()[0].contains("primary instance"));
+        assert!(validate_name(&"a".repeat(61)).unwrap_err()[0].contains("at most 60"));
+        assert!(validate_name(&"a".repeat(60)).is_ok());
+    }
+
+    #[test]
+    fn a_branch_is_never_an_option_or_a_refspec() {
+        for ok in ["main", "13.4", "feature/x-1"] {
+            assert!(validate_branch(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "--upload-pack=x",
+            "-b",
+            "a:b",
+            "+main",
+            "a..b",
+            "/main",
+            "a b",
+        ] {
+            assert!(validate_branch(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -500,7 +555,9 @@ fn info(ctx: &Ctx, r: Row, available: &[String], known: &HashMap<String, u64>) -
     };
     let (modified, untracked) = change_counts(&dir);
     let (url, php, db) = site_info(ctx, &r.name, r.active);
-    let subject = git::out(&dir, &["log", "-1", "--format=%s"]).unwrap_or_default();
+    let subject = git::out(&dir, &["log", "-1", "--format=%s"])
+        .map(|s| super::out::printable(&s))
+        .unwrap_or_default();
     let constraint = super::php::core_constraint(&dir.join("composer.json")).unwrap_or_default();
     Info {
         name: r.name,
@@ -521,8 +578,8 @@ fn info(ctx: &Ctx, r: Row, available: &[String], known: &HashMap<String, u64>) -
     }
 }
 
-/// `worktree list --json`, laid out exactly as the bash wrote it: one object per
-/// line inside the array.
+/// `worktree list --json`: one object per line inside the array — a contract
+/// the tools parse, so keys are only ever added.
 pub fn infos_json(infos: &[Info]) -> String {
     use super::out::{json_str, json_str_or_null};
     let opt = |o: &Option<String>| json_str_or_null(o.as_deref().unwrap_or(""));
@@ -624,16 +681,6 @@ pub fn vendor_core_mismatch(ctx: &Ctx) -> bool {
 
 // ─── Changing checkouts ─────────────────────────────────────────────────────
 
-use super::out::{self, DIM, NC};
-use super::{Failed, Step, proc};
-
-fn fail(lines: &[String]) -> Failed {
-    for l in lines {
-        out::error(l);
-    }
-    Failed
-}
-
 /// The worktree that owns the object store — git lists it first.
 pub fn main_dir(ctx: &Ctx) -> Option<std::path::PathBuf> {
     git::lines(&ctx.root, &["worktree", "list", "--porcelain"])
@@ -718,21 +765,39 @@ pub fn clone_into_root(ctx: &Ctx, branch: &str) -> Step {
 
 /// Move a checkout to the tip of its base, staying on whatever it is on — never
 /// checking the base out, which another worktree may hold.
-pub fn reset_to_base(ctx: &Ctx, dir: &Path, branch: &str, site_name: &str) {
-    proc::git(dir, &["fetch", "origin"]);
-    proc::git(dir, &["reset", "--hard", &format!("origin/{branch}")]);
-    proc::git(dir, &["clean", "-fd"]);
+pub fn reset_to_base(ctx: &Ctx, dir: &Path, branch: &str, site_name: &str) -> Step {
+    // Offline, the last fetched origin/<branch> is still a good base.
+    if !proc::git(dir, &["fetch", "origin"]) {
+        out::warn("Could not fetch origin — resetting to what was fetched last");
+    }
+    if !proc::git(dir, &["reset", "--hard", &format!("origin/{branch}")]) {
+        return Err(fail(&[
+            format!("Could not reset {} to origin/{branch}", dir.display()),
+            "  → ddev tryout download   then try again".into(),
+        ]));
+    }
+    if !proc::git(dir, &["clean", "-fd"]) {
+        out::warn("git clean failed — untracked files may remain");
+    }
     proc::clear_dir(&super::site::dir(ctx, site_name).join("var/cache"));
+    Ok(())
 }
 
 /// Create worktrees/<name>, always DETACHED at origin/<branch>: no local
 /// branch, so nothing collides and nothing is left behind.
 pub fn add(ctx: &Ctx, name: &str, branch: &str) -> Step {
     validate_name(name).map_err(|l| fail(&l))?;
+    validate_branch(branch).map_err(|l| fail(&l))?;
+    if let Some(other) = super::site::database_taken_by(ctx, name) {
+        return Err(fail(&[
+            format!("'{name}' would share a database with worktree '{other}'"),
+            "  → pick a name that differs in more than . - _".into(),
+        ]));
+    }
     let dir = ctx.core_worktree_dir(name);
     if dir.exists() {
         return Err(fail(&[
-            format!("Worktree '{name}' already exists at {name}"),
+            format!("Worktree '{name}' already exists at worktrees/{name}"),
             format!("  → ddev tryout worktree use {name}"),
         ]));
     }
@@ -749,7 +814,7 @@ pub fn add(ctx: &Ctx, name: &str, branch: &str) -> Step {
     ensure_relative_paths(ctx);
     out::info("Fetching origin...");
     if !proc::git(&main, &["fetch", "origin"]) {
-        return Err(fail(&["Fetch failed".into()]));
+        return Err(fail(["Fetch failed"]));
     }
     if !git::ok(
         &main,
@@ -822,14 +887,16 @@ pub fn use_core(ctx: &Ctx, name: &str) -> Step {
     super::serve::rebuild(ctx, "")
 }
 
-/// Remove a worktree and its directory. `--force` always (a Core checkout
-/// always carries untracked files), twice on the user's `--force`; the prune
-/// runs before the sweep; a legacy branch goes with `-d`, so unpushed work stays.
-pub fn remove(ctx: &Ctx, name: &str, force: bool) -> Step {
+/// Whether `remove` may go ahead — checked before anything is taken down
+/// with it (its site and database).
+pub fn removable(ctx: &Ctx, name: &str) -> Step {
     validate_name(name).map_err(|l| fail(&l))?;
     let dir = ctx.core_worktree_dir(name);
     if !dir.is_dir() {
-        return Err(fail(&[format!("No worktree '{name}'")]));
+        return Err(fail(&[
+            format!("No worktree '{name}'"),
+            "  → ddev tryout worktree list".into(),
+        ]));
     }
     if ctx.active_worktree_name() == name {
         return Err(fail(&[
@@ -842,6 +909,15 @@ pub fn remove(ctx: &Ctx, name: &str, force: bool) -> Step {
             "Cannot remove '{name}': it owns the shared git object store"
         )]));
     }
+    Ok(())
+}
+
+/// Remove a worktree and its directory. `--force` always (a Core checkout
+/// always carries untracked files), twice on the user's `--force`; the prune
+/// runs before the sweep; a legacy branch goes with `-d`, so unpushed work stays.
+pub fn remove(ctx: &Ctx, name: &str, force: bool) -> Step {
+    removable(ctx, name)?;
+    let dir = ctx.core_worktree_dir(name);
     let d = dir.to_string_lossy().into_owned();
     let mut args = vec!["worktree", "remove", "--force"];
     if force {
@@ -905,7 +981,16 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
         return Err(fail(&[format!("No worktree '{old}'")]));
     }
     if new_dir.exists() {
-        return Err(fail(&[format!("'{new}' already exists")]));
+        return Err(fail(&[
+            format!("'{new}' already exists at worktrees/{new}"),
+            "  → pick another name".into(),
+        ]));
+    }
+    if let Some(other) = super::site::database_taken_by(ctx, new).filter(|o| o != old) {
+        return Err(fail(&[
+            format!("'{new}' would share a database with worktree '{other}'"),
+            "  → pick a name that differs in more than . - _".into(),
+        ]));
     }
     let was_active = ctx.active_worktree_name() == old;
     let served = super::site::is_served(ctx, old);
@@ -918,7 +1003,12 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
         out::info(format!(
             "Unserving '{old}' so it can be re-served as '{new}'..."
         ));
-        let _ = silently(|| super::serve::unserve(ctx, old, true));
+        super::serve::unserve(ctx, old, true).map_err(|_| {
+            fail(&[
+                format!("Could not unserve '{old}' — nothing was renamed"),
+                format!("  → ddev tryout worktree unserve {old}   then rename again"),
+            ])
+        })?;
     }
     if !git::ok(
         &old_dir,
@@ -929,10 +1019,18 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
             &new_dir.to_string_lossy(),
         ],
     ) {
-        return Err(fail(&[format!(
-            "Could not move {} (uncommitted changes, or it is locked?)",
+        // Put the site back as it was, rather than leave it unserved.
+        let restored = served && super::serve::serve(ctx, old, &php).is_ok();
+        let mut lines = vec![format!(
+            "Could not move {} (it may be locked: git worktree unlock)",
             old_dir.display()
-        )]));
+        )];
+        if served && !restored {
+            lines.push(format!(
+                "  → its site is unserved: ddev tryout worktree serve {old}"
+            ));
+        }
+        return Err(fail(&lines));
     }
     if was_active {
         set_active(ctx, new)?;
@@ -948,31 +1046,4 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
         }
     }
     Ok(())
-}
-
-/// Run a step with stdout and stderr silenced (the bash `>/dev/null 2>&1`).
-fn silently<T>(f: impl FnOnce() -> T) -> T {
-    use std::os::fd::AsRawFd;
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-    let null = std::fs::OpenOptions::new()
-        .write(true)
-        .open("/dev/null")
-        .ok();
-    // SAFETY: dup/dup2 on this process's own standard descriptors, restored below.
-    let saved = unsafe { (libc::dup(1), libc::dup(2)) };
-    if let Some(n) = &null {
-        unsafe {
-            libc::dup2(n.as_raw_fd(), 1);
-            libc::dup2(n.as_raw_fd(), 2);
-        }
-    }
-    let r = f();
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-    unsafe {
-        libc::dup2(saved.0, 1);
-        libc::dup2(saved.1, 2);
-        libc::close(saved.0);
-        libc::close(saved.1);
-    }
-    r
 }

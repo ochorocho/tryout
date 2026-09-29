@@ -8,18 +8,10 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use serde::Deserialize;
-
 use crate::tui::actions::{Action, Run};
 
-/// An open Gerrit change, as `ddev tryout patch --list --json` gives it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Change {
-    pub number: u64,
-    pub subject: String,
-    pub owner: String,
-    pub scores: String,
-}
+/// An open Gerrit change, as the picker shows it.
+pub use crate::core::gerrit::Change;
 
 /// Which question is being asked, and about which worktree.
 #[derive(Debug, Clone, PartialEq, Eq)]

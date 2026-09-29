@@ -1,6 +1,5 @@
-//! The tryout commands offered for a worktree. The rules are the removed herdr
-//! panel's, which were learned the hard way: an entry never offers something that
-//! cannot work there, and every command names its own worktree — a bare verb acts
+//! The tryout commands offered for a worktree. An entry never offers something
+//! that cannot work there, and every command names its own worktree — a bare verb acts
 //! on whichever Core is primary at the moment it runs, not the one you selected.
 
 use crate::tui::forms::FormKind;

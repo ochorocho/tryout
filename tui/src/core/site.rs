@@ -50,6 +50,22 @@ pub fn core_dir(ctx: &Ctx, name: &str) -> PathBuf {
     }
 }
 
+/// The Core a site runs on and the branch that Core is based on. The primary's
+/// is the root checkout — or, after `worktree use`, that worktree.
+pub fn core_and_base(ctx: &Ctx, name: &str) -> (PathBuf, String) {
+    let core = core_dir(ctx, name);
+    if core == ctx.root {
+        return (core, ctx.branch().to_string());
+    }
+    // A legacy worktree created attached still tracks its base; a detached one
+    // has no upstream and is placed by the remote branches instead.
+    let branch = super::git::out(&core, &["rev-parse", "--abbrev-ref", "@{upstream}"])
+        .map(|u| u.strip_prefix("origin/").unwrap_or(&u).to_string())
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| super::worktree::detect_detached_base_branch(&core));
+    (core, branch)
+}
+
 /// `<name>.<project>` for extras, the bare project for the primary — DDEV
 /// appends .ddev.site to additional_hostnames itself.
 pub fn hostname_short(ctx: &Ctx, name: &str) -> String {
@@ -83,6 +99,15 @@ pub fn database(name: &str) -> String {
     format!("db_{safe}")
 }
 
+/// Another worktree whose site would share `name`'s database: `feat-x`,
+/// `feat.x` and `feat_x` all map to `db_feat_x`.
+pub fn database_taken_by(ctx: &Ctx, name: &str) -> Option<String> {
+    let db = database(name);
+    super::worktree::worktree_names(ctx)
+        .into_iter()
+        .find(|other| other != name && database(other) == db)
+}
+
 /// A site is served when its marker exists; the primary always is.
 pub fn is_served(ctx: &Ctx, name: &str) -> bool {
     is_primary(name) || marker(ctx, name).is_file()
@@ -98,7 +123,7 @@ pub fn php_version(ctx: &Ctx, name: &str) -> String {
         && let Ok(m) = std::fs::read_to_string(marker(ctx, name))
         && let Some(v) = m.lines().find_map(|l| l.strip_prefix("php="))
     {
-        return v.split('=').next().unwrap_or_default().to_string();
+        return v.trim().to_string();
     }
     ctx.env.php_version.clone()
 }

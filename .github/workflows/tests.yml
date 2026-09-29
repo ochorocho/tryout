@@ -92,12 +92,12 @@ jobs:
   # in tests/e2e (not shipped into a project), so the checkout is the working dir
   # and the project is created here, the same way tests/lifecycle.bats does.
   e2e:
-    name: browser e2e (${{ matrix.ddev_version }})
+    name: browser e2e
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install DDEV
         run: |
@@ -117,15 +117,14 @@ jobs:
           # A 13.4 secondary: renders a styleguide frontend and logs in, so the
           # multi-site checks have two real URLs to compare.
           ddev tryout worktree add v13 13.4
-          ddev tryout worktree serve v13
-          ddev restart -y
+          ddev tryout worktree serve v13   # restarts DDEV for the new hostname
           echo "TRYOUT_PROJECT=$PROJECT" >> "$GITHUB_ENV"
 
       - name: Run the browser suite
         working-directory: tests/e2e
         run: |
           set -e
-          npm ci || npm install
+          npm ci
           npx playwright install --with-deps chromium
           npx playwright test
 

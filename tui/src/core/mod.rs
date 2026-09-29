@@ -31,6 +31,14 @@ pub struct Failed;
 /// The outcome of a step that reports its own failure.
 pub type Step = Result<(), Failed>;
 
+/// Print each line as an error and fail: the step has said why.
+pub fn fail<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> Failed {
+    for l in lines {
+        out::error(l);
+    }
+    Failed
+}
+
 /// The payload version (tryout/VERSION), which the install stamps into
 /// .ddev/tryout/.version and `status` compares: one number, read by both.
 pub const PAYLOAD_VERSION_FILE: &str = include_str!("../../../tryout/VERSION");

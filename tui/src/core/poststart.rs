@@ -44,19 +44,17 @@ pub fn run(ctx: &Ctx) -> Step {
         php::available_versions().join(" ") + "\n",
     );
 
-    let patches: String = std::env::var("TRYOUT_PATCHES")
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
+    let patches = patch::configured();
     if patches.is_empty() {
         out::info("[2/5] No patches configured");
     } else {
         out::info(format!(
             "[2/5] Resetting core to origin/{branch} and applying patches: {patches}"
         ));
-        worktree::reset_to_base(ctx, &ctx.root, &branch, PRIMARY_SITE);
-        if patch::apply_all(&ctx.root, &branch, &patches).is_err() {
+        // A start must go on: the checkout as it is still serves.
+        if worktree::reset_to_base(ctx, &ctx.root, &branch, PRIMARY_SITE).is_err() {
+            out::warn("Core was not reset — patches not applied");
+        } else if patch::apply_all(&ctx.root, &branch, &patches).is_err() {
             out::warn("Some patches failed to apply — check output above");
             out::warn("  → Reset and retry: ddev tryout reset");
         }

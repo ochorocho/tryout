@@ -11,7 +11,7 @@ use super::{Failed, Step, proc, site};
 /// for CREATE DATABASE, wrong for a site's own tables.
 pub fn root_sql(ctx: &Ctx, sql: &str) -> Option<Output> {
     if ctx.env.is_postgres() {
-        psql(ctx, "postgres", sql)
+        psql("postgres", sql)
     } else {
         proc::capture("mysql", &["-h", "db", "-uroot", "-proot", "-e", sql], None)
     }
@@ -20,7 +20,7 @@ pub fn root_sql(ctx: &Ctx, sql: &str) -> Option<Output> {
 /// One statement against a named database.
 pub fn site_sql(ctx: &Ctx, db: &str, sql: &str) -> Option<Output> {
     if ctx.env.is_postgres() {
-        psql(ctx, db, sql)
+        psql(db, sql)
     } else {
         proc::capture(
             "mysql",
@@ -30,7 +30,7 @@ pub fn site_sql(ctx: &Ctx, db: &str, sql: &str) -> Option<Output> {
     }
 }
 
-fn psql(_ctx: &Ctx, db: &str, sql: &str) -> Option<Output> {
+fn psql(db: &str, sql: &str) -> Option<Output> {
     std::process::Command::new("psql")
         .env("PGPASSWORD", "db")
         .args(["-h", "db", "-U", "db", "-d", db, "-tAc", sql])
@@ -39,7 +39,7 @@ fn psql(_ctx: &Ctx, db: &str, sql: &str) -> Option<Output> {
         .ok()
 }
 
-/// Did the statement succeed? Its output is passed through, as the bash did.
+/// Did the statement succeed? Its output is passed through.
 fn shown(o: Option<Output>) -> bool {
     match o {
         Some(o) => {
@@ -86,12 +86,21 @@ pub fn ensure_site_database(ctx: &Ctx, name: &str) -> Step {
 /// Does the site's database already hold a TYPO3 install?
 pub fn has_tables(ctx: &Ctx, name: &str) -> bool {
     let db = site::database(name);
-    let sql = if ctx.env.is_postgres() {
-        "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'".to_string()
+    // Postgres answers per database, so ask the site's own; MariaDB answers
+    // for every schema from anywhere.
+    let answer = if ctx.env.is_postgres() {
+        site_sql(
+            ctx,
+            &db,
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'",
+        )
     } else {
-        format!("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='{db}';")
+        root_sql(
+            ctx,
+            &format!("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='{db}';"),
+        )
     };
-    let count: String = root_sql(ctx, &sql)
+    let count: String = answer
         .map(|o| {
             String::from_utf8_lossy(&o.stdout)
                 .chars()
@@ -102,12 +111,13 @@ pub fn has_tables(ctx: &Ctx, name: &str) -> bool {
     count.parse::<u64>().is_ok_and(|n| n > 0)
 }
 
-/// Drop a site's database.
-pub fn drop(ctx: &Ctx, db: &str) {
+/// Drop a site's database; false when the server refused.
+#[must_use]
+pub fn drop(ctx: &Ctx, db: &str) -> bool {
     if ctx.env.is_postgres() {
-        let _ = root_sql(ctx, &format!("DROP DATABASE IF EXISTS \"{db}\""));
+        shown(root_sql(ctx, &format!("DROP DATABASE IF EXISTS \"{db}\"")))
     } else {
-        shown(root_sql(ctx, &format!("DROP DATABASE IF EXISTS `{db}`;")));
+        shown(root_sql(ctx, &format!("DROP DATABASE IF EXISTS `{db}`;")))
     }
 }
 

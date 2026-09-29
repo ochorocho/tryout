@@ -13,4 +13,5 @@
 
 # Everything is the tryout binary (.ddev/tryout/tryout picks the build for this
 # machine); this file only exists because DDEV discovers commands as files.
-exec "${DDEV_APPROOT}/.ddev/tryout/tryout" "$@"
+# Through bash, so a launcher that lost its executable bit still runs.
+exec bash "${DDEV_APPROOT}/.ddev/tryout/tryout" "$@"

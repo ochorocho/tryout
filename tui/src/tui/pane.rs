@@ -47,6 +47,8 @@ pub struct Pane {
     /// Set by the reader whenever output arrived, so the UI redraws only then.
     dirty: Arc<AtomicBool>,
     size: (u16, u16),
+    /// The program's process id: its process group, hung up on close.
+    pid: Option<u32>,
 }
 
 impl Pane {
@@ -68,6 +70,7 @@ impl Pane {
             .spawn_command(cmd)
             .context("could not start the program")?;
         drop(pair.slave);
+        let pid = child.process_id();
 
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
@@ -115,6 +118,7 @@ impl Pane {
             alive,
             dirty,
             size: (rows, cols),
+            pid,
         })
     }
 
@@ -187,6 +191,30 @@ impl Pane {
     }
 }
 
+/// Closing a tab hangs up its terminal, as closing a terminal window does.
+/// Dropping the master alone does not: the reader thread holds a copy of it,
+/// so an agent, an editor or a long command would run on, unseen.
+impl Drop for Pane {
+    fn drop(&mut self) {
+        if !self.is_alive() {
+            return;
+        }
+        // What runs in the foreground (a job the shell started) and the
+        // program itself, each as the process group it leads.
+        let groups = [
+            self.master.process_group_leader(),
+            self.pid.and_then(|p| i32::try_from(p).ok()),
+        ];
+        for pg in groups.into_iter().flatten().filter(|pg| *pg > 1) {
+            // SAFETY: kill with a negative pid signals that process group; no
+            // memory is involved.
+            unsafe {
+                libc::kill(-pg, libc::SIGHUP);
+            }
+        }
+    }
+}
+
 fn pty_size(rows: u16, cols: u16) -> PtySize {
     PtySize {
         rows,
@@ -199,6 +227,21 @@ fn pty_size(rows: u16, cols: u16) -> PtySize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_a_pane_ends_what_runs_in_it() {
+        let mut cmd = CommandBuilder::new("sleep");
+        cmd.arg("300");
+        let pane = Pane::spawn(cmd, 10, 40).unwrap();
+        let pid = pane.pid.expect("a pid") as i32;
+        drop(pane);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // SAFETY: signal 0 only asks whether the process exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(Instant::now() < deadline, "sleep outlived its tab");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
 
     fn wait_for(pane: &Pane, what: impl Fn(&Pane) -> bool) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);

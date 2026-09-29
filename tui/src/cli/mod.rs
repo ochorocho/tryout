@@ -67,6 +67,16 @@ fn approot() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Stop with "No served site" unless `name` is the primary or a served site.
+pub fn require_served(ctx: &Ctx, name: &str) -> Res {
+    if crate::core::site::is_served(ctx, name) {
+        return Ok(());
+    }
+    crate::core::out::error(format!("No served site '{name}'"));
+    crate::core::out::error("  → ddev tryout worktree list");
+    Err(Exit(1))
+}
+
 /// `require_core`: refuse before anything else when the root is no checkout.
 pub fn require_core(ctx: &Ctx) -> Res {
     if ctx.has_core() {

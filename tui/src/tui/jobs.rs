@@ -29,6 +29,8 @@ const KEEP_DONE: usize = 5;
 /// A log longer than this keeps its tail: a composer install can run to
 /// thousands of lines, and it is the end that says what went wrong.
 const LOG_LINES: usize = 3000;
+/// An unfinished line longer than this is passed on as it is.
+const MAX_PARTIAL: usize = 64 * 1024;
 /// The add-on's event marker, see `core::out::event`.
 const MARKER: &str = "@@tryout ";
 
@@ -101,6 +103,8 @@ pub struct Jobs {
     rx: Receiver<Report>,
     /// Each running job's terminal, for answering its prompt.
     writers: HashMap<u64, Box<dyn Write + Send>>,
+    /// The job whose log is open: it stays however old it gets.
+    pinned: Option<u64>,
 }
 
 impl Jobs {
@@ -114,6 +118,7 @@ impl Jobs {
             tx,
             rx,
             writers: HashMap::new(),
+            pinned: None,
         }
     }
 
@@ -183,9 +188,15 @@ impl Jobs {
         id
     }
 
-    /// Drop the successes that finished `after` ago or longer — except `keep`,
-    /// whose log is open.
-    pub fn expire(&mut self, after: Duration, keep: Option<u64>) {
+    /// Keep this job (its log is open) through `expire` and `trim`.
+    pub fn pin(&mut self, id: Option<u64>) {
+        self.pinned = id;
+    }
+
+    /// Drop the successes that finished `after` ago or longer — except the
+    /// pinned one.
+    pub fn expire(&mut self, after: Duration) {
+        let keep = self.pinned;
         self.list.retain(|j| match j.state {
             JobState::Done { ok: true, at, .. } => Some(j.id) == keep || at.elapsed() < after,
             _ => true,
@@ -260,6 +271,7 @@ impl Jobs {
     /// conflicts with is ahead of, and hand back the ones that just finished.
     pub fn tick(&mut self, cwd: &Path) -> Vec<Job> {
         let mut finished = Vec::new();
+        let mut cancel = Vec::new();
         while let Ok(report) = self.rx.try_recv() {
             match report {
                 Report::Line(id, line) => {
@@ -271,7 +283,19 @@ impl Jobs {
                 }
                 Report::Prompt(id, prompt) => {
                     if let Some(job) = self.list.iter_mut().find(|j| j.id == id) {
-                        job.waiting = Some(prompt);
+                        if may_ask_password(&job.args) {
+                            job.waiting = Some(prompt);
+                        } else {
+                            // Anything else asking is not DDEV's sudo — it may
+                            // be code a patch brought in, fishing. Refuse it.
+                            take_line(
+                                job,
+                                format!(
+                                    "tryout: refused to answer \"{prompt}\" — only a command that restarts DDEV asks for a password"
+                                ),
+                            );
+                            cancel.push(id);
+                        }
                     }
                 }
                 Report::Exit(id, code) => {
@@ -292,6 +316,9 @@ impl Jobs {
                     }
                 }
             }
+        }
+        for id in cancel {
+            self.cancel_prompt(id);
         }
         // In queue order, so nothing overtakes a job it conflicts with.
         let mut queued: Vec<u64> = self
@@ -342,8 +369,11 @@ impl Jobs {
 
     fn trim(&mut self) {
         let mut done = 0;
+        let keep = self.pinned;
         self.list.retain(|j| {
-            if matches!(j.state, JobState::Done { .. }) {
+            if Some(j.id) == keep {
+                true
+            } else if matches!(j.state, JobState::Done { .. }) {
                 done += 1;
                 done <= KEEP_DONE
             } else {
@@ -384,6 +414,15 @@ fn take_line(job: &mut Job, line: String) {
     while job.log.len() > LOG_LINES {
         job.log.pop_front();
     }
+}
+
+/// Only a command that can restart DDEV has a reason to ask: DDEV runs sudo to
+/// add its hostname to /etc/hosts.
+fn may_ask_password(args: &[String]) -> bool {
+    matches!(
+        args.iter().map(String::as_str).take(2).collect::<Vec<_>>()[..],
+        ["worktree", "serve" | "unserve" | "rename" | "add"]
+    )
 }
 
 /// Does this unfinished line ask for a password? sudo's "Password:",
@@ -433,8 +472,16 @@ fn spawn(
     // Only the child holds the terminal's other end now, so its exit ends the
     // reader.
     drop(pty.slave);
-    let reader = pty.master.try_clone_reader().ok()?;
-    let writer = pty.master.take_writer().ok()?;
+    // Without its terminal's ends the job could never report: end it now, or
+    // it would stay "running" and hold its claim for good.
+    let (reader, writer) = match (pty.master.try_clone_reader(), pty.master.take_writer()) {
+        (Ok(r), Ok(w)) => (r, w),
+        (Err(e), _) | (_, Err(e)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return fail(format!("could not attach to the job's terminal: {e}"));
+        }
+    };
 
     let lines = {
         let tx = tx.clone();
@@ -489,8 +536,20 @@ fn read_lines(mut reader: Box<dyn Read + Send>, id: u64, tx: &Sender<Report>) {
             let _ = tx.send(Report::Line(id, text));
             asked = false;
         }
+        // Output that never ends a line (a progress bar redrawn with \r) must
+        // not grow without bound.
+        if buf.len() > MAX_PARTIAL {
+            let text = String::from_utf8_lossy(&buf).into_owned();
+            buf.clear();
+            let _ = tx.send(Report::Line(id, text));
+            continue;
+        }
+        // A prompt is short; a long partial line is output, not a question.
+        if asked || buf.len() > 256 {
+            continue;
+        }
         let partial = String::from_utf8_lossy(&buf).into_owned();
-        if !asked && is_password_prompt(&partial) {
+        if is_password_prompt(&partial) {
             asked = true;
             let _ = tx.send(Report::Prompt(
                 id,
@@ -657,8 +716,10 @@ fi
         let t = Instant::now();
         loop {
             jobs.tick(dir.path());
+            // Either event, whichever this tick saw last: a slow machine may
+            // miss the first before the second arrives.
             if let JobState::Running { step: Some(s), .. } = &jobs.get(id).unwrap().state {
-                assert_eq!(s, "Starting serve");
+                assert!(s == "Starting serve" || s == "Finishing serve", "{s}");
                 break;
             }
             assert!(t.elapsed() < Duration::from_secs(5), "no step arrived");
@@ -728,6 +789,19 @@ fi
         assert_eq!(labels, ["j6", "j5", "j4", "j3", "j2"]);
     }
 
+    #[test]
+    fn the_job_whose_log_is_open_is_never_trimmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut jobs = Jobs::new(fake(dir.path()));
+        let first = jobs.enqueue(&action("j0"), false);
+        jobs.pin(Some(first));
+        for i in 1..7 {
+            jobs.enqueue(&action(&format!("j{i}")), false);
+        }
+        until_done(&mut jobs, dir.path(), 7);
+        assert!(jobs.get(first).is_some(), "its log would dangle");
+    }
+
     /// A stand-in that asks for a password the way sudo does: echo off, a
     /// prompt with no newline, the answer read from the terminal.
     pub fn asking(dir: &Path) -> PathBuf {
@@ -757,11 +831,11 @@ fi
     fn a_password_prompt_is_answered_and_never_logged() {
         let dir = tempfile::tempdir().unwrap();
         let mut jobs = Jobs::new(asking(dir.path()));
-        let id = jobs.enqueue(&action("serve"), false);
+        let id = jobs.enqueue(&command("worktree serve v13"), false);
         let (wid, prompt, label) = until_waiting(&mut jobs, dir.path());
         assert_eq!(
             (wid, prompt.as_str(), label.as_str()),
-            (id, "Password:", "serve")
+            (id, "Password:", "worktree serve v13")
         );
         jobs.answer(id, "secret");
         assert!(jobs.waiting().is_none());
@@ -780,10 +854,25 @@ fi
     }
 
     #[test]
+    fn a_password_prompt_from_any_other_command_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut jobs = Jobs::new(asking(dir.path()));
+        jobs.enqueue(&command("patch --site v13 91003"), false);
+        let job = &until_done(&mut jobs, dir.path(), 1)[0];
+        assert!(jobs.waiting().is_none(), "no popup for it");
+        assert!(matches!(job.state, JobState::Done { ok: false, .. }));
+        assert!(
+            job.log.iter().any(|l| l.contains("refused to answer")),
+            "{:?}",
+            job.log
+        );
+    }
+
+    #[test]
     fn a_cancelled_prompt_fails_the_job() {
         let dir = tempfile::tempdir().unwrap();
         let mut jobs = Jobs::new(asking(dir.path()));
-        let id = jobs.enqueue(&action("serve"), false);
+        let id = jobs.enqueue(&command("worktree serve v13"), false);
         until_waiting(&mut jobs, dir.path());
         jobs.cancel_prompt(id);
         let job = &until_done(&mut jobs, dir.path(), 1)[0];
@@ -829,9 +918,10 @@ fi
             jobs.enqueue(&action("fail"), false),
         );
         until_done(&mut jobs, dir.path(), 3);
-        jobs.expire(Duration::from_secs(60), None);
+        jobs.expire(Duration::from_secs(60));
         assert_eq!(jobs.list().len(), 3, "not yet");
-        jobs.expire(Duration::ZERO, Some(open));
+        jobs.pin(Some(open));
+        jobs.expire(Duration::ZERO);
         let left: Vec<u64> = jobs.list().iter().map(|j| j.id).collect();
         assert!(!left.contains(&ok), "the success went");
         assert!(left.contains(&open), "the one being read stays");

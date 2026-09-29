@@ -62,7 +62,7 @@ pub fn lock_for(dir: &Path, args: &[&str]) -> Option<std::fs::File> {
 }
 
 /// stdout of `git -C <dir> <args>` without its trailing newlines, or None when
-/// git fails. stderr is discarded, as the bash `2>/dev/null` did.
+/// git fails. stderr is discarded.
 pub fn out(dir: &Path, args: &[&str]) -> Option<String> {
     let _lock = lock_for(dir, args);
     let o = Command::new("git")

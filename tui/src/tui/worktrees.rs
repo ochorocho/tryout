@@ -1,7 +1,7 @@
 //! The worktrees tryout knows about — read with the add-on's own code, the same
 //! the `worktree list --json` contract is written from.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
 use crate::core::ctx::Ctx;
@@ -39,17 +39,6 @@ impl Worktree {
     }
 }
 
-/// Parse `worktree list --json`. Anything DDEV prints around it is skipped: the
-/// array starts at the first line that opens one.
-pub fn parse_json(output: &str) -> Result<Vec<Worktree>> {
-    let start = output
-        .find("\n[")
-        .map(|i| i + 1)
-        .or_else(|| output.starts_with('[').then_some(0))
-        .context("no JSON array in the output — is the add-on older than the TUI?")?;
-    serde_json::from_str(&output[start..]).context("the worktree list is not the JSON expected")
-}
-
 /// The project a path belongs to: the nearest ancestor with the add-on installed.
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     start
@@ -65,11 +54,12 @@ fn context(root: &Path) -> Ctx {
 }
 
 /// The PHP versions the web image provides. Only the container can look, so
-/// post-start leaves them in .ddev/tryout/.state/php-versions; before it has,
-/// DDEV's 8.x line-up stands in.
-fn php_versions(root: &Path) -> Vec<String> {
+/// post-start leaves them in its state directory; before it has, DDEV's 8.x
+/// line-up stands in.
+fn php_versions(ctx: &Ctx) -> Vec<String> {
     let snapshot =
-        std::fs::read_to_string(root.join(".ddev/tryout/.state/php-versions")).unwrap_or_default();
+        std::fs::read_to_string(crate::core::poststart::state_dir(ctx).join("php-versions"))
+            .unwrap_or_default();
     let v: Vec<String> = snapshot.split_whitespace().map(String::from).collect();
     if v.is_empty() {
         ["8.1", "8.2", "8.3", "8.4", "8.5"]
@@ -88,7 +78,7 @@ pub fn load(root: &Path) -> Result<Vec<Worktree>> {
     if !ctx.has_core() {
         bail!("TYPO3 Core is not cloned yet — ddev tryout download");
     }
-    Ok(worktree::infos(&ctx, &php_versions(root)))
+    Ok(worktree::infos(&ctx, &php_versions(&ctx)))
 }
 
 /// The branches a worktree can be based on. Fetches the branch list the first
@@ -104,25 +94,12 @@ pub fn load_branches(root: &Path) -> Result<Vec<String>> {
 pub fn load_patches(root: &Path, name: &str, search: &str, page: u32) -> Result<PatchPage> {
     let ctx = context(root);
     let target = site::for_name(&ctx, name);
-    let branch = if !target.is_empty() && !site::is_primary(&target) {
-        worktree::detect_detached_base_branch(&site::core_dir(&ctx, &target))
-    } else {
-        ctx.branch().to_string()
-    };
+    let (_, branch) = site::core_and_base(&ctx, &target);
     let found = gerrit::search_open(&branch, search, page).map_err(|e| match e {
         gerrit::Error::Fetch => anyhow::anyhow!("Gerrit could not be reached"),
         gerrit::Error::Parse => anyhow::anyhow!("Gerrit's answer was not understood"),
     })?;
-    let changes = found
-        .changes
-        .into_iter()
-        .map(|c| crate::tui::forms::Change {
-            number: c.number,
-            subject: c.subject,
-            owner: c.owner,
-            scores: c.scores,
-        })
-        .collect();
+    let changes = found.changes;
     Ok((changes, found.more))
 }
 
@@ -161,7 +138,7 @@ mod tests {
 
     #[test]
     fn parses_the_contract() {
-        let rows = parse_json(JSON).unwrap();
+        let rows: Vec<Worktree> = serde_json::from_str(JSON).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows[0].primary && rows[0].served() && !rows[0].dirty());
         let j = &rows[1];
@@ -172,20 +149,8 @@ mod tests {
     }
 
     #[test]
-    fn skips_whatever_ddev_prints_before_the_array() {
-        let noisy = format!("Custom configuration detected\n  • something\n{JSON}");
-        assert_eq!(parse_json(&noisy).unwrap().len(), 2);
-    }
-
-    #[test]
-    fn an_old_add_on_gets_a_reason_not_a_parse_error() {
-        let err = parse_json("\nCore worktrees\n  NAME HEAD\n").unwrap_err();
-        assert!(format!("{err:#}").contains("older than the TUI"));
-    }
-
-    #[test]
     fn the_root_checkout_lives_at_the_project_root() {
-        let rows = parse_json(JSON).unwrap();
+        let rows: Vec<Worktree> = serde_json::from_str(JSON).unwrap();
         let root = Path::new("/p");
         assert_eq!(rows[0].checkout_dir(root), PathBuf::from("/p"));
         assert_eq!(

@@ -21,8 +21,8 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - name: Build both architectures and join them into one universal file
@@ -39,7 +39,7 @@ jobs:
             lipo ../dist/tryout-macos-universal -thin "$arch" -output "/tmp/slice-$arch"
             grep -q '#ddev-generated' "/tmp/slice-$arch"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos
           path: dist/
@@ -54,12 +54,12 @@ jobs:
           - target: aarch64-unknown-linux-musl
             asset: tryout-linux-aarch64
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: mlugg/setup-zig@v2
-      - run: cargo install --locked cargo-zigbuild
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+      - run: cargo install --locked cargo-zigbuild --version 0.23.4
       - name: Build a static binary
         working-directory: tui
         run: |
@@ -68,7 +68,7 @@ jobs:
           cp target/${{ matrix.target }}/release/tryout ../dist/${{ matrix.asset }}
           file ../dist/${{ matrix.asset }} | tee /dev/stderr | grep -q 'statically linked'
           grep -q '#ddev-generated' ../dist/${{ matrix.asset }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.asset }}
           path: dist/
@@ -79,10 +79,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: tryout/bin
           merge-multiple: true

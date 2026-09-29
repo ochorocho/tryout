@@ -11,7 +11,7 @@ case "$(uname -m)" in
     *) echo "no Linux build for $(uname -m)" >&2; exit 1 ;;
 esac
 target="${arch}-unknown-linux-musl"
-command -v musl-gcc >/dev/null 2>&1 || sudo apt-get install -y musl-tools
+command -v musl-gcc >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y musl-tools; }
 rustup target add "${target}"
 cargo build --release --locked --target "${target}"
 mkdir -p ../tryout/bin

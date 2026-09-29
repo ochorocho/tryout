@@ -25,7 +25,7 @@ pub enum ClientMsg {
     Hello { version: u32, cols: u16, rows: u16 },
     /// A key, a click, a paste or a resize, exactly as the terminal reported it.
     Event(crossterm::event::Event),
-    /// End the session — `tryout-tui stop`, which attaches no UI to ask it.
+    /// End the session — `tryout ui stop`, which attaches no UI to ask it.
     Stop,
 }
 

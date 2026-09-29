@@ -1,8 +1,7 @@
 //! The Composer overlays the add-on owns — never the project's composer.json.
 //! `composer.tryout.json` in each instance is selected via COMPOSER= and pulls
-//! the user's own composer.json in through composer-merge-plugin. Ported from
-//! sync-composer.php, site-composer.php and use-core.php, and written with
-//! the same PHP-style JSON so the files do not churn.
+//! the user's own composer.json in through composer-merge-plugin. Written as
+//! PHP's json_encode writes (`core::phpjson`), so existing files do not churn.
 
 use std::path::Path;
 

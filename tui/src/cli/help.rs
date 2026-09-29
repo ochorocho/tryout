@@ -1,4 +1,4 @@
-//! The help texts, word for word what the bash command printed.
+//! The help texts.
 
 use crate::core::out::{BOLD, DIM, NC};
 

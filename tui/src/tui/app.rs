@@ -39,11 +39,10 @@ pub enum Effect {
     Reload,
     /// Open a new shell tab in this worktree, then focus it.
     NewTab(String),
-    /// Run a tryout command: in a popup terminal, or in the background.
+    /// Run a tryout command: as a job, or in the background.
     Run(Action),
     /// A form needs the branch list; the event loop fetches it off-thread.
     LoadBranches,
-    /// A form needs the open Gerrit changes for this worktree's branch.
     /// A page of open changes for a site: (site, search, page).
     LoadPatches(String, String, u32),
 }
@@ -292,6 +291,7 @@ impl App {
         match result {
             Ok(list) => {
                 let keep = self.selected().map(|w| w.name.clone());
+                self.follow_workspaces(&list);
                 self.worktrees = list;
                 self.selected = keep
                     .and_then(|n| self.worktrees.iter().position(|w| w.name == n))
@@ -300,6 +300,29 @@ impl App {
                 self.listing = Listing::Loaded;
             }
             Err(e) => self.listing = Listing::Failed(format!("{e:#}")),
+        }
+    }
+
+    /// Tabs belong to a checkout directory, not to a name: the root, named
+    /// after its branch, keeps its tabs across a checkout. A directory that is
+    /// gone (removed, or moved by a rename) takes its tabs with it — their
+    /// programs are hung up rather than left running where nothing reaches them.
+    fn follow_workspaces(&mut self, new: &[Worktree]) {
+        let old = std::mem::take(&mut self.workspaces);
+        for (name, ws) in old {
+            let dir = self
+                .worktrees
+                .iter()
+                .find(|w| w.name == name)
+                .map(|w| w.dir.clone());
+            let now = match dir {
+                Some(d) => new.iter().find(|w| w.dir == d).map(|w| w.name.clone()),
+                // Not in the last list either (opened before it loaded): by name.
+                None => new.iter().find(|w| w.name == name).map(|w| w.name.clone()),
+            };
+            if let Some(now) = now {
+                self.workspaces.insert(now, ws);
+            }
         }
     }
 
@@ -417,8 +440,8 @@ impl App {
         }
     }
 
-    /// Close the selected worktree's active tab. Dropping the pane drops the PTY
-    /// master, which hangs up whatever ran in it.
+    /// Close the selected worktree's active tab; dropping its pane hangs up
+    /// whatever ran in it.
     fn close_tab(&mut self) {
         let Some(name) = self.selected().map(|w| w.name.clone()) else {
             return;
@@ -595,7 +618,7 @@ impl App {
     /// Called every loop: exited tabs close, what is on screen counts as seen,
     /// and finished jobs report — reloading the list when they changed it.
     pub fn tick(&mut self) -> Effect {
-        // A tab whose program exited closes itself, as in herdr. A worktree left
+        // A tab whose program exited closes itself. A worktree left
         // with none goes back to its placeholder, and the list gets the focus.
         let mut emptied = Vec::new();
         for (name, ws) in &mut self.workspaces {
@@ -635,7 +658,8 @@ impl App {
         // Finished jobs: say how it went, show the output where it is the point,
         // and reload the list when a job changed what it shows.
         let mut reload = false;
-        for job in self.jobs.tick(&self.root.clone()) {
+        self.jobs.pin(self.log_view);
+        for job in self.jobs.tick(&self.root) {
             reload |= self.job_finished(&job);
         }
         // A step that changes the list is shown as soon as it is done — a patch
@@ -652,8 +676,7 @@ impl App {
         }
         // A success has made its point after a few seconds; the one whose log
         // is open stays until it is closed.
-        self.jobs
-            .expire(crate::tui::jobs::SUCCESS_LINGERS, self.log_view);
+        self.jobs.expire(crate::tui::jobs::SUCCESS_LINGERS);
         if reload {
             self.listing = Listing::Loading;
             return Effect::Reload;
@@ -1157,7 +1180,7 @@ impl App {
             .map_or(Effect::None, Effect::Run)
     }
 
-    /// The "+ new" button (or `+`): `ddev tryout worktree add` in a popup.
+    /// The "+ new" button (or `+`): the form for `ddev tryout worktree add`.
     pub fn new_worktree(&mut self) -> Effect {
         if self.modal() {
             return Effect::None;
@@ -1165,10 +1188,16 @@ impl App {
         self.open_form(FormKind::NewWorktree)
     }
 
+    /// A popup that waits for keys (password, tab name, closing the session)
+    /// takes no clicks, and lets none through behind it.
+    pub fn popup_open(&self) -> bool {
+        self.password.is_some() || self.rename.is_some() || self.confirm_close
+    }
+
     /// A right-click on a worktree: select it, and open its `ddev tryout
     /// worktree` commands where the pointer is. Replaces a menu already open.
     pub fn context_menu(&mut self, index: usize, at: (u16, u16)) {
-        if self.form.is_some() || self.rename.is_some() {
+        if self.form.is_some() || self.popup_open() {
             return;
         }
         self.menu = None;
@@ -1181,8 +1210,6 @@ impl App {
         }
     }
 
-    /// A click while a menu is open: on an item runs it, anywhere else closes
-    /// the menu — and goes no further, so it cannot select behind it.
     /// A choice in the open menu, by click or by key. An action runs and the
     /// menu closes; a `▸` opens its submenu; a separator does nothing; outside
     /// the menu (None) closes it — and goes no further.
@@ -1304,6 +1331,26 @@ pub mod tests {
     }
 
     #[test]
+    fn tabs_follow_their_checkout_and_go_with_it() {
+        let mut a = app();
+        let sleeper = || {
+            let mut c = portable_pty::CommandBuilder::new("sleep");
+            c.arg("300");
+            Pane::spawn(c, 5, 20).unwrap()
+        };
+        a.add_tab("main", sleeper());
+        a.add_tab("bugfix", sleeper());
+        // The root switched to 13.4 (so it is called that now); bugfix is gone.
+        let mut list = fixture();
+        list[0].name = "13.4".into();
+        list.retain(|w| w.name != "bugfix");
+        a.set_worktrees(Ok(list));
+        let mut names: Vec<_> = a.workspaces.keys().cloned().collect();
+        names.sort();
+        assert_eq!(names, ["13.4"]);
+    }
+
+    #[test]
     fn a_job_asking_for_a_password_gets_a_popup_that_answers_it() {
         let dir = tempfile::tempdir().unwrap();
         let mut a = App::new(dir.path().to_path_buf());
@@ -1311,7 +1358,7 @@ pub mod tests {
         let action = Action {
             label: "Serve".into(),
             hint: String::new(),
-            args: vec!["x".into()],
+            args: vec!["worktree".into(), "serve".into(), "x".into()],
             run: Run::Background,
         };
         let id = a.jobs.enqueue(&action, false);
@@ -1353,7 +1400,7 @@ pub mod tests {
         let action = Action {
             label: "Serve".into(),
             hint: String::new(),
-            args: vec!["x".into()],
+            args: vec!["worktree".into(), "serve".into(), "x".into()],
             run: Run::Background,
         };
         let id = a.jobs.enqueue(&action, false);

@@ -71,18 +71,18 @@ pub fn parse_resolved(v: &Value) -> Result<Resolved, gerrit::Error> {
     let subject = v
         .get("subject")
         .and_then(Value::as_str)
-        .unwrap_or("No subject")
-        .replace('\n', " ");
-    // jq's ltrimstr/rtrimstr: one space off each end, not all of them.
+        .map_or_else(|| "No subject".to_string(), super::out::printable);
+    // One space off each end, not all of them.
     let subject = subject.strip_prefix(' ').unwrap_or(&subject);
     let subject = subject.strip_suffix(' ').unwrap_or(subject);
+    let reference = r
+        .get("ref")
+        .and_then(Value::as_str)
+        .filter(|r| is_change_ref(r))
+        .ok_or(gerrit::Error::Parse)?;
     Ok(Resolved {
         subject: subject.to_string(),
-        reference: r
-            .get("ref")
-            .and_then(Value::as_str)
-            .ok_or(gerrit::Error::Parse)?
-            .to_string(),
+        reference: reference.to_string(),
         number: r
             .get("_number")
             .map(|n| n.to_string())
@@ -90,9 +90,23 @@ pub fn parse_resolved(v: &Value) -> Result<Resolved, gerrit::Error> {
         status: v
             .get("status")
             .and_then(Value::as_str)
-            .unwrap_or("UNKNOWN")
-            .to_string(),
+            .map_or_else(|| "UNKNOWN".to_string(), super::out::printable),
     })
+}
+
+/// `refs/changes/NN/<change>/<patchset>` and nothing else: the ref is fetched,
+/// and a refspec (`+src:refs/heads/main`) or an option (`--upload-pack=…`)
+/// from a compromised answer must not reach git.
+fn is_change_ref(r: &str) -> bool {
+    let Some(rest) = r.strip_prefix("refs/changes/") else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    parts.len() == 3
+        && parts[0].len() == 2
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Apply one change to the checkout at `core`, based on `branch`. Returns the
@@ -141,8 +155,6 @@ pub fn apply(core: &Path, branch: &str, change: &str) -> (Outcome, String) {
     // carries only its Change-Id, never its number.
     if let Some(id) = change_id {
         remember(core, id, change);
-    }
-    if let Some(id) = change_id {
         let applied = git::out(
             core,
             &["log", "--format=%b", &format!("origin/{branch}..HEAD")],
@@ -199,6 +211,16 @@ pub fn remembered(core: &Path) -> std::collections::HashMap<String, u64> {
                 v.trim().parse().ok()?,
             ))
         })
+        .collect()
+}
+
+/// The configured patch list, TRYOUT_PATCHES, with its whitespace removed:
+/// `56947, 12345` → `56947,12345`. Empty when none is configured.
+pub fn configured() -> String {
+    std::env::var("TRYOUT_PATCHES")
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_whitespace())
         .collect()
 }
 
@@ -297,16 +319,45 @@ mod tests {
     fn a_change_resolves_to_its_current_patchset() {
         let v = gerrit::parse(
             ")]}'\n{\"subject\":\"  Two  spaces \",\"status\":\"NEW\",\"current_revision\":\"b\",\
-             \"revisions\":{\"a\":{\"ref\":\"refs/changes/1\",\"_number\":1},\"b\":{\"ref\":\"refs/changes/2\",\"_number\":2}}}",
+             \"revisions\":{\"a\":{\"ref\":\"refs/changes/03/91003/1\",\"_number\":1},\"b\":{\"ref\":\"refs/changes/03/91003/2\",\"_number\":2}}}",
         )
         .unwrap();
         let r = parse_resolved(&v).unwrap();
         assert_eq!(
             (r.reference.as_str(), r.number.as_str(), r.status.as_str()),
-            ("refs/changes/2", "2", "NEW")
+            ("refs/changes/03/91003/2", "2", "NEW")
         );
-        // One space off each end, as jq's ltrimstr/rtrimstr did.
+        // One space off each end, not all of them.
         assert_eq!(r.subject, " Two  spaces");
         assert!(parse_resolved(&serde_json::json!({"subject": "x"})).is_err());
+    }
+
+    #[test]
+    fn only_a_change_ref_is_fetched_and_its_text_is_made_printable() {
+        assert!(is_change_ref("refs/changes/47/56947/12"));
+        for bad in [
+            "+refs/changes/47/56947/12:refs/heads/main",
+            "--upload-pack=touch /tmp/x",
+            "refs/changes/47/56947",
+            "refs/changes/4/56947/1",
+            "refs/heads/main",
+            "refs/changes/47/5x/1",
+        ] {
+            assert!(!is_change_ref(bad), "{bad}");
+        }
+        let v = serde_json::json!({
+            "subject": "Fix\u{1b}]52;c;aGk=\u{7}it",
+            "status": "NEW",
+            "current_revision": "a",
+            "revisions": {"a": {"ref": "--upload-pack=x", "_number": 1}}
+        });
+        assert!(parse_resolved(&v).is_err(), "a bad ref is refused");
+        let v = serde_json::json!({
+            "subject": "Fix\u{1b}]52;c;aGk=\u{7}it",
+            "status": "NEW",
+            "current_revision": "a",
+            "revisions": {"a": {"ref": "refs/changes/01/1/1", "_number": 1}}
+        });
+        assert_eq!(parse_resolved(&v).unwrap().subject, "Fix]52;c;aGk=it");
     }
 }

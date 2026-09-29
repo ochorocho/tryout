@@ -332,9 +332,19 @@ pub fn setup_frontend(ctx: &Ctx, name: &str) {
 
 /// Make a worktree a live site: its own tree, overlay, database, vhost and FPM.
 pub fn serve(ctx: &Ctx, name: &str, php_version: &str) -> Step {
-    worktree::validate_name(name).map_err(report)?;
+    worktree::validate_name(name).map_err(super::fail)?;
     if site::is_primary(name) {
         out::error(format!("'{name}' is reserved"));
+        return Err(Failed);
+    }
+    if let Some(other) = site::database_taken_by(ctx, name) {
+        out::error(format!(
+            "'{name}' would share database {} with worktree '{other}'",
+            site::database(name)
+        ));
+        out::error(format!(
+            "  → rename one of them: ddev tryout worktree rename {name} <new-name>"
+        ));
         return Err(Failed);
     }
     // Before the marker exists: what DDEV last registered.
@@ -343,6 +353,19 @@ pub fn serve(ctx: &Ctx, name: &str, php_version: &str) -> Step {
     if !core.is_dir() {
         out::error(format!("No worktree '{name}'"));
         out::error(format!("  → ddev tryout worktree add {name} <branch>"));
+        return Err(Failed);
+    }
+    // It names a binary, a socket and a vhost line: digits and one dot only.
+    let valid_php = |v: &str| {
+        v.split_once('.').is_some_and(|(a, b)| {
+            [a, b]
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit()))
+        })
+    };
+    if !php_version.is_empty() && !valid_php(php_version) {
+        out::error(format!("Invalid PHP version '{php_version}'"));
+        out::error(format!("  → ddev tryout worktree serve {name} --php 8.4"));
         return Err(Failed);
     }
     let php = if php_version.is_empty() {
@@ -433,15 +456,22 @@ fn build_site(ctx: &Ctx, name: &str, php: &str, core: &Path, dir: &Path) -> Step
         out::error(format!("composer install failed for {name}"));
         return Err(Failed);
     }
-    let _ = webserver::write_vhost(ctx, name, php);
-    let _ = webserver::write_worktree_config(ctx);
+    // Without these the site is marked served yet nothing routes to it.
+    if let Err(e) = webserver::write_vhost(ctx, name, php) {
+        out::error(format!("Could not write the vhost for {name}: {e}"));
+        return Err(Failed);
+    }
+    if let Err(e) = webserver::write_worktree_config(ctx) {
+        out::error(format!("Could not write .ddev/config.worktrees.yaml: {e}"));
+        return Err(Failed);
+    }
     setup_typo3(ctx, name)
 }
 
 /// Drop a site, keep its worktree — and, unless `keep_db` is false, its
 /// database with the settings.php that goes with it.
 pub fn unserve(ctx: &Ctx, name: &str, keep_db: bool) -> Step {
-    worktree::validate_name(name).map_err(report)?;
+    worktree::validate_name(name).map_err(super::fail)?;
     if !site::is_served(ctx, name) {
         out::error(format!("Site '{name}' is not served"));
         return Err(Failed);
@@ -449,18 +479,38 @@ pub fn unserve(ctx: &Ctx, name: &str, keep_db: bool) -> Step {
     let saved = saved_settings(ctx, name);
     let settings = site::dir(ctx, name).join("config/system/settings.php");
     if keep_db && settings.is_file() {
-        let _ = std::fs::create_dir_all(saved.parent().expect("has a directory"));
-        let _ = std::fs::copy(&settings, &saved);
+        // The kept database is useless without it: stop before deleting anything.
+        let kept = saved
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::copy(&settings, &saved));
+        if let Err(e) = kept {
+            out::error(format!("Could not keep {}: {e}", saved.display()));
+            out::error(format!(
+                "  → nothing was removed; or discard the database too: ddev tryout worktree unserve {name} --drop-db"
+            ));
+            return Err(Failed);
+        }
     } else {
         let _ = std::fs::remove_file(&saved);
     }
     let _ = std::fs::remove_file(webserver::vhost_file(ctx, name));
     let _ = std::fs::remove_dir_all(site::dir(ctx, name));
-    let _ = webserver::write_worktree_config(ctx);
+    if let Err(e) = webserver::write_worktree_config(ctx) {
+        out::warn(format!(
+            "Could not rewrite .ddev/config.worktrees.yaml: {e}"
+        ));
+    }
     if !keep_db {
         let db_name = site::database(name);
         out::info(format!("Dropping database {db_name}..."));
-        db::drop(ctx, &db_name);
+        if !db::drop(ctx, &db_name) {
+            out::error(format!("Could not drop database {db_name}"));
+            out::error(format!(
+                "  → the site is gone; drop it by hand: ddev mysql (or ddev psql) → DROP DATABASE {db_name};"
+            ));
+            return Err(Failed);
+        }
     }
     out::success(format!("Site '{name}' removed (worktree kept)"));
     // The hostname set shrank, so the restart stays; the dead vhost must stop
@@ -540,12 +590,4 @@ pub fn delete_site(ctx: &Ctx, name: &str) -> Step {
     }
     out::success("Setup complete");
     Ok(())
-}
-
-/// Print a validation failure's lines as errors.
-pub fn report(lines: Vec<String>) -> Failed {
-    for l in lines {
-        out::error(l);
-    }
-    Failed
 }

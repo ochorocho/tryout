@@ -1,7 +1,7 @@
-//! Sessions: a server that owns everything and outlives its clients, as herdr
-//! and tmux do. `tryout-tui` attaches to the project's session, starting it
-//! when none answers; `q` detaches and leaves it running; only an explicit
-//! close (`Q`, or `tryout-tui stop`) ends it.
+//! Sessions: a server that owns everything and outlives its clients, as tmux
+//! does. `tryout ui` attaches to the project's session, starting it when none
+//! answers; `q` detaches and leaves it running; only an explicit close (`Q`, or
+//! `tryout ui stop`) ends it.
 
 pub mod client;
 pub mod proto;
@@ -9,7 +9,7 @@ pub mod server;
 pub mod wire;
 
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -111,8 +111,42 @@ pub fn connect(socket: &Path) -> io::Result<Option<UnixStream>> {
     }
 }
 
+/// The socket directory, made if missing — and refused unless it is a real
+/// directory owned by this user and closed to everyone else. On Linux it sits
+/// in the shared /tmp: another user could create it first and put a server of
+/// their own there, which would then be sent every key typed, passwords
+/// included.
+fn private_socket_dir() -> Result<PathBuf> {
+    let dir = socket_dir();
+    make_private(&dir)?;
+    Ok(dir)
+}
+
+fn make_private(dir: &Path) -> Result<()> {
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e).with_context(|| format!("cannot create {}", dir.display())),
+    }
+    let m = std::fs::symlink_metadata(dir)
+        .with_context(|| format!("cannot inspect {}", dir.display()))?;
+    // SAFETY: getuid cannot fail and has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    if !m.file_type().is_dir() || m.uid() != uid {
+        bail!(
+            "{} is not a directory of yours — refusing to use it\n  → remove it, or set TMPDIR to a private directory",
+            dir.display()
+        );
+    }
+    if m.mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// Connect to the project's session, starting it first if none is running.
 pub fn connect_or_start(root: &Path) -> Result<UnixStream> {
+    private_socket_dir()?;
     let socket = socket_path(root);
     if let Some(s) = connect(&socket)? {
         return Ok(s);
@@ -131,17 +165,10 @@ pub fn connect_or_start(root: &Path) -> Result<UnixStream> {
     )
 }
 
-/// Start `tryout-tui server <root>` detached: its own session (so closing this
+/// Start `tryout ui server <root>` detached: its own session (so closing this
 /// terminal does not hang it up), no terminal, output to the log.
 fn start_server(root: &Path) -> Result<()> {
-    let dir = socket_dir();
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&dir)
-        .with_context(|| format!("cannot create {}", dir.display()))?;
-    // An existing directory keeps its mode; insist on ours.
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    private_socket_dir()?;
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -170,6 +197,7 @@ fn start_server(root: &Path) -> Result<()> {
 
 /// End the project's session. False when there was none.
 pub fn stop(root: &Path) -> Result<bool> {
+    private_socket_dir()?;
     let Some(mut s) = connect(&socket_path(root))? else {
         return Ok(false);
     };
@@ -203,6 +231,29 @@ mod tests {
             socket_path(long),
             "the same project always gets the same socket"
         );
+    }
+
+    #[test]
+    fn the_socket_directory_must_be_a_private_directory_of_ours() {
+        let t = tempfile::tempdir().unwrap();
+        let fresh = t.path().join("fresh");
+        make_private(&fresh).unwrap();
+        let mode = std::fs::metadata(&fresh).unwrap().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+
+        let open = t.path().join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        make_private(&open).unwrap();
+        assert_eq!(std::fs::metadata(&open).unwrap().mode() & 0o777, 0o700);
+
+        // A symlink could point anywhere, someone else's directory included.
+        let link = t.path().join("link");
+        std::os::unix::fs::symlink(&fresh, &link).unwrap();
+        assert!(make_private(&link).is_err());
+        let file = t.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        assert!(make_private(&file).is_err());
     }
 
     #[test]

@@ -1,6 +1,5 @@
 //! Drawing. Every style names its own foreground: a bare modifier inherits
-//! whatever the terminal's theme has there, which is how the herdr panel once
-//! drew black on black.
+//! whatever the terminal's theme has there — black on black, on some themes.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -777,9 +776,6 @@ pub fn new_button_at(screen: Rect, app: &App, col: u16, row: u16) -> bool {
     row == list.y && col >= start && col < end
 }
 
-/// The sidebar's worktree list on top, and below it — only while an agent runs —
-/// the agents pane, sized to its rows but never more than two fifths of the
-/// height. Drawing and click hit-testing both use it.
 /// The sidebar's three stacked parts, bottom up: the Activity block (while
 /// there are jobs), the agents block (while an agent runs), and the worktree
 /// list in what is left. Drawing and every click hit-test use it.
@@ -860,7 +856,6 @@ pub fn agent_at(screen: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
     (i < n).then_some(i)
 }
 
-/// The job whose Activity row is at a screen cell, if any.
 /// Is the pointer on a failed Activity row's ↻, its last column? The job's id.
 pub fn activity_retry_at(screen: Rect, app: &App, col: u16, row: u16) -> Option<u64> {
     let inner =
@@ -876,6 +871,7 @@ pub fn activity_retry_at(screen: Rect, app: &App, col: u16, row: u16) -> Option<
         .map(|j| j.id)
 }
 
+/// The job whose Activity row is at a screen cell, if any.
 pub fn activity_at(screen: Rect, app: &App, col: u16, row: u16) -> Option<u64> {
     let inner =
         Block::bordered().inner(side(areas(screen, app.sidebar_width).sidebar, app).activity?);
@@ -945,14 +941,14 @@ fn draw_activity(f: &mut Frame, app: &App, area: Rect) {
             let failed = matches!(j.state, JobState::Done { ok: false, .. });
             let room = width.saturating_sub(if failed { 3 } else { 0 });
             let label = truncate(&j.label, room.saturating_sub(4).min(24));
-            let rest = truncate(&tail, room.saturating_sub(label.chars().count() + 6));
+            let rest = truncate(&tail, room.saturating_sub(cols(&label) + 6));
             let mut spans = vec![
                 Span::styled(format!(" {glyph} "), glyph_style),
                 Span::styled(label.clone(), theme::text()),
                 Span::styled(format!(" · {rest}"), theme::dim()),
             ];
             if failed {
-                let used = 3 + label.chars().count() + 3 + rest.chars().count();
+                let used = 3 + cols(&label) + 3 + cols(&rest);
                 spans.push(Span::raw(" ".repeat(width.saturating_sub(used + 2))));
                 spans.push(Span::styled("↻ ", Style::new().fg(theme::ACCENT).bold()));
             }
@@ -986,12 +982,46 @@ fn log_parser(job: &crate::tui::jobs::Job, inner: Rect) -> vt100::Parser {
     parser
 }
 
+/// What a parsed log is valid for: the job, the size, and the log's ends (it
+/// only ever grows at the back, and drops lines at the front once full).
+type LogKey = (u64, u16, u16, usize, Option<String>, Option<String>);
+
+thread_local! {
+    /// The open log, parsed once rather than on every frame: a running job's
+    /// spinner redraws ten times a second, and a log is up to 3000 lines.
+    static LOG_CACHE: std::cell::RefCell<Option<(LogKey, vt100::Parser)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` on the log's screen, scrolled back `scroll` rows (clamped).
+fn with_log_screen<R>(
+    job: &crate::tui::jobs::Job,
+    inner: Rect,
+    scroll: usize,
+    f: impl FnOnce(&vt100::Screen) -> R,
+) -> R {
+    let key: LogKey = (
+        job.id,
+        inner.width,
+        inner.height,
+        job.log.len(),
+        job.log.front().cloned(),
+        job.log.back().cloned(),
+    );
+    LOG_CACHE.with_borrow_mut(|cache| {
+        if cache.as_ref().is_none_or(|(k, _)| *k != key) {
+            *cache = Some((key, log_parser(job, inner)));
+        }
+        let parser = &mut cache.as_mut().expect("just filled").1;
+        parser.screen_mut().set_scrollback(scroll);
+        f(parser.screen())
+    })
+}
+
 /// How far back the log can scroll at this size: its rows beyond one screen,
 /// wrapped lines counted as the rows they take.
 pub fn log_max_scroll(job: &crate::tui::jobs::Job, inner: Rect) -> usize {
-    let mut parser = log_parser(job, inner);
-    parser.screen_mut().set_scrollback(usize::MAX);
-    parser.screen().scrollback()
+    with_log_screen(job, inner, usize::MAX, vt100::Screen::scrollback)
 }
 
 /// Is the pointer on the retry button of the open log?
@@ -1052,11 +1082,11 @@ fn draw_log(f: &mut Frame, app: &App, job: &crate::tui::jobs::Job, area: Rect) {
     };
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let mut parser = log_parser(job, inner);
-    parser.screen_mut().set_scrollback(app.log_scroll);
     let mut cursor = tui_term::widget::Cursor::default();
     cursor.hide();
-    f.render_widget(PseudoTerminal::new(parser.screen()).cursor(cursor), inner);
+    with_log_screen(job, inner, app.log_scroll, |screen| {
+        f.render_widget(PseudoTerminal::new(screen).cursor(cursor), inner);
+    });
 }
 
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
@@ -1302,7 +1332,7 @@ pub fn tab_bar_layout(ws: Option<&Workspace>, bar: Rect) -> Vec<TabSlot> {
     {
         let title = tab.label();
         let label = format!(" {} {} ", i + 1, truncate(&title, TAB_TITLE_MAX));
-        let width = label.chars().count() as u16;
+        let width = cols(&label) as u16;
         if x + width > bar.x + room {
             break;
         }
@@ -1545,12 +1575,30 @@ fn short(head: &str) -> &str {
     &head[..head.len().min(7)]
 }
 
+/// Columns `s` takes on screen: an emoji or a CJK character takes two, which
+/// counting chars would miss — and clicks would land beside what is drawn.
+fn cols(s: &str) -> usize {
+    Span::raw(s).width()
+}
+
+/// At most `max` columns, an ellipsis marking what was cut.
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+    if cols(s) <= max {
         return s.to_string();
     }
-    let keep = max.saturating_sub(1);
-    s.chars().take(keep).chain(std::iter::once('…')).collect()
+    let room = max.saturating_sub(1);
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let w = cols(c.encode_utf8(&mut [0; 4]));
+        if used + w > room {
+            break;
+        }
+        used += w;
+        out.push(c);
+    }
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -1559,6 +1607,15 @@ mod tests {
     use crate::tui::app::tests::fixture;
     use ratatui::{Terminal, backend::TestBackend};
     use std::path::PathBuf;
+
+    #[test]
+    fn truncation_counts_screen_columns_not_characters() {
+        assert_eq!(truncate("abcdef", 4), "abc…");
+        assert_eq!(truncate("abc", 4), "abc");
+        // Each of these takes two columns.
+        assert_eq!(truncate("日本語", 4), "日…");
+        assert_eq!(cols(&truncate("🙂🙂🙂🙂", 5)), 5);
+    }
 
     fn render(app: &App, w: u16, h: u16) -> Terminal<TestBackend> {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
