@@ -39,7 +39,7 @@ Stage 8 is done.
 **Goal**: worktree add/use/remove/rename, checkout, download, reset, composer, patch, exec, delete, serve/unserve, site setup, db, fpm.
 **Success Criteria**: call-log + tree parity for each.
 **Tests**: ported unit.bats cases listed in the plan.
-**Status**: Not Started
+**Status**: Complete — 43 new parity cases (74 in all) covering add/serve/unserve/use/remove/rename, download, checkout, reset, patch (apply, twice, merged, unknown, TRYOUT_PATCHES list), exec and delete, both sides; the host halves came along (confirmations, restart on hostname change, patch picker + persist). One intended fix: a failed `patch <id>` exits 1 (bash exited 0). Verified live in the scratch project through `ddev exec --raw` with the Linux binary: status, list, a --php switch without restart (FPM 8.4 started by `tryout __fpm`, site 200), unserve/serve round trip keeping the database.
 
 ## Stage 6: Host orchestration
 **Goal**: delegate (`ddev exec --raw`), Mutagen flush, restart-on-hostname-change, confirmations, patch picker + persist, cs, `ui` on /dev/tty.
@@ -61,22 +61,22 @@ Stage 8 is done.
 - [ ] Core cloned into the root on the host at install (init + fetch + checkout, never clone); only `.git/info/exclude` touched
 - [ ] `CORE_GIT_DIR` via `--git-common-dir` when `.git` is a file
 - [ ] `worktree.useRelativePaths` + `worktree repair` after clone/migrate/add; refuse git < 2.48
-- [ ] worktrees always `add --detach`; download refuses detached in update mode; reset/download never check out the base
-- [ ] remove always asks (names the dir), `--yes` skips; `--force` always, prune before sweep; `branch -d`/`-D`; active and main refused
-- [ ] rename via `worktree move`, re-serves keeping the DB
-- [ ] `use` rewrites only the primary overlay's sysext repo; never `ln -sfn`; rebuild mandatory
+- [x] worktrees always `add --detach`; download refuses detached in update mode; reset/download never check out the base
+- [x] remove always asks (names the dir), `--yes` skips; `--force` always, prune before sweep; `branch -d`/`-D`; active and main refused
+- [x] rename via `worktree move`, re-serves keeping the DB
+- [x] `use` rewrites only the primary overlay's sysext repo; never `ln -sfn`; rebuild mandatory
 - [x] dirty / change counts on a non-checkout = clean
 - [x] only `worktree list` pays for the dirty check; completion never runs git status or the network
 - [x] `--plain` columns and `--json` keys unchanged (add-only)
 - [x] sync-composer: sysexts on disk only, `@dev`, non-managed entries kept, lock unlinked
-- [ ] site overlay; `wipe_site_vendor` before a Core switch; PHP check before every composer install
-- [ ] serve: hostname snapshot before marker; marker removed on failure; relative additional.php link; FPM master before reload
+- [x] site overlay; `wipe_site_vendor` before a Core switch; PHP check before every composer install
+- [x] serve: hostname snapshot before marker; marker removed on failure; relative additional.php link; FPM master before reload
 - [x] vhost: literal `fastcgi_param HTTPS $fcgi_https;`, TYPO3_DB_DBNAME, TRYOUT_SITE; apache SetEnvIf; socket paths
 - [x] server_names_hash_bucket_size sizing, own http-level file, removed when nothing served
-- [ ] sync+reload: container `.ddev` source, only our prefix cleared, copy back by name, validate before reload, nginx HUP / apachectl graceful
-- [ ] restart only when the hostname set changed, on the host, `--no-restart`; unserve still syncs
-- [ ] unserve keeps DB, saves settings.php; setup restores it when tables exist
-- [ ] styleguide frontend best-effort; `db_site_sql` targets the site DB
+- [x] sync+reload: container `.ddev` source, only our prefix cleared, copy back by name, validate before reload, nginx HUP / apachectl graceful
+- [x] restart only when the hostname set changed, on the host, `--no-restart`; unserve still syncs
+- [x] unserve keeps DB, saves settings.php; setup restores it when tables exist
+- [x] styleguide frontend best-effort; `db_site_sql` targets the site DB
 - [ ] Gerrit: XSSI strip, merged/abandoned skipped, Change-Id dedupe, cherry-pick abort, one rebuild, site asked first, `@primary` blanked, persist offer, picker skipped without TTY/with list
 - [ ] cs: SSH verdict from ssh; ssh-add only classifies; host report; author identity by account id
 - [ ] Mutagen flush after mutating verbs only

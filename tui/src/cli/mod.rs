@@ -22,9 +22,13 @@ pub type Res = Result<(), Exit>;
 pub fn main(args: Vec<String>) -> i32 {
     match args.first().map(String::as_str) {
         Some("ctr") => {
-            let ctx = Ctx::from_env(approot().unwrap_or_else(|| PathBuf::from(CONTAINER_ROOT)));
+            let mut ctx = Ctx::from_env(approot().unwrap_or_else(|| PathBuf::from(CONTAINER_ROOT)));
+            ctx.in_container = true;
             code(container::run(&ctx, &args[1..]))
         }
+        // The FPM master for one PHP version: a web_extra_daemons entry, and what
+        // serve starts when that version has none yet.
+        Some("__fpm") => crate::core::fpm::serve(args.get(1).map(String::as_str).unwrap_or("")),
         Some("__complete") => {
             complete::run(&args[1..]);
             0

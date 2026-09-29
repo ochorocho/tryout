@@ -35,10 +35,21 @@ for b in 12.4 13.4; do
 done
 g clone -q --bare . "${dir}/origin.git"
 
+# Gerrit: a change on top of main at refs/changes/34/91234/1, in a bare repo of
+# its own that stands in for review.typo3.org.
+g checkout -q -b change main
+echo "fixed" > FIX.txt && g add -A
+g commit -qm "[BUGFIX] Fix the thing" -m "Change-Id: I0123456789abcdef0123456789abcdef01234567"
+g init -q --bare "${dir}/gerrit.git"
+g push -q "${dir}/gerrit.git" "change:refs/changes/34/91234/1"
+g checkout -q main
+g branch -q -D change
+
 mkdir -p "${dir}/project"
 cd "${dir}/project"
 g init -q
 g remote add origin "${dir}/origin.git"
+g remote add gerrit "${dir}/gerrit.git"
 g fetch -q origin
 g checkout -q -B main origin/main
 
@@ -47,6 +58,9 @@ cp -R "${repo}/tryout" .ddev/tryout
 cp "${repo}/commands/host/tryout" .ddev/commands/host/tryout
 cp "${repo}/commands/host/autocomplete/tryout" .ddev/commands/host/autocomplete/tryout
 cp "${repo}/config.tryout.yaml" .ddev/
+# What the install's clone writes: the add-on's paths kept out of git status.
+printf '%s\n' /.ddev/ /worktrees/ /TYPO3-Instances/ /packages/ >> .git/info/exclude
+
 # What install.yaml's post_install_actions create.
 mkdir -p TYPO3-Instances/primary/config/system packages
 cp "${repo}/tryout/composer.tryout.json" TYPO3-Instances/primary/

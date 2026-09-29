@@ -75,6 +75,30 @@ fn emit(level: Level, msg: &str, stderr: bool) {
     }
 }
 
+/// Pad to `width` BYTES — printf's `%-Ns`, for output that has always been
+/// laid out that way.
+pub fn pad_display_bytes(s: &str, width: usize) -> String {
+    if s.len() >= width {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat(width - s.len()))
+    }
+}
+
+/// Text on stdout, flushed.
+pub fn print(s: &str) {
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(s.as_bytes());
+    let _ = out.flush();
+}
+
+/// A plain line on stdout (what the bash `echo -e` printed).
+pub fn print_line(s: &str) {
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{s}");
+    let _ = out.flush();
+}
+
 pub fn events_enabled() -> bool {
     std::env::var("TRYOUT_EVENTS").as_deref() == Ok("1")
 }

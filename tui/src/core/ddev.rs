@@ -97,3 +97,11 @@ pub fn on_path(name: &str) -> bool {
         })
     })
 }
+
+/// `ddev restart`, its output shown.
+pub fn restart() -> bool {
+    Command::new("ddev")
+        .arg("restart")
+        .status()
+        .is_ok_and(|s| s.success())
+}

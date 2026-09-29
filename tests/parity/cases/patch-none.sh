@@ -1,0 +1,2 @@
+SIDE=ctr
+ARGS=(patch)

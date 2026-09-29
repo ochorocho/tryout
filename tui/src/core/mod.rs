@@ -5,18 +5,31 @@
 pub mod composer;
 pub mod contrib;
 pub mod ctx;
+pub mod db;
 pub mod ddev;
+pub mod fpm;
 pub mod gerrit;
 pub mod git;
 pub mod out;
+pub mod patch;
 pub mod php;
 pub mod phpjson;
+pub mod proc;
 pub mod prompt;
+pub mod serve;
 pub mod site;
 pub mod status;
 pub mod vsort;
 pub mod webserver;
 pub mod worktree;
+
+/// A step failed and has said why: its message is already printed. What the
+/// caller does with it — stop, fall back, exit 1 — is the caller's decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Failed;
+
+/// The outcome of a step that reports its own failure.
+pub type Step = Result<(), Failed>;
 
 /// The payload version the add-on stamps into .ddev/tryout/.version, which
 /// `status` compares. Bump it whenever what a user sees changes.

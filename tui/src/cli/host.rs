@@ -4,9 +4,10 @@
 use std::io::Write;
 
 use crate::core::ctx::Ctx;
+use crate::core::ctx::PRIMARY_SITE;
 use crate::core::out::{self, DIM, NC, RED, YELLOW};
 use crate::core::prompt::{self, explain_missing};
-use crate::core::{ddev, gerrit, site, status, worktree};
+use crate::core::{ddev, gerrit, serve, site, status, webserver, worktree};
 
 use super::verbs::{self, Verb};
 use super::{Exit, Res, help, reject_args, require_core};
@@ -34,9 +35,11 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
         Verb::Cs => cs(ctx, rest),
         Verb::Ui => ui(ctx, rest),
         Verb::Composer => composer(ctx, rest),
-        Verb::Download | Verb::Checkout | Verb::Exec | Verb::Reset | Verb::Delete => {
-            not_ported(action)
-        }
+        Verb::Download => download(ctx, rest),
+        Verb::Checkout => checkout(ctx, rest),
+        Verb::Exec => exec(ctx, rest),
+        Verb::Reset => reset(ctx, rest),
+        Verb::Delete => delete(ctx, rest),
     }
 }
 
@@ -227,7 +230,389 @@ fn patch(ctx: &Ctx, args: &[String]) -> Res {
         }
         return Ok(());
     }
-    not_ported("patch")
+
+    // `patch <id> <site>` keeps working; --site wins.
+    if let Some((id, more)) = rest.split_first() {
+        if target.is_empty() {
+            target = more.first().cloned().unwrap_or_default();
+        }
+        let target = site::for_name(ctx, &target);
+        let mut a = vec!["patch"];
+        if !target.is_empty() {
+            a.extend(["--site", &target]);
+        }
+        a.push(id);
+        return delegate(ctx, &a);
+    }
+
+    let mut target = site::for_name(ctx, &target);
+    // A configured list is a deliberate choice: apply it rather than asking.
+    let configured = std::env::var("TRYOUT_PATCHES")
+        .unwrap_or_default()
+        .chars()
+        .any(|c| !c.is_whitespace());
+    if configured || !prompt::have_tty() {
+        let mut a = vec!["patch"];
+        if !target.is_empty() {
+            a.extend(["--site", &target]);
+        }
+        return delegate(ctx, &a);
+    }
+    // The site first: it decides which Core is patched, so which branch's
+    // open changes are the right list.
+    if target.is_empty() && !site::served_names(ctx).is_empty() {
+        target = prompt::ask_site(ctx, "Patch which site?", &[]).ok_or_else(|| {
+            explain_missing("ddev tryout patch [<change-id>] [<site>]");
+            Exit(1)
+        })?;
+    }
+    let branch = patch_branch_for(ctx, &target, all);
+    let changes = prompt::spin(
+        &format!(
+            "Fetching open changes for {}",
+            if branch == "-" {
+                "every branch"
+            } else {
+                &branch
+            }
+        ),
+        || gerrit::list_open(&branch, 50),
+    )
+    .ok()
+    .filter(|c| !c.is_empty());
+    let Some(changes) = changes else {
+        out::error(format!(
+            "Could not reach Gerrit, or no open changes on {branch}"
+        ));
+        out::error("  → ddev tryout patch <change-id>   to apply one by number");
+        return Err(Exit(1));
+    };
+    let picks = prompt::pick_patches("Apply which changes?", &changes);
+    if picks.is_empty() {
+        explain_missing("ddev tryout patch <change-id> [<site>]");
+        return Err(Exit(1));
+    }
+    // "@primary" is the host's sentinel; the container takes --site as a name.
+    if site::is_primary(&target) {
+        target.clear();
+    }
+    let ids: Vec<String> = picks.iter().map(u64::to_string).collect();
+    let mut a = vec!["patch"];
+    if !target.is_empty() {
+        a.extend(["--site", &target]);
+    }
+    a.extend(ids.iter().map(String::as_str));
+    delegate(ctx, &a)?;
+
+    // Applying is per checkout; the patch list is what survives a reset.
+    let mut s = String::from("\n  Add to your patch list, so they reapply on every ddev start:\n");
+    for l in prompt::describe_patches(&picks, &changes) {
+        s.push_str(&format!("    {l}\n"));
+    }
+    print(&format!("{s}\n"));
+    if prompt::confirm("Add them?") == prompt::Confirm::Yes {
+        persist_patches(ctx, &ids)?;
+    }
+    Ok(())
+}
+
+/// Append change numbers to TRYOUT_PATCHES in config.tryout-patches.yaml, once
+/// each, keeping the rest of the file (comments included) as it is.
+fn persist_patches(ctx: &Ctx, ids: &[String]) -> Res {
+    let file = ctx.root.join(".ddev/config.tryout-patches.yaml");
+    let Ok(text) = std::fs::read_to_string(&file) else {
+        out::error("No patch list at .ddev/config.tryout-patches.yaml");
+        return Err(Exit(1));
+    };
+    let key = "TRYOUT_PATCHES=";
+    let current: String = text
+        .lines()
+        .find_map(|l| {
+            l.trim_start()
+                .strip_prefix('-')
+                .map(str::trim_start)
+                .and_then(|r| r.strip_prefix(key))
+        })
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let mut list: Vec<String> = current
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    for id in ids {
+        if !list.contains(id) {
+            list.push(id.clone());
+        }
+    }
+    let joined = list.join(",");
+    if joined == current {
+        return Ok(());
+    }
+    let updated: Vec<String> = text
+        .lines()
+        .map(|l| {
+            let indent = &l[..l.len() - l.trim_start().len()];
+            match l.trim_start().strip_prefix('-') {
+                Some(r) if r.trim_start().starts_with(key) => {
+                    let gap = &r[..r.len() - r.trim_start().len()];
+                    format!("{indent}-{gap}{key}{joined}")
+                }
+                _ => l.to_string(),
+            }
+        })
+        .collect();
+    let mut body = updated.join("\n");
+    if text.ends_with('\n') {
+        body.push('\n');
+    }
+    if std::fs::write(&file, body).is_err() {
+        out::error("Could not write .ddev/config.tryout-patches.yaml");
+        return Err(Exit(1));
+    }
+    out::success(format!("Patch list is now: {joined}"));
+    Ok(())
+}
+
+// ─── download, checkout, reset, delete, exec ────────────────────────────────
+
+fn download(ctx: &Ctx, args: &[String]) -> Res {
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| {
+            if a.starts_with('-') {
+                a.clone()
+            } else {
+                site::for_name(ctx, a)
+            }
+        })
+        .collect();
+    let mut a = vec!["download"];
+    a.extend(args.iter().map(String::as_str));
+    delegate(ctx, &a)
+}
+
+fn checkout(ctx: &Ctx, args: &[String]) -> Res {
+    let mut target = String::new();
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--site" => target = it.next().cloned().unwrap_or_default(),
+            a if a.starts_with("--site=") => target = a["--site=".len()..].to_string(),
+            _ => rest.push(a.clone()),
+        }
+    }
+    let mut branch = rest.first().cloned().unwrap_or_default();
+    if target.is_empty() {
+        target = rest.get(1).cloned().unwrap_or_default();
+    }
+    require_core(ctx)?;
+    if branch.is_empty() {
+        match prompt::ask_branch(ctx, "Switch Core to which branch?") {
+            Some(b) => branch = b,
+            None => {
+                explain_missing("ddev tryout checkout <branch>");
+                if prompt::have_tty() {
+                    return Err(Exit(1));
+                }
+            }
+        }
+    }
+    if branch.is_empty() {
+        out::error("Usage: ddev tryout checkout <branch>");
+        let mut s = String::from(
+            "\nExamples:\n  ddev tryout checkout main     # latest development (v14)\n\
+\x20 ddev tryout checkout 13.4     # v13 LTS\n  ddev tryout checkout 12.4     # v12 LTS\n\n",
+        );
+        worktree::ensure_branch_refs_quiet(ctx);
+        s.push_str("Branches known locally:\n");
+        for b in ctx.local_core_branches() {
+            s.push_str(&format!("  {b}\n"));
+        }
+        print(&s);
+        return Err(Exit(1));
+    }
+    let target = site::for_name(ctx, &target);
+    let mut a = vec!["checkout", branch.as_str()];
+    if !target.is_empty() {
+        a.push(&target);
+    }
+    delegate(ctx, &a)
+}
+
+fn reset(ctx: &Ctx, args: &[String]) -> Res {
+    require_core(ctx)?;
+    let mut target = args.first().cloned().unwrap_or_default();
+    // Several sites served: ask which one a reset rebuilds.
+    if target.is_empty() && !site::served_names(ctx).is_empty() {
+        match prompt::ask_site(ctx, "Reset which site?", &[]) {
+            Some(t) => target = t,
+            None => {
+                explain_missing("ddev tryout reset [<site>]");
+                if prompt::have_tty() {
+                    return Err(Exit(1));
+                }
+            }
+        }
+    }
+    let target = site::for_name(ctx, &target);
+    let mut a = vec!["reset"];
+    if !target.is_empty() {
+        a.push(&target);
+    }
+    delegate(ctx, &a)
+}
+
+fn delete(ctx: &Ctx, args: &[String]) -> Res {
+    let mut target = String::new();
+    let mut yes = false;
+    for a in args {
+        match a.as_str() {
+            "--yes" | "-y" => yes = true,
+            a if target.is_empty() => target = a.to_string(),
+            _ => {}
+        }
+    }
+    // Bare with sites served: ask, "--all" being one of the answers.
+    if target.is_empty() && !site::served_names(ctx).is_empty() {
+        match prompt::ask_site(
+            ctx,
+            "Wipe which site?",
+            &["--all         every site, primary included"],
+        ) {
+            Some(t) => {
+                target = if t.starts_with("--all") {
+                    "--all".into()
+                } else {
+                    t
+                }
+            }
+            None => {
+                explain_missing("ddev tryout delete [<site>|--all]");
+                if prompt::have_tty() {
+                    return Err(Exit(1));
+                }
+            }
+        }
+    }
+    let sites: Vec<String> = if target == "--all" {
+        std::iter::once(PRIMARY_SITE.to_string())
+            .chain(site::served_names(ctx))
+            .collect()
+    } else if !target.is_empty() && !site::is_primary(&site::for_name(ctx, &target)) {
+        if !site::is_served(ctx, &target) {
+            out::error(format!("No served site '{target}'"));
+            out::error("  → ddev tryout worktree list");
+            return Err(Exit(1));
+        }
+        vec![target.clone()]
+    } else {
+        vec![PRIMARY_SITE.to_string()]
+    };
+    if !yes {
+        print(&serve::delete_warning(ctx, &target, &sites));
+        match prompt::confirm("Are you sure?") {
+            prompt::Confirm::Yes => {}
+            prompt::Confirm::No => {
+                out::info("Aborted.");
+                return Ok(());
+            }
+            prompt::Confirm::NoTty => {
+                out::error("Refusing to wipe without confirmation — nothing to ask on.");
+                let t = if target.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {target}")
+                };
+                out::error(format!("  → ddev tryout delete{t} --yes"));
+                return Err(Exit(1));
+            }
+        }
+    }
+    if site::is_primary(&target) {
+        target.clear();
+    }
+    let mut a = vec!["delete"];
+    if !target.is_empty() {
+        a.push(&target);
+    }
+    a.push("--yes");
+    delegate(ctx, &a)
+}
+
+fn exec(ctx: &Ctx, args: &[String]) -> Res {
+    let mut target = args.first().cloned().unwrap_or_default();
+    let mut cmd: Vec<String> = args.iter().skip(1).cloned().collect();
+    let usage = "ddev tryout exec <site> <command> ...";
+    if target.is_empty() {
+        match prompt::ask_site(ctx, "Run in which site?", &[]) {
+            Some(t) => target = t,
+            None => {
+                explain_missing(usage);
+                if prompt::have_tty() {
+                    return Err(Exit(1));
+                }
+            }
+        }
+    }
+    if !target.is_empty() && cmd.is_empty() && prompt::have_tty() {
+        let typed = prompt::ask_text(
+            &format!("Command to run in {target} (after php)"),
+            "vendor/bin/typo3 cache:flush",
+        )
+        .ok_or_else(|| {
+            explain_missing(usage);
+            Exit(1)
+        })?;
+        // A typed command line is meant to be split into words.
+        cmd = typed.split_whitespace().map(String::from).collect();
+    }
+    if target.is_empty() || cmd.is_empty() {
+        out::error(format!("Usage: {usage}"));
+        let sites: String = site::served_names(ctx)
+            .iter()
+            .map(|n| format!(", {n}"))
+            .collect();
+        print(&format!(
+            "\n  Examples:\n    ddev tryout exec v13 vendor/bin/typo3 cache:flush\n\
+\x20   ddev tryout exec v13 composer show typo3/cms-core\n\n  Sites: primary{sites}\n"
+        ));
+        return Err(Exit(1));
+    }
+    let target = site::for_name(ctx, &target);
+    if !site::is_primary(&target) && !site::is_served(ctx, &target) {
+        out::error(format!("No served site '{target}'"));
+        out::error("  → ddev tryout worktree list");
+        return Err(Exit(1));
+    }
+    let mut a = vec!["exec", target.as_str()];
+    a.extend(cmd.iter().map(String::as_str));
+    delegate(ctx, &a)
+}
+
+/// Restart DDEV when the served hostnames changed: its routing rule and
+/// certificate are keyed on them and cannot be refreshed from the container.
+/// `before` is the set from before the command ran.
+fn restart_if_hosts_changed(ctx: &Ctx, before: &[String], no_restart: bool) -> Res {
+    if webserver::served_hostname_set(ctx) == before {
+        return Ok(());
+    }
+    if no_restart || std::env::var("TRYOUT_NO_RESTART").as_deref() == Ok("1") {
+        out::warn("Hostnames changed — run 'ddev restart' to apply them.");
+        return Ok(());
+    }
+    out::info("Restarting DDEV to register the hostname and issue its certificate...");
+    if ddev::restart() {
+        out::success("DDEV restarted.");
+        Ok(())
+    } else {
+        out::error("ddev restart failed");
+        out::error("  → ddev restart");
+        Err(Exit(1))
+    }
 }
 
 // ─── worktree ───────────────────────────────────────────────────────────────
@@ -248,8 +633,82 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
             print(&help::worktree());
             Ok(())
         }
-        "add" | "use" | "remove" | "rm" | "serve" | "unserve" | "rename" => {
-            not_ported(&format!("worktree {sub}"))
+        "add" => worktree_add(ctx, rest),
+        "use" => {
+            require_core(ctx)?;
+            let name = match rest.first() {
+                Some(n) => n.clone(),
+                None => prompt::ask_worktree(
+                    ctx,
+                    "Point the primary site at which worktree?",
+                    prompt::Filter::NonPrimary,
+                )
+                .ok_or_else(|| {
+                    explain_missing("ddev tryout worktree use <name>");
+                    Exit(1)
+                })?,
+            };
+            let mut a = vec!["worktree", "use", name.as_str()];
+            a.extend(rest.iter().skip(1).map(String::as_str));
+            delegate(ctx, &a)
+        }
+        "remove" | "rm" => worktree_remove(ctx, rest),
+        "serve" | "unserve" => {
+            require_core(ctx)?;
+            let (prompt_text, filter, usage) = if sub == "serve" {
+                (
+                    "Serve which worktree?",
+                    prompt::Filter::Unserved,
+                    "ddev tryout worktree serve <name> [--php 8.2]",
+                )
+            } else {
+                (
+                    "Stop serving which worktree?",
+                    prompt::Filter::Served,
+                    "ddev tryout worktree unserve <name> [--drop-db]",
+                )
+            };
+            let name = match rest.first() {
+                Some(n) => n.clone(),
+                None => prompt::ask_worktree(ctx, prompt_text, filter).ok_or_else(|| {
+                    explain_missing(usage);
+                    Exit(1)
+                })?,
+            };
+            // --no-restart is the host's word: the container would reject it.
+            let no_restart = rest.iter().any(|a| a == "--no-restart");
+            let mut a = vec!["worktree", sub, name.as_str()];
+            a.extend(
+                rest.iter()
+                    .skip(1)
+                    .filter(|a| *a != "--no-restart")
+                    .map(String::as_str),
+            );
+            let before = webserver::served_hostname_set(ctx);
+            delegate(ctx, &a)?;
+            restart_if_hosts_changed(ctx, &before, no_restart)
+        }
+        "rename" => {
+            require_core(ctx)?;
+            let usage = "ddev tryout worktree rename <old> <new>";
+            let old = match rest.first() {
+                Some(n) => n.clone(),
+                None => prompt::ask_worktree(ctx, "Rename which worktree?", prompt::Filter::All)
+                    .ok_or_else(|| {
+                        explain_missing(usage);
+                        Exit(1)
+                    })?,
+            };
+            let new = match rest.get(1) {
+                Some(n) => n.clone(),
+                None => prompt::ask_text(&format!("New name for {old}"), "").ok_or_else(|| {
+                    explain_missing(usage);
+                    Exit(1)
+                })?,
+            };
+            let before = webserver::served_hostname_set(ctx);
+            delegate(ctx, &["worktree", "rename", &old, &new])?;
+            restart_if_hosts_changed(ctx, &before, false)
         }
         _ => {
             out::error(format!("Unknown worktree command: {sub}"));
@@ -257,6 +716,108 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
             Err(Exit(1))
         }
     }
+}
+
+fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
+    require_core(ctx)?;
+    // The name is taken IN the loop: a flag in first position is never a name.
+    let (mut name, mut branch, mut flags, mut no_restart) =
+        (String::new(), String::new(), Vec::new(), false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            // Both no-ops now (worktrees are always detached); --detach is passed on.
+            "--branch" => {}
+            "--detach" | "--serve" => flags.push(a.clone()),
+            "--no-restart" => no_restart = true,
+            "--php" => flags.push(format!("--php={}", it.next().cloned().unwrap_or_default())),
+            a if a.starts_with("--php=") => flags.push(a.to_string()),
+            a if a.starts_with('-') => {
+                out::error(format!("Unknown option: {a}"));
+                out::error("  → ddev tryout worktree help");
+                return Err(Exit(1));
+            }
+            a if name.is_empty() => name = a.to_string(),
+            a => branch = a.to_string(),
+        }
+    }
+    if name.is_empty() {
+        name = prompt::ask_text(
+            "Name for the new worktree (becomes worktrees/<name>)",
+            "e.g. bugfix-12345",
+        )
+        .ok_or_else(|| {
+            explain_missing("ddev tryout worktree add <name> [<branch>] [--serve] [--php 8.2]");
+            Exit(1)
+        })?;
+    }
+    worktree::validate_name(&name).map_err(|lines| {
+        for l in lines {
+            out::error(l);
+        }
+        Exit(1)
+    })?;
+    // Asked whether or not the name came in: naming a worktree says nothing
+    // about which branch it sits on.
+    let branch =
+        prompt::ask_new_worktree_branch(ctx, &branch, "ddev tryout worktree add <name> [<branch>]")
+            .ok_or(Exit(1))?;
+    let before = webserver::served_hostname_set(ctx);
+    let mut a = vec!["worktree", "add", name.as_str()];
+    if !branch.is_empty() {
+        a.push(&branch);
+    }
+    a.extend(flags.iter().map(String::as_str));
+    delegate(ctx, &a).map_err(|_| Exit(1))?;
+    let _ = restart_if_hosts_changed(ctx, &before, no_restart);
+    Ok(())
+}
+
+/// Remove ALWAYS asks: it deletes the directory, and git's refusal to drop a
+/// dirty tree is no longer the backstop. `--yes` is for a caller that asked.
+fn worktree_remove(ctx: &Ctx, args: &[String]) -> Res {
+    require_core(ctx)?;
+    let name = match args.first() {
+        Some(n) => n.clone(),
+        None => prompt::ask_worktree(ctx, "Remove which worktree?", prompt::Filter::NonPrimary)
+            .ok_or_else(|| {
+                explain_missing("ddev tryout worktree remove <name> [--force]");
+                Exit(1)
+            })?,
+    };
+    let rest: Vec<&String> = args.iter().skip(1).collect();
+    let yes = rest.iter().any(|a| *a == "--yes" || *a == "-y");
+    let passed: Vec<&str> = rest
+        .iter()
+        .filter(|a| **a != "--yes" && **a != "-y")
+        .map(|a| a.as_str())
+        .collect();
+    if !yes {
+        let dir = ctx.core_worktree_dir(&name);
+        let mut what = format!("worktree '{name}' and its directory");
+        if worktree::is_dirty(&dir) {
+            what.push_str(", including uncommitted changes");
+        }
+        if site::is_served(ctx, &name) {
+            what.push_str(", plus its site and database");
+        }
+        out::warn(dir.display().to_string());
+        match prompt::confirm(&format!("Remove {what}?")) {
+            prompt::Confirm::Yes => {}
+            prompt::Confirm::No => {
+                out::info("Aborted.");
+                return Ok(());
+            }
+            prompt::Confirm::NoTty => {
+                out::error("Refusing to remove without confirmation — nothing to ask on.");
+                out::error("  → run it in a terminal, or pass --yes");
+                return Err(Exit(1));
+            }
+        }
+    }
+    let mut a = vec!["worktree", "remove", name.as_str()];
+    a.extend(passed);
+    delegate(ctx, &a)
 }
 
 // ─── cs ─────────────────────────────────────────────────────────────────────
@@ -325,4 +886,35 @@ fn attach_dev_tty() -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::ctx::DdevEnv;
+
+    #[test]
+    fn picked_patches_are_appended_once_each_keeping_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".ddev")).unwrap();
+        let f = d.path().join(".ddev/config.tryout-patches.yaml");
+        std::fs::write(
+            &f,
+            "# my patches\nweb_environment:\n  - TRYOUT_PATCHES=56947, 12345\n",
+        )
+        .unwrap();
+        let ctx = Ctx::new(d.path(), DdevEnv::default());
+        persist_patches(&ctx, &["12345".into(), "91234".into()]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "# my patches\nweb_environment:\n  - TRYOUT_PATCHES=56947,12345,91234\n"
+        );
+    }
+
+    #[test]
+    fn persisting_refuses_politely_without_a_patch_list() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(d.path(), DdevEnv::default());
+        assert_eq!(persist_patches(&ctx, &["1".into()]), Err(Exit(1)));
+    }
 }

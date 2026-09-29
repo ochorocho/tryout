@@ -146,19 +146,46 @@ pub enum Confirm {
     NoTty,
 }
 
-/// Confirm a destructive action. Defaults to No, so Enter never confirms.
+/// Confirm a destructive action. Defaults to No, so Enter never confirms; ESC
+/// and Ctrl-C decline. "Nobody to ask" is told apart before anything is drawn.
 pub fn confirm(prompt: &str) -> Confirm {
     if !have_tty() {
         return Confirm::NoTty;
     }
-    let _ = write!(std::io::stderr(), "  {prompt} [y/N] ");
-    let Some(answer) = read_line() else {
-        return Confirm::No;
-    };
-    match clean_answer(&answer).to_ascii_lowercase().as_str() {
-        "y" | "yes" => Confirm::Yes,
+    match inquire::Confirm::new(prompt).with_default(false).prompt() {
+        Ok(true) => Confirm::Yes,
         _ => Confirm::No,
     }
+}
+
+/// Run `f` behind a spinner on stderr — only on a terminal, so nothing captured
+/// ever gets escape sequences — and hand back what it returned.
+pub fn spin<T>(title: &str, f: impl FnOnce() -> T) -> T {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    if !stderr_tty() {
+        return f();
+    }
+    let done = Arc::new(AtomicBool::new(false));
+    let flag = done.clone();
+    let title = title.to_string();
+    let spinner = std::thread::spawn(move || {
+        let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let mut e = std::io::stderr();
+        let mut i = 0;
+        while !flag.load(Ordering::Relaxed) {
+            let _ = write!(e, "\r{} {title}", frames[i % frames.len()]);
+            let _ = e.flush();
+            i += 1;
+            std::thread::sleep(std::time::Duration::from_millis(80));
+        }
+        let _ = write!(e, "\r\x1b[2K");
+        let _ = e.flush();
+    });
+    let result = f();
+    done.store(true, Ordering::Relaxed);
+    let _ = spinner.join();
+    result
 }
 
 /// Pick a site: shows what each one is, answers with its name — `@primary`

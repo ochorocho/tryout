@@ -211,3 +211,130 @@ pub fn served_hostname_set(ctx: &Ctx) -> Vec<String> {
     v.sort();
     v
 }
+
+/// Where DDEV's /start.sh copies the vhosts to — a COPY at container start, not
+/// a mount, which is why a new vhost is visible in the container yet not live.
+fn enabled_dir(ctx: &Ctx) -> PathBuf {
+    PathBuf::from(if ctx.env.is_nginx() {
+        "/etc/nginx/sites-enabled"
+    } else {
+        "/etc/apache2/sites-enabled"
+    })
+}
+
+/// The container's OWN .ddev copy — never /mnt/ddev_config, the host's bind
+/// mount, which on Mutagen still holds the PREVIOUS vhost until a sync back.
+fn source_dir(ctx: &Ctx) -> PathBuf {
+    ctx.root.join(if ctx.env.is_nginx() {
+        ".ddev/nginx_full"
+    } else {
+        ".ddev/apache"
+    })
+}
+
+/// Copy the generated vhosts into the running webserver and reload it — no
+/// `ddev restart`. Validates first and leaves the running config alone when the
+/// result would not load: an invalid nginx config refuses to START, taking
+/// every site down.
+pub fn sync_and_reload(ctx: &Ctx) -> bool {
+    sync_into(ctx, &source_dir(ctx), &enabled_dir(ctx)) && valid(ctx) && reload(ctx)
+}
+
+pub fn sync_into(ctx: &Ctx, src: &std::path::Path, dst: &std::path::Path) -> bool {
+    if !src.is_dir() || !dst.is_dir() {
+        return false;
+    }
+    // Our own stale copies only: DDEV's nginx-site.conf lives here too.
+    for e in std::fs::read_dir(dst).into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if (n.starts_with("tryout-site-") && n.ends_with(".conf"))
+            || n == "tryout-server-names-hash.conf"
+        {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    // Back per served site, by name — the markers define "served", never a
+    // glob over the source, which could restore a vhost unserve just removed.
+    for name in site::served_names(ctx) {
+        let f = src.join(format!("tryout-site-{name}.conf"));
+        if f.is_file() {
+            let _ = std::fs::copy(&f, dst.join(format!("tryout-site-{name}.conf")));
+        }
+    }
+    let hash = src.join("tryout-server-names-hash.conf");
+    if hash.is_file() {
+        let _ = std::fs::copy(&hash, dst.join("tryout-server-names-hash.conf"));
+    }
+    true
+}
+
+fn valid(ctx: &Ctx) -> bool {
+    if ctx.env.is_nginx() {
+        super::proc::quiet("nginx", &["-t"], None)
+    } else {
+        super::proc::quiet("apachectl", &["configtest"], None)
+    }
+}
+
+/// Reload in place: nginx is a supervisord program with no pid file, so HUP it
+/// through supervisorctl; apache reloads gracefully.
+fn reload(ctx: &Ctx) -> bool {
+    if ctx.env.is_nginx() {
+        super::proc::quiet("supervisorctl", &["signal", "HUP", "nginx"], None)
+    } else {
+        super::proc::quiet("apachectl", &["-k", "graceful"], None)
+    }
+}
+
+/// Apply a site config just written. A changed hostname set needs a restart
+/// (DDEV owns the routing rule and the certificate), so that is false; an
+/// unchanged one reloads in place.
+pub fn apply_site_config(ctx: &Ctx, before: &[String]) -> bool {
+    served_hostname_set(ctx) == before && ctx.in_container && sync_and_reload(ctx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::ctx::DdevEnv;
+
+    #[test]
+    fn the_sync_clears_our_copies_but_never_ddevs_and_copies_back_by_name() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(
+            d.path(),
+            DdevEnv {
+                webserver_type: "nginx-fpm".into(),
+                ..Default::default()
+            },
+        );
+        let (src, dst) = (d.path().join("src"), d.path().join("dst"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        for f in [
+            "nginx-site.conf",
+            "tryout-site-gone.conf",
+            "tryout-server-names-hash.conf",
+        ] {
+            std::fs::write(dst.join(f), "old").unwrap();
+        }
+        // A served site, and a vhost left in the source for one that is not.
+        std::fs::create_dir_all(d.path().join("TYPO3-Instances/v13")).unwrap();
+        std::fs::write(
+            d.path().join("TYPO3-Instances/v13/.tryout-site"),
+            "php=8.2\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("tryout-site-v13.conf"), "v13").unwrap();
+        std::fs::write(src.join("tryout-site-gone.conf"), "stale").unwrap();
+
+        assert!(sync_into(&ctx, &src, &dst));
+        let mut left: Vec<String> = std::fs::read_dir(&dst)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["nginx-site.conf", "tryout-site-v13.conf"]);
+    }
+}

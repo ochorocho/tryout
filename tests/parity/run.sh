@@ -10,8 +10,9 @@
 #                                        itself is deterministic
 #
 # A case is a file in cases/ defining SIDE (host|ctr|complete), ARGS (an array),
-# and optionally FILES (paths to compare) and setup() (run in the project first,
-# with the helpers below). SIDE=complete takes CORPUS instead of ARGS: one
+# and optionally FILES (paths to compare), CASE_ENV (extra NAME=value), IGNORE
+# (outputs left out of the diff — each an intended fix, said why in the case)
+# and setup() (run in the project first, with the helpers below). SIDE=complete takes CORPUS instead of ARGS: one
 # command line per entry, words split on spaces, `''` for an empty word.
 set -euo pipefail
 
@@ -26,7 +27,7 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/tryout-parity.XXXXXX")"
 # The real tools a case may use, and nothing else from the host: gum above all
 # stays out, as it is out of the web container, where these verbs run.
 mkdir -p "${work}/tools"
-for t in php git jq curl; do ln -s "$(command -v "${t}")" "${work}/tools/${t}"; done
+for t in git jq curl; do ln -s "$(command -v "${t}")" "${work}/tools/${t}"; done
 
 # Gerrit, answering every listing with gerrit/changes/index.html.
 port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
@@ -39,6 +40,8 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do curl -sf "http://127.0.0.1:${port}/changes/" >
 g() { git -c advice.detachedHead=false "$@" >/dev/null 2>&1; }
 # A worktree at worktrees/<name>, detached on origin/<base>.
 add_worktree() { mkdir -p worktrees && g worktree add --detach "worktrees/$1" "origin/$2"; }
+# An FPM master for <version> that counts as running (a live pid).
+fpm_running() { mkdir -p "${work}/run/fpm" && echo "${gerrit_pid}" > "${work}/run/fpm/php-fpm-$1.pid"; }
 # A served site for <name>: its marker, with an optional PHP version.
 serve_site() { mkdir -p "TYPO3-Instances/$1" && printf 'php=%s\n' "${2:-8.4}" > "TYPO3-Instances/$1/.tryout-site"; }
 
@@ -51,7 +54,7 @@ run_case() {
     cp -R "${work}/template" "${work}/run"
     # Case variables, fresh for each run.
     local SIDE="" FILES=()
-    local ARGS=() CORPUS=()
+    local ARGS=() CORPUS=() CASE_ENV=() IGNORE=()
     unset -f setup 2>/dev/null || true
     # shellcheck disable=SC1090
     source "${case_file}"
@@ -65,7 +68,12 @@ run_case() {
         DDEV_PRIMARY_URL=https://parity.ddev.site
         FAKE_LOG="${out}/calls" FAKE_ANSWERS="${work}/run/answers"
         TRYOUT_GERRIT_API="http://127.0.0.1:${port}"
+        REAL_PHP="$(command -v php)" TRYOUT_FPM_RUN_DIR="${work}/run/fpm"
+        GIT_AUTHOR_NAME=Parity GIT_AUTHOR_EMAIL=parity@example.com
+        GIT_COMMITTER_NAME=Parity GIT_COMMITTER_EMAIL=parity@example.com
+        GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_DATE=2026-01-01T00:00:00Z
     )
+    env+=(${CASE_ENV[@]+"${CASE_ENV[@]}"})
     # The Rust side's container half: the fake ddev runs the launcher, which
     # takes the binary from here.
     [ "${impl}" = rust ] && [ "${PARITY_SELFTEST:-}" != 1 ] && env+=(TRYOUT_BIN="${bin}")
@@ -110,10 +118,19 @@ run_case() {
     echo "${rc}" > "${out}/exit"
     local f
     for f in ${FILES[@]+"${FILES[@]}"}; do
-        mkdir -p "${out}/files/$(dirname "${f}")"
-        if [ -e "${root}/${f}" ]; then cp "${root}/${f}" "${out}/files/${f}"; else echo "(absent)" > "${out}/files/${f}"; fi
+        case "${f}" in
+            # git:<args> — what git reports afterwards, e.g. git:worktree list --porcelain
+            git:*) mkdir -p "${out}/files"
+                   (cd "${root}" && git ${f#git:}) > "${out}/files/git-$(echo "${f#git:}" | tr ' /' '__')" 2>&1 || true ;;
+            # tree:<dir> — the paths under a directory
+            tree:*) mkdir -p "${out}/files"
+                    (cd "${root}" && find "${f#tree:}" 2>/dev/null | sort) > "${out}/files/tree-$(echo "${f#tree:}" | tr '/' '_')" ;;
+            *) mkdir -p "${out}/files/$(dirname "${f}")"
+               if [ -e "${root}/${f}" ]; then cp "${root}/${f}" "${out}/files/${f}"; else echo "(absent)" > "${out}/files/${f}"; fi ;;
+        esac
     done
     finish_case "${out}"
+    for f in ${IGNORE[@]+"${IGNORE[@]}"}; do rm -f "${out}/${f}"; done
 }
 
 # Paths differ only by the temp dir; the whitelist then normalises the rest.

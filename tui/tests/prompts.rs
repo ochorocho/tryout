@@ -148,3 +148,64 @@ fn escape_cancels() {
     assert!(out.contains("Cancelled"), "{out}");
     assert!(!out.contains("Open:"), "{out}");
 }
+
+/// A project whose root is a git checkout, with a worktree to remove.
+fn project_with_worktree() -> tempfile::TempDir {
+    let d = project();
+    let git = |args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(d.path())
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "{args:?}"
+        );
+    };
+    git(&["init", "-q"]);
+    std::fs::create_dir_all(d.path().join("worktrees/old")).unwrap();
+    d
+}
+
+#[test]
+fn enter_never_confirms_a_removal() {
+    let d = project_with_worktree();
+    let out = on_a_terminal(
+        d.path(),
+        &["worktree", "remove", "old"],
+        "Remove worktree 'old'",
+        b"\r",
+    );
+    assert!(out.contains("Aborted."), "{out}");
+}
+
+#[test]
+fn y_confirms_a_removal() {
+    let d = project_with_worktree();
+    let out = on_a_terminal(
+        d.path(),
+        &["worktree", "remove", "old"],
+        "Remove worktree 'old'",
+        b"y\r",
+    );
+    assert!(!out.contains("Aborted."), "{out}");
+    // Confirmed, it goes on to the container — here there is no ddev to reach.
+    assert!(out.contains("Could not run ddev"), "{out}");
+}
+
+#[test]
+fn a_removal_with_nobody_to_ask_is_refused_not_declined() {
+    let d = project_with_worktree();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tryout"));
+    env(&mut cmd, d.path());
+    let out = cmd
+        .args(["worktree", "remove", "old"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("pass --yes"));
+}
