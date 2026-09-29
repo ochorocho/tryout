@@ -667,6 +667,142 @@ pg() {
   assert_output "0"
 }
 
+# The same, against another server: the extra database service a site on the
+# other engine gets (`worktree serve <name> --db postgres`).
+pg_on() { # <host> <database> <sql>
+  ddev exec env PGPASSWORD=db psql -h "$1" -U db -d "$2" -tAc "$3"
+}
+
+# bats test_tags=lifecycle,postgres
+@test "a site on the other engine gets its own database server, gone with its last database" {
+  set -eu -o pipefail
+  addon_start # a MariaDB project
+
+  run ddev tryout worktree add side 13.4
+  assert_success
+  # The host declares the Postgres service and restarts DDEV before the setup.
+  run ddev tryout worktree serve side --db postgres
+  assert_success
+  assert_file_exist "${TESTDIR}/.ddev/docker-compose.tryout-db.yaml"
+  run docker ps --format '{{.Names}}'
+  assert_output --partial "ddev-${PROJNAME}-tryout-postgres"
+
+  # Its database is on the Postgres server, and not on the project's MariaDB.
+  run pg_on tryout-postgres db_side \
+    "SELECT count(*) > 0 FROM information_schema.tables WHERE table_schema='public'"
+  assert_success
+  assert_output "t"
+  run ddev mysql -uroot -proot -N -e "SHOW DATABASES LIKE 'db_side';"
+  assert_output ""
+  assert_backend_loads "https://side.${PROJNAME}.ddev.site/typo3/"
+  # The CLI reaches it too: additional.php keeps the site's own host and driver.
+  run ddev tryout exec side vendor/bin/typo3 cache:flush
+  assert_success
+  # The primary is untouched on MariaDB.
+  assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
+
+  run ddev tryout worktree list --json
+  assert_output --partial '"db_engine":"postgres"'
+  run ddev tryout status
+  assert_output --partial "tryout-postgres: side"
+
+  # Switching a served site's type needs saying so: its settings name the server.
+  run ddev tryout worktree serve side --db mariadb
+  assert_failure
+  assert_output --partial "--switch"
+
+  # Unserve keeps the database, and so the server that holds it: `ddev delete`
+  # removes only the volumes of servers it runs.
+  run ddev tryout worktree unserve side
+  assert_success
+  run docker ps --format '{{.Names}}'
+  assert_output --partial "ddev-${PROJNAME}-tryout-postgres"
+  # Back on Postgres, the kept database is found and the site restored.
+  run ddev tryout worktree serve side --db postgres
+  assert_success
+  assert_output --partial "restored — existing database kept"
+  assert_backend_loads "https://side.${PROJNAME}.ddev.site/typo3/"
+
+  # Its database dropped, nothing needs the server: it goes, volume and all.
+  run ddev tryout worktree unserve side --drop-db
+  assert_success
+  assert_file_not_exist "${TESTDIR}/.ddev/docker-compose.tryout-db.yaml"
+  run docker ps --format '{{.Names}}'
+  refute_output --partial "ddev-${PROJNAME}-tryout-postgres"
+  run docker volume ls --format '{{.Name}}'
+  refute_output --partial "ddev-${PROJNAME}-tryout-postgres"
+  # Serving it again starts from nothing.
+  run ddev tryout worktree serve side --db postgres
+  assert_success
+  refute_output --partial "restored"
+}
+
+# bats test_tags=lifecycle,db
+@test "sites on SQLite and MySQL, and a site switched from one type to another" {
+  set -eu -o pipefail
+  addon_start # a MariaDB project
+
+  # SQLite: a file in the site, no server, no restart.
+  run ddev tryout worktree add lite 13.4
+  assert_success
+  run ddev tryout worktree serve lite --db sqlite
+  assert_success
+  run bash -c "ls '${TESTDIR}'/TYPO3-Instances/lite/var/sqlite/*.sqlite"
+  assert_success
+  assert_file_not_exist "${TESTDIR}/.ddev/docker-compose.tryout-db.yaml"
+  assert_backend_loads "https://lite.${PROJNAME}.ddev.site/typo3/"
+  run ddev tryout exec lite vendor/bin/typo3 cache:flush
+  assert_success
+  # Unserve keeps the file outside the site; serving again brings it back.
+  run ddev tryout worktree unserve lite
+  assert_success
+  assert_dir_exist "${TESTDIR}/TYPO3-Instances/.lite.sqlite"
+  run ddev tryout worktree serve lite --db sqlite
+  assert_success
+  assert_output --partial "restored — existing database kept"
+
+  # MySQL: a server of its own, from `worktree add --db`.
+  run ddev tryout worktree add my 13.4 --db mysql
+  assert_success
+  run ddev exec mysql -h tryout-mysql -uroot -proot -N -e "SHOW DATABASES LIKE 'db_my';"
+  assert_success
+  assert_output "db_my"
+  assert_backend_loads "https://my.${PROJNAME}.ddev.site/typo3/"
+  run ddev tryout exec my vendor/bin/typo3 cache:flush
+  assert_success
+  run ddev tryout status
+  assert_output --partial "tryout-mysql: my"
+  assert_output --partial "sqlite"
+
+  # A served site moves to another type in one step; its old database stays.
+  run ddev tryout worktree serve my --db postgres --switch
+  assert_success
+  # And the webserver took the site back: a switch unserves it on the way, so
+  # without the reload its hostname fell through to the PRIMARY — which answers
+  # with the same login page, so only the loaded vhost tells them apart.
+  run ddev exec bash -c "grep -rl 'my.${PROJNAME}' /etc/nginx/sites-enabled /etc/apache2/sites-enabled 2>/dev/null"
+  assert_success
+  run ddev tryout worktree list --json
+  assert_output --partial '"db_engine":"postgres"'
+  assert_backend_loads "https://my.${PROJNAME}.ddev.site/typo3/"
+  run ddev tryout exec my vendor/bin/typo3 cache:flush
+  assert_success
+  # Both servers run: Postgres for the site, MySQL for the database the switch
+  # kept (its settings saved per type, so switching back restores it).
+  assert_file_exist "${TESTDIR}/TYPO3-Instances/.my.mysql.settings.php"
+  run grep -c "container_name: ddev-\${DDEV_SITENAME}-tryout-mysql" "${TESTDIR}/.ddev/docker-compose.tryout-db.yaml"
+  assert_output "1"
+  run grep -c "container_name: ddev-\${DDEV_SITENAME}-tryout-postgres" "${TESTDIR}/.ddev/docker-compose.tryout-db.yaml"
+  assert_output "1"
+
+  # Deleting the project takes every tryout volume with it, or the next project
+  # of that name would inherit its databases.
+  run ddev delete -Oy "${PROJNAME}"
+  assert_success
+  run docker volume ls --format '{{.Name}}'
+  refute_output --partial "ddev-${PROJNAME}-tryout-"
+}
+
 # bats test_tags=lifecycle
 @test "serving works when DDEV has to write the hostname into /etc/hosts" {
   set -eu -o pipefail

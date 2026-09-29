@@ -3,8 +3,11 @@
 //! error with the usage line. Nothing in here runs `ddev`.
 
 use crate::core::ctx::{Ctx, PRIMARY_SITE};
+use crate::core::db::Engine;
 use crate::core::out::{self, BOLD, CYAN, DIM, GREEN, NC, TEXT, YELLOW};
-use crate::core::{Step, git, patch, php, proc, prompt, serve, site, status, vsort, worktree};
+use crate::core::{
+    Step, git, patch, php, proc, prompt, serve, site, status, vsort, webserver, worktree,
+};
 
 use super::verbs::{self, Verb};
 use super::{Exit, Res, require_core, require_served};
@@ -135,11 +138,29 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
         }
         "serve" => {
             let name = rest.first().map(String::as_str).unwrap_or("");
-            let php = php_flag(&rest[rest.len().min(1)..]);
+            let flags = &rest[rest.len().min(1)..];
+            let php = flag_value(flags, "--php");
             if name.is_empty() {
-                return usage("ddev tryout worktree serve <name> [--php 8.2]");
+                return usage("ddev tryout worktree serve <name> [--php 8.2] [--db postgres]");
             }
-            step(serve::serve(ctx, name, &php))
+            let db = engine_flag(flags)?;
+            // --switch: a served site moves to another database type — unserved
+            // first (its old database kept), then served on the new one, on the
+            // PHP it had.
+            let mut php = php;
+            if flags.iter().any(|f| f == "--switch")
+                && site::is_served(ctx, name)
+                && db.is_some_and(|e| e != site::db_engine(ctx, name))
+            {
+                if php.is_empty() {
+                    php = site::php_version(ctx, name);
+                }
+                // Before the unserve: its hostname is not new, only reloaded.
+                let before = webserver::restart_key(ctx);
+                step(serve::unserve(ctx, name, true))?;
+                return step(serve::serve_since(ctx, name, &php, db, Some(before)));
+            }
+            step(serve::serve(ctx, name, &php, db))
         }
         "unserve" => {
             let name = rest.first().map(String::as_str).unwrap_or("");
@@ -180,18 +201,33 @@ fn usage(line: &str) -> Res {
     Err(Exit(1))
 }
 
-/// `--php 8.2` or `--php=8.2` anywhere in the arguments; the last one wins.
-fn php_flag(args: &[String]) -> String {
-    let mut php = String::new();
+/// `--flag value` or `--flag=value` anywhere in the arguments; the last wins.
+fn flag_value(args: &[String], flag: &str) -> String {
+    let mut value = String::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        if a == "--php" {
-            php = it.next().cloned().unwrap_or_default();
-        } else if let Some(v) = a.strip_prefix("--php=") {
-            php = v.to_string();
+        if a == flag {
+            value = it.next().cloned().unwrap_or_default();
+        } else if let Some(v) = a.strip_prefix(flag).and_then(|v| v.strip_prefix('=')) {
+            value = v.to_string();
         }
     }
-    php
+    value
+}
+
+/// `--db <engine>`: None when not given, an error naming the choices when it is
+/// not one.
+fn engine_flag(args: &[String]) -> Result<Option<Engine>, Exit> {
+    let v = flag_value(args, "--db");
+    if v.is_empty() {
+        return Ok(None);
+    }
+    Engine::parse(&v).map(Some).ok_or_else(|| {
+        let choices: Vec<&str> = Engine::ALL.iter().map(|e| e.name()).collect();
+        out::error(format!("Unknown database '{v}'"));
+        out::error(format!("  → --db {}", choices.join(" | ")));
+        Exit(1)
+    })
 }
 
 fn basename(p: &std::path::Path) -> String {
@@ -202,20 +238,24 @@ fn basename(p: &std::path::Path) -> String {
 
 fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
     let name = args.first().cloned().unwrap_or_default();
-    let (mut branch, mut serve_it, mut php) = (String::new(), false, String::new());
+    let (mut branch, mut serve_it) = (String::new(), false);
     let mut it = args.iter().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--detach" => {}
             "--serve" => serve_it = true,
-            "--php" => php = it.next().cloned().unwrap_or_default(),
-            a if a.starts_with("--php=") => php = a["--php=".len()..].to_string(),
+            "--php" | "--db" => {
+                it.next();
+            }
+            a if a.starts_with("--php=") || a.starts_with("--db=") => {}
             a => branch = a.to_string(),
         }
     }
+    let php = flag_value(args, "--php");
+    let db = engine_flag(args)?;
     step(worktree::validate_name(&name).map_err(crate::core::fail))?;
-    // A named PHP version only takes effect on a served site.
-    if !php.is_empty() {
+    // A named PHP version or database only takes effect on a served site.
+    if !php.is_empty() || db.is_some() {
         serve_it = true;
     }
     let _ = std::fs::create_dir_all(ctx.worktrees_dir());
@@ -227,7 +267,7 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
     step(worktree::add(ctx, &name, &branch))?;
     print("\n");
     if serve_it {
-        return step(serve::serve(ctx, &name, &php));
+        return step(serve::serve(ctx, &name, &php, db));
     }
     print(&format!(
         "  {DIM}→ ddev tryout worktree use {name}      (switch the primary site){NC}\n\
@@ -723,7 +763,12 @@ fn card(ctx: &Ctx, r: &worktree::Row) -> String {
             s.push_str(&format!("  {CYAN}{url}{NC}\n"));
         }
         let php = if php.is_empty() { "-".to_string() } else { php };
-        s.push_str(&format!("  {DIM}{TEXT}PHP {php} · {db}{NC}\n"));
+        // The engine only where it is not the project's own.
+        let engine = worktree::site_engine(ctx, &r.name, r.active)
+            .filter(|e| *e != Engine::of_project(ctx))
+            .map(|e| format!(" ({})", e.name()))
+            .unwrap_or_default();
+        s.push_str(&format!("  {DIM}{TEXT}PHP {php} · {db}{engine}{NC}\n"));
     } else {
         s.push_str(&format!("  {changes} {DIM}{TEXT}· not served{NC}\n"));
         s.push_str(&format!(

@@ -3,6 +3,7 @@
 
 use crate::core::ctx::Ctx;
 use crate::core::ctx::PRIMARY_SITE;
+use crate::core::db::Engine;
 use crate::core::out::{self, DIM, NC, RED, YELLOW, print};
 use crate::core::prompt::{self, explain_missing};
 use crate::core::{ddev, gerrit, serve, site, status, webserver, worktree};
@@ -566,20 +567,96 @@ fn exec(ctx: &Ctx, args: &[String]) -> Res {
     delegate(ctx, &a)
 }
 
-/// Restart DDEV when the served hostnames changed: its routing rule and
-/// certificate are keyed on them and cannot be refreshed from the container.
-/// `before` is the set from before the command ran.
+/// A site served on the other database engine needs that engine's server
+/// running before its TYPO3 setup: declare the service and restart DDEV first.
+/// Nothing to do when `--db` names no engine, the project's own, or one that is
+/// declared already.
+fn ensure_db_service(ctx: &Ctx, args: &[String], no_restart: bool) -> Res {
+    let mut value = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--db" {
+            value = it.next().cloned();
+        } else if let Some(v) = a.strip_prefix("--db=") {
+            value = Some(v.to_string());
+        }
+    }
+    // An unknown engine is the container's to refuse, with the choices.
+    let Some(engine) = value.as_deref().and_then(Engine::parse) else {
+        return Ok(());
+    };
+    let mut declared = webserver::declared_db_services(ctx);
+    if !engine.needs_service(ctx) || declared.contains(&engine) {
+        return Ok(());
+    }
+    declared.push(engine);
+    declared.sort();
+    if let Err(e) = webserver::write_db_services(ctx, &declared) {
+        out::error(format!(
+            "Could not write {}: {e}",
+            ctx.db_services_file().display()
+        ));
+        return Err(Exit(1));
+    }
+    if no_restart || std::env::var("TRYOUT_NO_RESTART").as_deref() == Ok("1") {
+        out::error(format!(
+            "The {} server is declared but runs only after a restart",
+            engine.label()
+        ));
+        out::error("  → ddev restart   then run this again");
+        return Err(Exit(1));
+    }
+    out::info(format!(
+        "Restarting DDEV to start the {} server ({})...",
+        engine.label(),
+        engine.host(ctx)
+    ));
+    if ddev::restart() {
+        Ok(())
+    } else {
+        out::error("ddev restart failed");
+        out::error("  → ddev restart");
+        Err(Exit(1))
+    }
+}
+
+/// A database server no site and no kept database needs any more has just been
+/// stopped: its volume holds nothing worth keeping. Left, it would outlive the
+/// project — `ddev delete` removes only the volumes of servers it runs — and
+/// hand its databases to the next project of the same name.
+fn remove_unneeded_volumes(ctx: &Ctx, before: &[String]) {
+    let now = webserver::restart_key(ctx);
+    for key in before.iter().filter(|k| !now.contains(k)) {
+        let Some(svc) = key.strip_prefix("service ") else {
+            continue;
+        };
+        let volume = format!("ddev-{}-{svc}", ctx.env.sitename);
+        if ctx.env.sitename.is_empty() || !ddev::remove_volume(&volume) {
+            out::warn(format!("Could not remove the volume {volume}"));
+            out::warn(format!("  → docker volume rm {volume}"));
+        } else {
+            out::info(format!(
+                "Removed {volume}: no site or kept database uses it"
+            ));
+        }
+    }
+}
+
+/// Restart DDEV when the served hostnames or database services changed: its
+/// routing rule, certificate and containers are keyed on them and cannot be
+/// refreshed from the container. `before` is the key from before the command.
 fn restart_if_hosts_changed(ctx: &Ctx, before: &[String], no_restart: bool) -> Res {
-    if webserver::served_hostname_set(ctx) == before {
+    if webserver::restart_key(ctx) == before {
         return Ok(());
     }
     if no_restart || std::env::var("TRYOUT_NO_RESTART").as_deref() == Ok("1") {
-        out::warn("Hostnames changed — run 'ddev restart' to apply them.");
+        out::warn("Hostnames or database services changed — run 'ddev restart' to apply them.");
         return Ok(());
     }
-    out::info("Restarting DDEV to register the hostname and issue its certificate...");
+    out::info("Restarting DDEV to apply the new hostnames and database services...");
     if ddev::restart() {
         out::success("DDEV restarted.");
+        remove_unneeded_volumes(ctx, before);
         Ok(())
     } else {
         out::error("ddev restart failed");
@@ -632,7 +709,7 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
                 (
                     "Serve which worktree?",
                     prompt::Filter::Unserved,
-                    "ddev tryout worktree serve <name> [--php 8.2]",
+                    "ddev tryout worktree serve <name> [--php 8.2] [--db postgres]",
                 )
             } else {
                 (
@@ -657,7 +734,10 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
                     .filter(|a| *a != "--no-restart")
                     .map(String::as_str),
             );
-            let before = webserver::served_hostname_set(ctx);
+            if sub == "serve" {
+                ensure_db_service(ctx, rest, no_restart)?;
+            }
+            let before = webserver::restart_key(ctx);
             delegate(ctx, &a)?;
             restart_if_hosts_changed(ctx, &before, no_restart)
         }
@@ -679,7 +759,7 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
                     Exit(1)
                 })?,
             };
-            let before = webserver::served_hostname_set(ctx);
+            let before = webserver::restart_key(ctx);
             delegate(ctx, &["worktree", "rename", &old, &new])?;
             restart_if_hosts_changed(ctx, &before, false)
         }
@@ -703,8 +783,10 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
             "--branch" => {}
             "--detach" | "--serve" => flags.push(a.clone()),
             "--no-restart" => no_restart = true,
-            "--php" => flags.push(format!("--php={}", it.next().cloned().unwrap_or_default())),
-            a if a.starts_with("--php=") => flags.push(a.to_string()),
+            "--php" | "--db" => {
+                flags.push(format!("{a}={}", it.next().cloned().unwrap_or_default()))
+            }
+            a if a.starts_with("--php=") || a.starts_with("--db=") => flags.push(a.to_string()),
             a if a.starts_with('-') => {
                 out::error(format!("Unknown option: {a}"));
                 out::error("  → ddev tryout worktree help");
@@ -720,7 +802,9 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
             "e.g. bugfix-12345",
         )
         .ok_or_else(|| {
-            explain_missing("ddev tryout worktree add <name> [<branch>] [--serve] [--php 8.2]");
+            explain_missing(
+                "ddev tryout worktree add <name> [<branch>] [--serve] [--php 8.2] [--db postgres]",
+            );
             Exit(1)
         })?;
     }
@@ -733,7 +817,8 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
     let branch =
         prompt::ask_new_worktree_branch(ctx, &branch, "ddev tryout worktree add <name> [<branch>]")
             .ok_or(Exit(1))?;
-    let before = webserver::served_hostname_set(ctx);
+    ensure_db_service(ctx, &flags, no_restart)?;
+    let before = webserver::restart_key(ctx);
     let mut a = vec!["worktree", "add", name.as_str()];
     if !branch.is_empty() {
         a.push(&branch);

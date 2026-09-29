@@ -2,6 +2,7 @@
 //! that cannot work there, and every command names its own worktree — a bare verb acts
 //! on whichever Core is primary at the moment it runs, not the one you selected.
 
+use crate::core::db::Engine;
 use crate::tui::forms::FormKind;
 use crate::tui::worktrees::Worktree;
 
@@ -86,9 +87,11 @@ impl Claim {
             ["reset" | "download" | "delete" | "exec", rest @ ..] => site(rest.first()),
             // Adding touches only the new checkout — unless it serves it too.
             ["worktree", "add", rest @ ..]
-                if !rest
-                    .iter()
-                    .any(|x| x.starts_with("--serve") || x.starts_with("--php")) =>
+                if !rest.iter().any(|x| {
+                    ["--serve", "--php", "--db"]
+                        .iter()
+                        .any(|f| x.starts_with(f))
+                }) =>
             {
                 site(rest.first())
             }
@@ -162,10 +165,42 @@ fn php_items(w: &Worktree) -> Vec<Action> {
         .collect()
 }
 
+/// The database types to serve a site on, `current` ticked. For a served site
+/// the others move it (`--switch`), keeping its old database.
+fn db_items(w: &Worktree, project: Engine, current: Option<Engine>) -> Vec<Action> {
+    Engine::ALL
+        .iter()
+        .map(|&e| {
+            let ticked = current == Some(e);
+            let hint = if ticked {
+                "running now"
+            } else if e == project {
+                "the project's own server"
+            } else if e == Engine::Sqlite {
+                "a file in the site, no server"
+            } else {
+                "its own server, started for it"
+            };
+            let switch = if current.is_some() && !ticked {
+                " --switch"
+            } else {
+                ""
+            };
+            Action::new(
+                format!("{} {}", if ticked { "✓" } else { " " }, e.label()),
+                hint,
+                &format!("worktree serve {} --db {}{switch}", w.name, e.name()),
+                JOB,
+            )
+        })
+        .collect()
+}
+
 /// Everything that can be done to one worktree, grouped: its site, its Core,
 /// its data, the checkout itself. What a group cannot do in this worktree's
 /// state is not offered at all.
-pub fn for_worktree(w: &Worktree) -> Vec<Entry> {
+/// `project` is the project's own database type.
+pub fn for_worktree(w: &Worktree, project: Engine) -> Vec<Entry> {
     let n = &w.name;
     let served = w.served();
     // The origin clone owns the object store every worktree branches from;
@@ -190,6 +225,11 @@ pub fn for_worktree(w: &Worktree) -> Vec<Entry> {
                 items: php_items(w),
             });
         }
+        site.push(Entry::Sub {
+            label: "Serve on database".into(),
+            hint: String::new(),
+            items: db_items(w, project, None),
+        });
     }
     // The primary runs on the project's own PHP (ddev config), not a serve.
     if served && !w.primary && !w.php_versions.is_empty() {
@@ -197,6 +237,15 @@ pub fn for_worktree(w: &Worktree) -> Vec<Entry> {
             label: format!("PHP {}", w.php.as_deref().unwrap_or("?")),
             hint: "applies at once".into(),
             items: php_items(w),
+        });
+    }
+    // Its database type, the same way; the primary's is the project's.
+    if served && !w.primary {
+        let current = w.db_engine.as_deref().and_then(Engine::parse);
+        site.push(Entry::Sub {
+            label: format!("Database: {}", current.unwrap_or(project).label()),
+            hint: "switch the type".into(),
+            items: db_items(w, project, Some(current.unwrap_or(project))),
         });
     }
     if served {
@@ -354,6 +403,8 @@ mod tests {
             "worktree use v13",
             "worktree add v13 13.4 --serve",
             "worktree add v13 13.4 --php=8.2",
+            "worktree add v13 13.4 --db=postgres",
+            "worktree serve v13 --db postgres",
             "composer",
             "patch",             // no site named: whichever is primary
             "something-new v13", // unknown: the safe side
@@ -382,7 +433,7 @@ mod tests {
     fn every_menu_command_has_a_claim_that_matches_its_kind() {
         // A menu entry's claim: the site ones name their own worktree.
         for w in fixture() {
-            for e in for_worktree(&w) {
+            for e in for_worktree(&w, Engine::Mariadb) {
                 let Entry::Action(a) = e else { continue };
                 match Claim::of(&a.args) {
                     Claim::Site(n) => assert_eq!(n, w.name, "{}", a.args.join(" ")),
@@ -404,9 +455,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_served_site_shows_its_database_type_and_switches_to_another() {
+        let mut v13 = fixture()[1].clone();
+        v13.db_engine = Some("postgres".into());
+        let entries = for_worktree(&v13, Engine::Mariadb);
+        let Some(Entry::Sub { label, items, .. }) =
+            entries.iter().find(|e| e.label().starts_with("Database"))
+        else {
+            panic!("no database entry")
+        };
+        assert_eq!(label, "Database: PostgreSQL");
+        let rows: Vec<(String, String, String)> = items
+            .iter()
+            .map(|a| (a.label.clone(), a.hint.clone(), a.args.join(" ")))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (
+                    "  MariaDB".into(),
+                    "the project's own server".into(),
+                    "worktree serve v13 --db mariadb --switch".into()
+                ),
+                (
+                    "  MySQL".into(),
+                    "its own server, started for it".into(),
+                    "worktree serve v13 --db mysql --switch".into()
+                ),
+                (
+                    "✓ PostgreSQL".into(),
+                    "running now".into(),
+                    "worktree serve v13 --db postgres".into()
+                ),
+                (
+                    "  SQLite".into(),
+                    "a file in the site, no server".into(),
+                    "worktree serve v13 --db sqlite --switch".into()
+                ),
+            ]
+        );
+        // The primary's type is the project's: nothing to pick there.
+        assert!(
+            !for_worktree(&fixture()[0], Engine::Mariadb)
+                .iter()
+                .any(|e| e.label().starts_with("Database"))
+        );
+    }
+
     /// Each entry as "label → command", submenus as "label ▸ [commands]".
     fn menu(w: &Worktree) -> Vec<String> {
-        for_worktree(w)
+        for_worktree(w, Engine::Mariadb)
             .iter()
             .map(|e| match e {
                 Entry::Action(a) => format!("{} → {}", a.label, a.args.join(" ")),
@@ -451,9 +550,10 @@ mod tests {
     fn a_served_worktree_can_switch_php_and_be_unserved_with_or_without_its_database() {
         let m = menu(&with_php(fixture()[1].clone()));
         assert_eq!(
-            m[..6],
+            m[..7],
             [
                 "PHP 8.4 ▸ [worktree serve v13 --php 8.2, worktree serve v13 --php 8.3, worktree serve v13 --php 8.4]",
+                "Database: MariaDB ▸ [worktree serve v13 --db mariadb, worktree serve v13 --db mysql --switch, worktree serve v13 --db postgres --switch, worktree serve v13 --db sqlite --switch]",
                 "Open site → launch v13",
                 "Open backend → launch v13 --backend",
                 "Make primary → worktree use v13",
@@ -477,6 +577,7 @@ mod tests {
             [
                 "Serve → worktree serve bugfix",
                 "Serve on PHP ▸ [worktree serve bugfix --php 8.2, worktree serve bugfix --php 8.3, worktree serve bugfix --php 8.4]",
+                "Serve on database ▸ [worktree serve bugfix --db mariadb, worktree serve bugfix --db mysql, worktree serve bugfix --db postgres, worktree serve bugfix --db sqlite]",
                 "Make primary → worktree use bugfix",
                 "—",
                 "Rename… → worktree rename bugfix",
@@ -488,19 +589,20 @@ mod tests {
     #[test]
     fn the_running_php_is_ticked_and_without_versions_there_is_no_submenu() {
         let w = with_php(fixture()[1].clone()); // runs 8.4
-        let Some(Entry::Sub { items, .. }) = for_worktree(&w).into_iter().next() else {
+        let Some(Entry::Sub { items, .. }) = for_worktree(&w, Engine::Mariadb).into_iter().next()
+        else {
             panic!("no PHP submenu")
         };
         let labels: Vec<_> = items.iter().map(|a| a.label.as_str()).collect();
         assert_eq!(labels, ["  PHP 8.2", "  PHP 8.3", "✓ PHP 8.4"]);
         // An add-on too old to say which versions fit: no guessing.
-        assert!(!menu(&fixture()[1]).iter().any(|e| e.contains('▸')));
+        assert!(!menu(&fixture()[1]).iter().any(|e| e.starts_with("PHP")));
     }
 
     #[test]
     fn every_command_names_its_own_worktree_never_the_sentinel() {
         for w in fixture().into_iter().map(with_php) {
-            for e in for_worktree(&w) {
+            for e in for_worktree(&w, Engine::Mariadb) {
                 let actions = match e {
                     Entry::Action(a) => vec![a],
                     Entry::Sub { items, .. } => items,
@@ -525,7 +627,7 @@ mod tests {
 
     #[test]
     fn only_opening_the_site_runs_outside_the_queue() {
-        let bg: Vec<_> = for_worktree(&fixture()[1])
+        let bg: Vec<_> = for_worktree(&fixture()[1], Engine::Mariadb)
             .into_iter()
             .filter_map(|e| match e {
                 Entry::Action(a) if a.run == Run::Background => Some(a.label),

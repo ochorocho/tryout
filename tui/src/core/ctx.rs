@@ -130,6 +130,11 @@ impl Ctx {
         self.root.join(".ddev/config.worktrees.yaml")
     }
 
+    /// The extra database services served sites run on.
+    pub fn db_services_file(&self) -> PathBuf {
+        self.root.join(".ddev/docker-compose.tryout-db.yaml")
+    }
+
     pub fn tryout_dir(&self) -> PathBuf {
         self.root.join(".ddev/tryout")
     }

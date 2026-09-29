@@ -28,7 +28,7 @@ teardown() {
 # The bash the add-on still ships: shims, the launcher, a compat script.
 shipped_scripts() {
   printf '%s\n' "${DIR}/commands/host/tryout" "${DIR}/commands/host/autocomplete/tryout" \
-    "${DIR}/tryout/tryout" "${DIR}"/tryout/*.sh
+    "${DIR}/tryout/tryout"
 }
 
 # Lay a payload out under FAKEROOT the way `ddev add-on get` does, with a fake
@@ -37,7 +37,7 @@ fake_install() {
   mkdir -p "${FAKEROOT}/.ddev/commands/host/autocomplete" "${FAKEROOT}/.ddev/tryout/bin"
   cp "${DIR}/commands/host/tryout" "${FAKEROOT}/.ddev/commands/host/"
   cp "${DIR}/commands/host/autocomplete/tryout" "${FAKEROOT}/.ddev/commands/host/autocomplete/"
-  cp "${DIR}/tryout/tryout" "${DIR}/tryout/tryout-php-fpm.sh" "${FAKEROOT}/.ddev/tryout/"
+  cp "${DIR}/tryout/tryout" "${FAKEROOT}/.ddev/tryout/"
   local b
   for b in tryout-macos-universal tryout-linux-x86_64 tryout-linux-aarch64; do
     printf '#!/bin/sh\necho "%s $*"\necho noise >&2\nexit "${FAKE_EXIT:-0}"\n' "${b}" \
@@ -154,14 +154,6 @@ fake_install() {
   chmod -x "${FAKEROOT}"/.ddev/tryout/bin/*
   run "${FAKEROOT}/.ddev/tryout/tryout" status
   assert_success
-}
-
-@test "an FPM daemon from an older config reaches the binary's __fpm" {
-  set -eu -o pipefail
-  fake_install
-  run bash "${FAKEROOT}/.ddev/tryout/tryout-php-fpm.sh" 8.2
-  assert_success
-  assert_line --partial "__fpm 8.2"
 }
 
 @test "install puts every binary on a fresh file, so macOS does not kill it" {
@@ -388,6 +380,39 @@ fake_install() {
   assert_output "db"
 }
 
+@test "additional.php keeps a site's own database server — driver, host and port" {
+  # A site served with --db talks to an extra server; its settings.php says so.
+  # additional.php used to force the PROJECT's driver, host and port over it.
+  local add="${DIR}/tryout/additional.php"
+  connection() { # <DDEV_DATABASE> <php array literal of the loaded Default connection>
+    IS_DDEV_PROJECT=true DDEV_DATABASE="${1}" php -r "
+      \$GLOBALS['TYPO3_CONF_VARS'] = ['DB' => ['Connections' => ['Default' => ${2}]]];
+      include '${add}';
+      \$c = \$GLOBALS['TYPO3_CONF_VARS']['DB']['Connections']['Default'];
+      echo \$c['driver'], ' ', \$c['host'], ' ', \$c['port'];
+    "
+  }
+
+  # A Postgres site on a MariaDB project keeps its own server.
+  run connection "mariadb:11.8" "['driver' => 'pdo_pgsql', 'host' => 'tryout-postgres', 'port' => 5432]"
+  assert_output "pdo_pgsql tryout-postgres 5432"
+
+  # With nothing loaded (the first run), the project's database stands in.
+  run connection "mariadb:11.8" "[]"
+  assert_output "mysqli db 3306"
+  run connection "postgres:16" "[]"
+  assert_output "pdo_pgsql db 5432"
+
+  # A SQLite site is a file: nothing is added to its connection.
+  run env IS_DDEV_PROJECT=true php -r "
+    \$GLOBALS['TYPO3_CONF_VARS'] = ['DB' => ['Connections' => ['Default' => [
+      'driver' => 'pdo_sqlite', 'path' => '/x/var/sqlite/cms-1.sqlite']]]];
+    include '${add}';
+    echo json_encode(\$GLOBALS['TYPO3_CONF_VARS']['DB']['Connections']['Default']);
+  "
+  assert_output '{"driver":"pdo_sqlite","path":"\/x\/var\/sqlite\/cms-1.sqlite"}'
+}
+
 @test "every command a user can type runs somewhere against a real DDEV project" {
   set -eu -o pipefail
   # One pattern per verb, subcommand and flag. Each must match a `ddev tryout …`
@@ -405,7 +430,9 @@ fake_install() {
     'worktree add [a-z0-9-]+ [0-9.]+$' 'worktree add .*--serve' 'worktree add .*--php'
     'worktree list$' 'worktree list --plain' 'worktree list --json'
     'worktree branches --json'
-    'worktree use' 'worktree serve [a-z0-9-]+ --php' 'worktree unserve [a-z0-9-]+$'
+    'worktree use' 'worktree serve [a-z0-9-]+ --php' 'worktree serve [a-z0-9-]+ --db' 'worktree serve .*--switch'
+    'worktree add .*--db'
+    'worktree unserve [a-z0-9-]+$'
     'worktree unserve .*--drop-db' 'worktree rename'
     'worktree remove [a-z0-9-]+$' 'worktree remove .*--yes'
   )

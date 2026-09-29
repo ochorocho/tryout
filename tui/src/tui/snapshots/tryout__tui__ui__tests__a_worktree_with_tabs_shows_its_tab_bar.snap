@@ -1,15 +1,16 @@
 ---
 source: src/tui/ui.rs
+assertion_line: 2321
 expression: "render(&a, 80, 12).backend()"
 ---
 " tryout  demo                                                       3 worktrees "
 "╭ Worktrees ────────────── + new ╮╭ main https://demo.ddev.site ───────────────╮"
 "│ ● main                       ▶2││ 1 shell   2 shell   +                      │"
-"│   main · PHP 8.4 · 32d1f51     ││█                                           │"
+"│   main · 32d1f51               ││█                                           │"
+"│   PHP 8.4 · MariaDB            ││                                            │"
 "│ ◆ v13                         ±││                                            │"
-"│   13.4 #91234 +1 · PHP 8.4     ││                                            │"
-"│ ○ bugfix                       ││                                            │"
-"│   main · 32d1f51               ││                                            │"
+"│   13.4 #91234 +1 · 32d1f51     ││                                            │"
+"│   PHP 8.4 · MariaDB            ││                                            │"
 "│                                ││                                            │"
 "│                                ││                                            │"
 "╰────────────────────────────────╯╰────────────────────────────────────────────╯"

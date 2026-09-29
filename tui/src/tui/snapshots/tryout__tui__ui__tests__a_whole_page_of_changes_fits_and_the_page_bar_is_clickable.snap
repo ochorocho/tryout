@@ -1,19 +1,19 @@
 ---
 source: src/tui/ui.rs
-assertion_line: 1705
+assertion_line: 1786
 expression: t.backend()
 ---
 " tryout  demo                                                                                               3 worktrees "
 "╭ Worktrees ────────────── + new ╮╭ main https://demo.ddev.site ───────────────────────────────────────────────────────╮"
 "│ ● main                         ││ +                                                                                  │"
 "│   m╭ Apply Gerrit changes to v13 ───────────────────────────────────────────────────────────────────────────────╮    │"
-"│ ◆ v│ Open changes on its branch                                                                                 │    │"
-"│   1│   search ▏                                                                                                 │    │"
-"│ ○ b│   [ ] 91000  CR+1  V ·    [TASK] Change number 0                                   Ada                     │    │"
-"│   m│   [ ] 91001  CR ·  V ·    [TASK] Change number 1                                   Ada                     │    │"
-"│    │   [ ] 91002  CR+1  V ·    [TASK] Change number 2                                   Ada                     │    │"
-"│    │   [ ] 91003  CR ·  V ·    [TASK] Change number 3                                   Ada                     │    │"
-"│    │   [ ] 91004  CR+1  V ·    [TASK] Change number 4                                   Ada                     │    │"
+"│   P│ Open changes on its branch                                                                                 │    │"
+"│ ◆ v│   search ▏                                                                                                 │    │"
+"│   1│   [ ] 91000  CR+1  V ·    [TASK] Change number 0                                   Ada                     │    │"
+"│   P│   [ ] 91001  CR ·  V ·    [TASK] Change number 1                                   Ada                     │    │"
+"│ ○ b│   [ ] 91002  CR+1  V ·    [TASK] Change number 2                                   Ada                     │    │"
+"│   m│   [ ] 91003  CR ·  V ·    [TASK] Change number 3                                   Ada                     │    │"
+"│   n│   [ ] 91004  CR+1  V ·    [TASK] Change number 4                                   Ada                     │    │"
 "│    │   [ ] 91005  CR ·  V ·    [TASK] Change number 5                                   Ada                     │    │"
 "│    │   [ ] 91006  CR+1  V ·    [TASK] Change number 6                                   Ada                     │    │"
 "│    │   [ ] 91007  CR ·  V ·    [TASK] Change number 7                                   Ada                     │    │"

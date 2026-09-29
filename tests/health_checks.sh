@@ -11,7 +11,7 @@ assert_file_exist "${TESTDIR}/.ddev/commands/host/tryout"
 assert_file_exist "${TESTDIR}/.ddev/commands/host/autocomplete/tryout"
 assert_file_exist "${TESTDIR}/.ddev/config.tryout.yaml"
 assert_file_exist "${TESTDIR}/.ddev/config.tryout-patches.yaml"
-for f in tryout VERSION tryout-php-fpm.sh gitmessage.txt composer.tryout.json \
+for f in tryout VERSION gitmessage.txt composer.tryout.json \
          additional.php patches.yaml; do
   assert_file_exist "${TESTDIR}/.ddev/tryout/${f}"
 done

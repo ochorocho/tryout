@@ -1,5 +1,6 @@
-//! The generated files, byte for byte against what the bash and PHP wrote
-//! (tests/fixtures/generators/, captured by tests/parity/goldens.sh).
+//! The generated files, byte for byte against tests/fixtures/generators/ —
+//! first captured from the bash and PHP generators, so existing files do not
+//! churn.
 
 use std::path::{Path, PathBuf};
 
@@ -111,7 +112,7 @@ fn the_worktree_config_lists_hosts_and_one_daemon_per_extra_php() {
     webserver::write_worktree_config(&ctx).unwrap();
     assert_eq!(read(ctx.worktree_config()), golden("config.worktrees.yaml"));
     assert!(webserver::hash_config_file(&ctx).is_file());
-    let set: String = webserver::served_hostname_set(&ctx)
+    let set: String = webserver::restart_key(&ctx)
         .iter()
         .map(|h| format!("{h}\n"))
         .collect();
@@ -188,4 +189,55 @@ fn use_core_moves_only_the_sysext_repository() {
     );
     assert_eq!(read(overlay), golden("overlay-use-root.json"));
     assert!(composer::use_core(&ctx, "-x").is_err());
+}
+
+#[test]
+fn a_site_on_the_other_engine_gets_its_database_service_and_the_last_takes_it_away() {
+    let (d, ctx) = project("nginx-fpm"); // a MariaDB project
+    let site = |name: &str, marker: &str| {
+        let dir = d.path().join("TYPO3-Instances").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".tryout-site"), marker).unwrap();
+    };
+    std::fs::create_dir_all(d.path().join(".ddev")).unwrap();
+    site("pg", "php=8.4\ndb=postgres\n");
+    site("maria", "php=8.4\ndb=mariadb\n"); // the project's own: no service
+    site("pg2", "php=8.4\ndb=postgres\n");
+    site("my", "php=8.4\ndb=mysql\n");
+    site("lite", "php=8.4\ndb=sqlite\n"); // a file: no server
+    webserver::write_worktree_config(&ctx).unwrap();
+    assert_eq!(
+        read(ctx.db_services_file()),
+        golden("docker-compose.tryout-db.yaml")
+    );
+    // Declaring it takes a restart, as a new hostname does.
+    assert!(webserver::restart_key(&ctx).contains(&"service tryout-postgres".to_string()));
+
+    // The last sites needing a server go — but a database `unserve` kept keeps
+    // its server: `ddev delete` removes only the volumes of servers it runs.
+    for name in ["pg", "pg2", "my"] {
+        std::fs::remove_file(
+            d.path()
+                .join("TYPO3-Instances")
+                .join(name)
+                .join(".tryout-site"),
+        )
+        .unwrap();
+    }
+    let kept = d.path().join("TYPO3-Instances/.pg.postgres.settings.php");
+    std::fs::write(&kept, "<?php return [];").unwrap();
+    webserver::write_worktree_config(&ctx).unwrap();
+    let left = read(ctx.db_services_file());
+    assert!(left.contains("container_name: ddev-${DDEV_SITENAME}-tryout-postgres"));
+    assert!(!left.contains("tryout-mysql"), "{left}");
+
+    // Its database dropped too: nothing is left to declare.
+    std::fs::remove_file(&kept).unwrap();
+    webserver::write_worktree_config(&ctx).unwrap();
+    assert!(!ctx.db_services_file().exists());
+    assert!(
+        !webserver::restart_key(&ctx)
+            .iter()
+            .any(|k| k.starts_with("service "))
+    );
 }

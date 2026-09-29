@@ -579,7 +579,10 @@ impl App {
     /// `a`: the selected worktree's menu, and the project's commands below it.
     fn open_menu(&mut self) {
         if let Some(w) = self.selected() {
-            let items = actions::join([actions::for_worktree(w), actions::project()]);
+            let items = actions::join([
+                actions::for_worktree(w, self.project_engine()),
+                actions::project(),
+            ]);
             self.menu = Some(Menu::new(&w.name.clone(), items, None));
         }
     }
@@ -715,13 +718,37 @@ impl App {
         }
     }
 
+    /// The open log's place in the Activity list, 1-based, and the list's length.
+    pub fn log_position(&self) -> Option<(usize, usize)> {
+        let id = self.log_view?;
+        let list = self.jobs.list();
+        let i = list.iter().position(|j| j.id == id)?;
+        Some((i + 1, list.len()))
+    }
+
+    /// Open the log `delta` rows further down the Activity list (up when
+    /// negative), stopping at either end.
+    fn step_log(&mut self, delta: isize) {
+        let Some((pos, len)) = self.log_position() else {
+            return;
+        };
+        let to = (pos as isize - 1 + delta).clamp(0, len as isize - 1) as usize;
+        if let Some(id) = self.jobs.list().get(to).map(|j| j.id) {
+            self.open_log(id);
+        }
+    }
+
     fn log_key(&mut self, key: KeyEvent) -> Effect {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => self.log_view = None,
+            // The Activity list is vertical, so the arrows walk it; the log
+            // itself scrolls with k j, PgUp PgDn and the wheel.
+            KeyCode::Up => self.step_log(-1),
+            KeyCode::Down => self.step_log(1),
             KeyCode::PageUp | KeyCode::Char('b') => self.scroll_log(20),
             KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_log(-20),
-            KeyCode::Up | KeyCode::Char('k') => self.scroll_log(1),
-            KeyCode::Down | KeyCode::Char('j') => self.scroll_log(-1),
+            KeyCode::Char('k') => self.scroll_log(1),
+            KeyCode::Char('j') => self.scroll_log(-1),
             KeyCode::Home | KeyCode::Char('g') => self.scroll_log(isize::MAX),
             KeyCode::End | KeyCode::Char('G') => self.log_scroll = 0,
             KeyCode::Char('r') => self.retry_log(),
@@ -1171,7 +1198,7 @@ impl App {
             return Effect::None;
         };
         let want = ["launch".to_string(), w.name.clone()];
-        actions::for_worktree(w)
+        actions::for_worktree(w, self.project_engine())
             .into_iter()
             .find_map(|e| match e {
                 Entry::Action(a) if a.args == want => Some(a),
@@ -1186,6 +1213,16 @@ impl App {
             return Effect::None;
         }
         self.open_form(FormKind::NewWorktree)
+    }
+
+    /// The project's own database type: the primary's, as the list reports it.
+    pub fn project_engine(&self) -> crate::core::db::Engine {
+        self.worktrees
+            .iter()
+            .find(|w| w.primary)
+            .and_then(|w| w.db_engine.as_deref())
+            .and_then(crate::core::db::Engine::parse)
+            .unwrap_or(crate::core::db::Engine::Mariadb)
     }
 
     /// A popup that waits for keys (password, tab name, closing the session)
@@ -1203,7 +1240,7 @@ impl App {
         self.menu = None;
         self.click_worktree(index);
         if let Some(w) = self.worktrees.get(index) {
-            let items = actions::for_worktree(w);
+            let items = actions::for_worktree(w, self.project_engine());
             if !items.is_empty() {
                 self.menu = Some(Menu::new(&w.name.clone(), items, Some(at)));
             }
@@ -1292,6 +1329,7 @@ pub mod tests {
             subject: Some("[TASK] Raise phpstan to 2.1.17".into()),
             php_versions: Vec::new(),
             changes: Vec::new(),
+            db_engine: url.map(|_| "mariadb".into()),
         };
         let mut v13 = wt("v13", None, "13.4", Some("https://v13.demo.ddev.site"));
         (v13.patches, v13.modified, v13.untracked) = (2, 3, 1);
@@ -1508,16 +1546,18 @@ pub mod tests {
     #[test]
     fn the_selection_steps_over_separators() {
         let mut a = app();
-        a.context_menu(2, (1, 1)); // Serve, Make primary, —, Rename…, Remove…
-        press(&mut a, KeyCode::Down);
-        press(&mut a, KeyCode::Down);
-        assert_eq!(a.menu.as_ref().unwrap().selected, 3, "the rule is skipped");
+        // Serve, Serve on database ▸, Make primary, —, Rename…, Remove…
+        a.context_menu(2, (1, 1));
+        for _ in 0..3 {
+            press(&mut a, KeyCode::Down);
+        }
+        assert_eq!(a.menu.as_ref().unwrap().selected, 4, "the rule is skipped");
         for _ in 0..5 {
             press(&mut a, KeyCode::Down);
         }
         assert_eq!(
             a.menu.as_ref().unwrap().selected,
-            4,
+            5,
             "and it stops at the end"
         );
     }
@@ -1939,10 +1979,10 @@ pub mod tests {
     fn a_click_on_a_menu_item_runs_it_and_anywhere_else_closes_it() {
         let mut a = app();
         a.context_menu(2, (10, 7));
-        assert_eq!(a.click_menu(Some(MenuHit::Top(2))), Effect::None);
+        assert_eq!(a.click_menu(Some(MenuHit::Top(3))), Effect::None);
         assert!(a.menu.is_some(), "a click on the rule does nothing");
         // Remove… asks first, natively; only y runs it, fully argued.
-        assert_eq!(a.click_menu(Some(MenuHit::Top(4))), Effect::None);
+        assert_eq!(a.click_menu(Some(MenuHit::Top(5))), Effect::None);
         assert!(a.menu.is_none());
         assert_eq!(
             a.form.as_ref().unwrap().kind,
@@ -2024,6 +2064,33 @@ pub mod tests {
         assert_eq!(a.notice.as_deref(), Some("✓ status"));
         press(&mut a, KeyCode::Esc);
         assert_eq!(a.log_view, None);
+    }
+
+    #[test]
+    fn the_arrows_step_through_the_logs_in_the_activity_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = with_fake_jobs(dir.path());
+        // Failures stay in the list, so all three are there to step through.
+        for _ in 0..3 {
+            a.jobs.enqueue(&job_action("fail", false), false);
+        }
+        run_to_end(&mut a);
+        let ids: Vec<u64> = a.jobs.list().iter().map(|j| j.id).collect();
+        press(&mut a, KeyCode::Char('L'));
+        assert_eq!((a.log_view, a.log_position()), (Some(ids[0]), Some((1, 3))));
+        press(&mut a, KeyCode::Down);
+        assert_eq!(a.log_view, Some(ids[1]));
+        press(&mut a, KeyCode::Down);
+        assert_eq!(a.log_position(), Some((3, 3)));
+        press(&mut a, KeyCode::Down);
+        assert_eq!(a.log_view, Some(ids[2]), "it stops at the end");
+        for _ in 0..3 {
+            press(&mut a, KeyCode::Up);
+        }
+        assert_eq!(a.log_view, Some(ids[0]), "and at the start");
+        // k and j still scroll the log itself, and stay on it.
+        press(&mut a, KeyCode::Char('j'));
+        assert_eq!(a.log_view, Some(ids[0]));
     }
 
     #[test]
@@ -2125,9 +2192,9 @@ pub mod tests {
         assert!(max > 50, "100 lines on a 24-row screen: {max}");
         press(&mut a, KeyCode::Home);
         assert_eq!(a.log_scroll, max);
-        press(&mut a, KeyCode::Up);
+        press(&mut a, KeyCode::Char('k'));
         assert_eq!(a.log_scroll, max, "the top is the top");
-        press(&mut a, KeyCode::Down);
+        press(&mut a, KeyCode::Char('j'));
         assert_eq!(
             a.log_scroll,
             max - 1,

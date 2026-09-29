@@ -47,8 +47,7 @@ post_install_actions:
   # project root is "..".
   - |
     #ddev-description:Make the tryout commands executable
-    chmod +x tryout/tryout tryout/tryout-php-fpm.sh \
-      commands/host/tryout commands/host/autocomplete/tryout
+    chmod +x tryout/tryout commands/host/tryout commands/host/autocomplete/tryout
     # Each binary onto a file of its own. `ddev add-on get` overwrites an existing
     # one in place, and macOS remembers the code signature per file: a binary
     # changed under it is killed on its next start ("signal: killed"). A copy
@@ -160,7 +159,8 @@ post_install_actions:
              tryout/functions.sh tryout/commands.sh tryout/tryout-container.sh \
              tryout/post-start.sh tryout/list-patches.sh tryout/resolve-patch-ref.sh \
              tryout/resolve-gerrit-account.sh tryout/sync-composer.php \
-             tryout/site-composer.php tryout/use-core.php tryout/gitignore; do
+             tryout/site-composer.php tryout/use-core.php tryout/gitignore \
+             tryout/tryout-php-fpm.sh; do
       if [ -f "$f" ] && grep -q '#ddev-generated' "$f"; then
         rm -f "$f"
       fi
@@ -245,9 +245,16 @@ removal_actions:
     rm -rf tryout/.state
 
   - |
-    #ddev-description:Remove generated worktree config and vhosts
+    #ddev-description:Remove generated worktree config, vhosts and database services
     rm -f config.worktrees.yaml apache/tryout-site-*.conf nginx_full/tryout-site-*.conf \
-          nginx_full/tryout-server-names-hash.conf
+          nginx_full/tryout-server-names-hash.conf docker-compose.tryout-db.yaml
+    # The extra database servers' data: with their compose file gone, nothing
+    # would ever remove these volumes, not even `ddev delete`.
+    if [ -n "${DDEV_SITENAME:-}" ] && command -v docker >/dev/null 2>&1; then
+      for e in mariadb mysql postgres; do
+        docker volume rm "ddev-${DDEV_SITENAME}-tryout-${e}" >/dev/null 2>&1 || true
+      done
+    fi
 
   - |
     #ddev-description:Remove the patch list if it is still empty

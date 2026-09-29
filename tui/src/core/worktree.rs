@@ -517,6 +517,22 @@ pub struct Info {
     /// tryout applied. Absent from an older add-on.
     #[serde(default)]
     pub changes: Vec<u64>,
+    /// The database engine the site runs on (`mariadb`, `postgres`); None when
+    /// it is not served. Absent from an older add-on.
+    #[serde(default)]
+    pub db_engine: Option<String>,
+}
+
+/// The engine a checkout's site runs on: its own for a served site, the
+/// project's for the active one, None when nothing is served from it.
+pub fn site_engine(ctx: &Ctx, name: &str, active: bool) -> Option<super::db::Engine> {
+    if super::site::is_served(ctx, name) {
+        Some(super::site::db_engine(ctx, name))
+    } else if active {
+        Some(super::db::Engine::of_project(ctx))
+    } else {
+        None
+    }
 }
 
 /// Every checkout with its state. `available` is the PHP versions the web image
@@ -555,6 +571,7 @@ fn info(ctx: &Ctx, r: Row, available: &[String], known: &HashMap<String, u64>) -
     };
     let (modified, untracked) = change_counts(&dir);
     let (url, php, db) = site_info(ctx, &r.name, r.active);
+    let db_engine = site_engine(ctx, &r.name, r.active).map(|e| e.name().to_string());
     let subject = git::out(&dir, &["log", "-1", "--format=%s"])
         .map(|s| super::out::printable(&s))
         .unwrap_or_default();
@@ -575,6 +592,7 @@ fn info(ctx: &Ctx, r: Row, available: &[String], known: &HashMap<String, u64>) -
         subject: some(subject),
         php_versions: super::php::matching(&constraint, available),
         changes,
+        db_engine,
     }
 }
 
@@ -590,7 +608,7 @@ pub fn infos_json(infos: &[Info]) -> String {
         }
         let phps: Vec<String> = w.php_versions.iter().map(|v| json_str(v)).collect();
         s.push_str(&format!(
-            "\n  {{\"name\":{},\"dir\":{},\"head\":{},\"branch\":{},\"base\":{},\"patches\":{},\"modified\":{},\"untracked\":{},\"primary\":{},\"url\":{},\"php\":{},\"db\":{},\"subject\":{},\"php_versions\":[{}],\"changes\":[{}]}}",
+            "\n  {{\"name\":{},\"dir\":{},\"head\":{},\"branch\":{},\"base\":{},\"patches\":{},\"modified\":{},\"untracked\":{},\"primary\":{},\"url\":{},\"php\":{},\"db\":{},\"subject\":{},\"php_versions\":[{}],\"changes\":[{}],\"db_engine\":{}}}",
             json_str(&w.name),
             json_str(&w.dir),
             json_str(&w.head),
@@ -606,6 +624,7 @@ pub fn infos_json(infos: &[Info]) -> String {
             opt(&w.subject),
             phps.join(","),
             w.changes.iter().map(u64::to_string).collect::<Vec<_>>().join(","),
+            opt(&w.db_engine),
         ));
     }
     s.push_str("\n]\n");
@@ -999,6 +1018,7 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
     } else {
         String::new()
     };
+    let engine = super::site::db_engine(ctx, old);
     if served {
         out::info(format!(
             "Unserving '{old}' so it can be re-served as '{new}'..."
@@ -1020,7 +1040,7 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
         ],
     ) {
         // Put the site back as it was, rather than leave it unserved.
-        let restored = served && super::serve::serve(ctx, old, &php).is_ok();
+        let restored = served && super::serve::serve(ctx, old, &php, Some(engine)).is_ok();
         let mut lines = vec![format!(
             "Could not move {} (it may be locked: git worktree unlock)",
             old_dir.display()
@@ -1038,7 +1058,7 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
     out::success(format!("Renamed worktree '{old}' to '{new}'"));
     if served {
         out::info(format!("Re-serving as '{new}' on PHP {php}..."));
-        if super::serve::serve(ctx, new, &php).is_err() {
+        if super::serve::serve(ctx, new, &php, Some(engine)).is_err() {
             return Err(fail(&[
                 "The worktree was renamed, but re-serving failed".into(),
                 format!("  → ddev tryout worktree serve {new}"),

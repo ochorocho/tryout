@@ -51,8 +51,9 @@ pub fn sidebar_max(total: u16) -> u16 {
         .saturating_sub(PANE_MIN)
         .max(SIDEBAR_MIN.min(total / 2))
 }
-/// Rows per worktree in the sidebar: name, then branch and head.
-const ITEM_HEIGHT: u16 = 2;
+/// Rows per worktree in the sidebar: its name; where it is (branch, patches,
+/// commit); how it is served (PHP, database type).
+const ITEM_HEIGHT: u16 = 3;
 
 /// The first worktree the sidebar shows: just enough scroll to keep the
 /// selection in view. Drawing and click hit-testing both use it, so a click
@@ -952,7 +953,14 @@ fn draw_activity(f: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::raw(" ".repeat(width.saturating_sub(used + 2))));
                 spans.push(Span::styled("↻ ", Style::new().fg(theme::ACCENT).bold()));
             }
-            Line::from(spans)
+            // The row whose log is open, drawn as a selection — so stepping
+            // through the logs shows where you are.
+            if app.log_view == Some(j.id) {
+                let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+                Line::styled(format!("{text:<width$}"), theme::selected())
+            } else {
+                Line::from(spans)
+            }
         })
         .collect();
     f.render_widget(Paragraph::new(lines), inner);
@@ -1061,13 +1069,21 @@ fn draw_log(f: &mut Frame, app: &App, job: &crate::tui::jobs::Job, area: Rect) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(theme::border(true))
-        .title(Span::styled(
-            format!(" {} ", job.command_line()),
-            theme::text().bold(),
-        ))
+        .title(Line::from(vec![
+            Span::styled(format!(" {} ", job.command_line()), theme::text().bold()),
+            Span::styled(
+                app.log_position()
+                    .map(|(i, n)| format!("{i}/{n} "))
+                    .unwrap_or_default(),
+                theme::dim(),
+            ),
+        ]))
         .title_bottom(Line::from(vec![
             state,
-            Span::styled(" esc closes · ↑↓ wheel PgUp PgDn scroll ", theme::dim()),
+            Span::styled(
+                " esc closes · ↑↓ other logs · k j wheel PgUp PgDn scroll ",
+                theme::dim(),
+            ),
         ]));
     let block = if matches!(job.state, JobState::Done { .. }) {
         block.title_bottom(
@@ -1187,29 +1203,39 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" ".repeat(pad), base),
                 Span::styled(badges, badge_style),
             ]);
-            // The branch it is on, or for a detached checkout the one it came
-            // from; then the patches on top, the PHP it is served on, and the
-            // commit — the part a narrow list cuts first.
+            // Where it is: the branch it is on, or for a detached checkout the
+            // one it came from; the patches on top; the commit — whole, or not
+            // at all, since a cut hash says nothing.
             let at = w
                 .branch
                 .as_deref()
                 .or(w.base.as_deref())
                 .unwrap_or("detached");
-            let mut detail = format!("   {at}{}", patch_badge(w));
-            if w.served()
-                && let Some(php) = &w.php
-            {
-                detail.push_str(&format!(" · PHP {php}"));
-            }
-            // The commit only whole: a cut hash says nothing.
-            let with_head = format!("{detail} · {}", short(&w.head));
-            let detail = if with_head.chars().count() <= width {
+            let place = format!("   {at}{}", patch_badge(w));
+            let with_head = format!("{place} · {}", short(&w.head));
+            let place = if cols(&with_head) <= width {
                 with_head
             } else {
-                truncate(&detail, width)
+                truncate(&place, width)
             };
-            let second = Line::styled(format!("{detail:<width$}"), sub);
-            ListItem::new(vec![first, second])
+            let second = Line::styled(format!("{place:<width$}"), sub);
+            // How it is served: its PHP and database type.
+            let config = if w.served() {
+                let mut c = format!("   PHP {}", w.php.as_deref().unwrap_or("?"));
+                if let Some(e) = w
+                    .db_engine
+                    .as_deref()
+                    .and_then(crate::core::db::Engine::parse)
+                {
+                    c.push_str(&format!(" · {}", e.label()));
+                }
+                c
+            } else {
+                "   not served".to_string()
+            };
+            let config = truncate(&config, width);
+            let third = Line::styled(format!("{config:<width$}"), sub);
+            ListItem::new(vec![first, second, third])
         })
         .collect();
 
@@ -1468,9 +1494,14 @@ fn placeholder<'a>(w: &'a crate::tui::worktrees::Worktree, width: u16) -> Paragr
             lines.push(row(
                 "runtime",
                 format!(
-                    "PHP {} · {}",
+                    "PHP {} · {}{}",
                     php.as_deref().unwrap_or("-"),
-                    w.db.as_deref().unwrap_or("-")
+                    w.db.as_deref().unwrap_or("-"),
+                    w.db_engine
+                        .as_deref()
+                        .and_then(crate::core::db::Engine::parse)
+                        .map(|e| format!(" ({})", e.label()))
+                        .unwrap_or_default()
                 ),
             ));
         }
@@ -1528,7 +1559,11 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             ("↑↓ wheel", "scroll"),
             ("r", "retry"),
         ],
-        _ if app.log_view.is_some() => &[("esc", "close the log"), ("↑↓ wheel", "scroll")],
+        _ if app.log_view.is_some() => &[
+            ("esc", "close the log"),
+            ("↑↓", "other logs"),
+            ("k j wheel", "scroll"),
+        ],
         _ if app.focus == Focus::List && app.jobs.last_failed().is_some() => &[
             ("↑↓", "select"),
             ("⏎", "shell"),
@@ -1679,7 +1714,8 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(text.contains("13.4 #91234 +1 · PHP 8.4"), "the list row");
+        assert!(text.contains("13.4 #91234 +1 · 32d1f51"), "where it is");
+        assert!(text.contains("PHP 8.4 · MariaDB"), "how it is served");
         assert!(
             text.contains("2 patches on top of 13.4: #91234 and 1 more"),
             "the details"
@@ -1883,17 +1919,17 @@ mod tests {
     fn a_click_lands_on_the_worktree_drawn_there() {
         let a = loaded();
         let screen = Rect::new(0, 0, 80, 24);
-        // Header on row 0, sidebar border on row 1; each worktree is two rows.
+        // Header on row 0, sidebar border on row 1; each worktree is three rows.
         assert_eq!(worktree_at(screen, &a, 5, 2), Some(0));
         assert_eq!(
-            worktree_at(screen, &a, 5, 3),
+            worktree_at(screen, &a, 5, 4),
             Some(0),
-            "its second line counts too"
+            "its third line counts too"
         );
-        assert_eq!(worktree_at(screen, &a, 5, 4), Some(1));
-        assert_eq!(worktree_at(screen, &a, 5, 6), Some(2));
+        assert_eq!(worktree_at(screen, &a, 5, 5), Some(1));
+        assert_eq!(worktree_at(screen, &a, 5, 8), Some(2));
         assert_eq!(
-            worktree_at(screen, &a, 5, 8),
+            worktree_at(screen, &a, 5, 11),
             None,
             "below the last worktree"
         );
@@ -1923,7 +1959,8 @@ mod tests {
             drawn.contains(&a.worktrees[hit].name),
             "drew {drawn:?}, hit {hit}"
         );
-        assert_eq!(worktree_at(screen, &a, 5, 20), Some(22));
+        // The selected last one is on screen, and a click on it finds it.
+        assert!((2..23).any(|row| worktree_at(screen, &a, 5, row) == Some(22)));
     }
 
     #[test]

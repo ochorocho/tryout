@@ -99,6 +99,23 @@ pub fn on_path(name: &str) -> bool {
 }
 
 /// `ddev restart`, its output shown.
+/// Remove a Docker volume; true when it is gone (or never was). Host side.
+pub fn remove_volume(name: &str) -> bool {
+    let exists = Command::new("docker")
+        .args(["volume", "inspect", name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    !exists
+        || Command::new("docker")
+            .args(["volume", "rm", name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+}
+
 pub fn restart() -> bool {
     Command::new("ddev")
         .arg("restart")

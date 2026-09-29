@@ -142,7 +142,37 @@ pub fn body(ctx: &Ctx, patches: &str) -> Vec<String> {
     }
 
     line(format!("  Site:      {BOLD}{}", ctx.env.primary_url));
+    line(format!("  Database:  {}", database_line(ctx)));
     l
+}
+
+/// The project's database engine, and the extra servers served sites run on.
+fn database_line(ctx: &Ctx) -> String {
+    let own = if ctx.env.database.is_empty() {
+        super::db::Engine::of_project(ctx).name().to_string()
+    } else {
+        ctx.env.database.clone()
+    };
+    let mut s = format!("{own} {DIM}(db){NC}");
+    let on = |e| -> Vec<String> {
+        super::site::served_names(ctx)
+            .into_iter()
+            .filter(|n| super::site::db_engine(ctx, n) == e)
+            .collect()
+    };
+    for e in super::site::extra_engines(ctx) {
+        s.push_str(&format!(
+            " · {} {DIM}({}: {}){NC}",
+            e.image().unwrap_or_default(),
+            e.host(ctx),
+            on(e).join(", ")
+        ));
+    }
+    let lite = on(super::db::Engine::Sqlite);
+    if !lite.is_empty() {
+        s.push_str(&format!(" · sqlite {DIM}({}){NC}", lite.join(", ")));
+    }
+    s
 }
 
 /// A titled block: the title in bold, then the lines.

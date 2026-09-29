@@ -1,35 +1,14 @@
-# This repository is a DDEV add-on. The payload lives at the repo root
-# (install.yaml, commands/, tryout/, config.tryout*.yaml) and is copied into a
-# project's .ddev/ by `ddev add-on get`.
+# This repository is a DDEV add-on. The payload at the root (install.yaml,
+# commands/, tryout/, config.tryout*.yaml, web-build/) is copied into a
+# project's .ddev/ by `ddev add-on get`; nothing below is part of it.
 #
-# The entries below are for using this checkout as a tryout project itself,
-# which is how the add-on is developed and tested. Nothing here is shipped;
-# the .gitignore installed into a consuming project is tryout/gitignore.
+# A tryout project's root is the TYPO3 Core clone itself, so this checkout is
+# never one: try changes in a scratch project (see README → Contributing), and
+# the test suites build theirs under ~/tmp.
 
-# TYPO3 Core clone and its worktrees
-/typo3-core/
-/typo3-core
-/typo3-core-*/
-
-# Served worktree sites and their generated config
-/sites/
-/.ddev/
-
-# Composer artifacts (this checkout, when run as a project)
-/vendor/
-/public/
-/var/
-/composer.json
-/composer.lock
-/composer.tryout.json
-/composer.tryout.lock
-
-# TYPO3 generated config
-/config/
-/packages/
-
-# Composer auth (may contain tokens)
-/auth.json
+# Release binaries: built by tui/scripts/stage-bins.sh, committed only on a
+# release commit by the release workflow.
+/tryout/bin/
 
 # Local tooling
 /.mcp.json
@@ -46,7 +25,3 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
-
-# Release binaries: built by tui/scripts/stage-bins.sh, committed only on a
-# release commit by the release workflow.
-/tryout/bin/

@@ -536,7 +536,6 @@ my-typo3-site/
 │   │   ├── VERSION               # Payload version, compared by `ddev tryout status`
 │   │   ├── .state/php-versions   # Left by post-start: the PHPs the web image has
 │   │   ├── gitmessage.txt        # Commit template installed by `ddev tryout cs`
-│   │   ├── tryout-php-fpm.sh     # Kept one release, for daemons declared before the switch
 │   │   └── …                     # Templates copied out on install (see below)
 │   ├── config.yaml               # Yours, from `ddev config` (name, docroot, PHP, DB)
 │   ├── config.tryout.yaml        # Add-on: TYPO3 env vars + the post-start hook
@@ -801,6 +800,35 @@ container rebuild:
 ddev tryout worktree serve v13 --php 8.3   # applied without a restart
 ```
 
+#### On another database type
+
+A DDEV project has one database server, set by `ddev config --database=…`, and
+every site gets its own database on it. `--db` puts a site on another type —
+`mariadb`, `mysql`, `postgres` or `sqlite` — to try a change against each:
+
+```bash
+ddev tryout worktree serve v13 --db postgres
+ddev tryout worktree add lite main --db sqlite     # --db implies --serve
+ddev tryout worktree serve v13 --db mysql --switch # move a served site
+```
+
+MariaDB, MySQL and Postgres run as a server of their own (`tryout-mariadb`,
+`tryout-mysql`, `tryout-postgres`, declared in
+`.ddev/docker-compose.tryout-db.yaml`), one version each. The first site on one
+costs a DDEV restart to start it; later ones do not. It keeps running while a
+site runs on it or holds a database `unserve` kept there, so an `unserve`d site
+comes back with its database; once neither is left (`--drop-db`, `worktree
+remove`), it is stopped and its volume removed. `ddev delete` removes the
+volumes of the servers still running with the project. SQLite needs no server: the
+database is a file in the site's `var/sqlite/`, kept aside on `unserve` just the
+same.
+
+A served site keeps its type unless you say `--switch`, which unserves it —
+keeping the old database — and serves it again on the new type. In the terminal
+UI the same choice is **Serve on database ▸** for a worktree that is not served,
+and **Database: … ▸** (the current type ticked) for one that is.
+`ddev tryout status` shows which servers run and which sites are on them.
+
 #### Stopping a site
 
 ```bash
@@ -1006,7 +1034,7 @@ box and the list.
 
 | Keyboard | Mouse                   | Does                         |
 |----------|-------------------------|------------------------------|
-| `L`      | click an Activity row   | open that command's log      |
+| `L`      | click an Activity row   | open that command's log (`L` opens the first; `↑` `↓` then walk the list) |
 | `R`      | click ↻ on a failed row | run the failed command again |
 
 Commands on different worktrees run side by side: a patch on `v13` does not
@@ -1022,7 +1050,8 @@ until you retry it. Inside the log:
 
 | Keyboard                          | Mouse                 | Does                  |
 |-----------------------------------|-----------------------|-----------------------|
-| `↑` `↓` or `k` `j`                | wheel (3 lines)       | scroll a line         |
+| `↑` `↓`                           |                       | the previous / next command's log, in Activity order (the title shows e.g. `2/4`) |
+| `k` `j`                           | wheel (3 lines)       | scroll a line         |
 | `PgUp` / `PgDn`, or `b` / `Space` |                       | scroll a page         |
 | `Home` / `End`, or `g` / `G`      |                       | top / bottom          |
 | `r`                               | click **↻ retry (r)** | run the command again |

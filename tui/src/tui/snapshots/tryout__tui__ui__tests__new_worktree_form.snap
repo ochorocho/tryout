@@ -1,18 +1,19 @@
 ---
 source: src/tui/ui.rs
+assertion_line: 2273
 expression: "render(&a, 80, 30).backend()"
 ---
 " tryout  demo                                                       3 worktrees "
 "╭ Worktrees ────────────── + new ╮╭ main https://demo.ddev.site ───────────────╮"
 "│ ● main                         ││ +                                          │"
-"│   main · PHP 8.4 · 32d1f51     ││                                            │"
-"│ ◆ v13                         ±││  where    main                             │"
-"│   13.4╭ New worktree ────────────────────────────────────────────────╮an t…  │"
-"│ ○ bugf│ Name                                                         │       │"
-"│   main│   fix-9▏                                                     │       │"
-"│       │   becomes worktrees/<name> — letters, digits, . _ -          │       │"
-"│       │                                                              │       │"
-"│       │ Based on                                                     │       │"
+"│   main · 32d1f51               ││                                            │"
+"│   PHP 8.4 · MariaDB            ││  where    main                             │"
+"│ ◆ v13 ╭ New worktree ────────────────────────────────────────────────╮an t…  │"
+"│   13.4│ Name                                                         │       │"
+"│   PHP │   fix-9▏                                                     │       │"
+"│ ○ bugf│   becomes worktrees/<name> — letters, digits, . _ -          │       │"
+"│   main│                                                              │)      │"
+"│   not │ Based on                                                     │       │"
 "│       │   › main                                                     │e      │"
 "│       │     13.4                                                     │       │"
 "│       │     12.4                                                     │       │"

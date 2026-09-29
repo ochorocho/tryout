@@ -1,18 +1,19 @@
 ---
 source: src/tui/ui.rs
+assertion_line: 1853
 expression: "render(&loaded(), 80, 24).backend()"
 ---
 " tryout  demo                                                       3 worktrees "
 "╭ Worktrees ────────────── + new ╮╭ main https://demo.ddev.site ───────────────╮"
 "│ ● main                         ││ +                                          │"
-"│   main · PHP 8.4 · 32d1f51     ││                                            │"
-"│ ◆ v13                         ±││  where    main                             │"
-"│   13.4 #91234 +1 · PHP 8.4     ││  head     32d1f51 [TASK] Raise phpstan t…  │"
-"│ ○ bugfix                       ││  changes  clean                            │"
-"│   main · 32d1f51               ││  dir      project root                     │"
-"│                                ││  site     https://demo.ddev.site           │"
-"│                                ││  runtime  PHP 8.4 · db_main                │"
-"│                                ││                                            │"
+"│   main · 32d1f51               ││                                            │"
+"│   PHP 8.4 · MariaDB            ││  where    main                             │"
+"│ ◆ v13                         ±││  head     32d1f51 [TASK] Raise phpstan t…  │"
+"│   13.4 #91234 +1 · 32d1f51     ││  changes  clean                            │"
+"│   PHP 8.4 · MariaDB            ││  dir      project root                     │"
+"│ ○ bugfix                       ││  site     https://demo.ddev.site           │"
+"│   main · 32d1f51               ││  runtime  PHP 8.4 · db_main (MariaDB)      │"
+"│   not served                   ││                                            │"
 "│                                ││  Enter  open a shell in this worktree      │"
 "│                                ││                                            │"
 "│                                ││                                            │"

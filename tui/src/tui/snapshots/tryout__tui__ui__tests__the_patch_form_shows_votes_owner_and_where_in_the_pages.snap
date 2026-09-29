@@ -1,19 +1,19 @@
 ---
 source: src/tui/ui.rs
-assertion_line: 1658
+assertion_line: 1739
 expression: "render(&a, 120, 30).backend()"
 ---
 " tryout  demo                                                                                               3 worktrees "
 "╭ Worktrees ────────────── + new ╮╭ main https://demo.ddev.site ───────────────────────────────────────────────────────╮"
 "│ ● main                         ││ +                                                                                  │"
-"│   main · PHP 8.4 · 32d1f51     ││                                                                                    │"
-"│ ◆ v13                         ±││  where    main                                                                     │"
-"│   13.4 #91234 +1 · PHP 8.4     ││  head     32d1f51 [TASK] Raise phpstan to 2.1.17                                   │"
-"│ ○ bugfix                       ││  changes  clean                                                                    │"
-"│   m╭ Apply Gerrit changes to v13 ───────────────────────────────────────────────────────────────────────────────╮    │"
-"│    │ Open changes on its branch                                                                                 │    │"
-"│    │   search ▏                                                                                                 │    │"
-"│    │   [ ] 91234  CR+2  V+1    [BUGFIX] Keep the page tree open after a move            Ada Lovelace            │    │"
+"│   main · 32d1f51               ││                                                                                    │"
+"│   PHP 8.4 · MariaDB            ││  where    main                                                                     │"
+"│ ◆ v13                         ±││  head     32d1f51 [TASK] Raise phpstan to 2.1.17                                   │"
+"│   13.4 #91234 +1 · 32d1f51     ││  changes  clean                                                                    │"
+"│   P╭ Apply Gerrit changes to v13 ───────────────────────────────────────────────────────────────────────────────╮    │"
+"│ ○ b│ Open changes on its branch                                                                                 │    │"
+"│   m│   search ▏                                                                                                 │    │"
+"│   n│   [ ] 91234  CR+2  V+1    [BUGFIX] Keep the page tree open after a move            Ada Lovelace            │    │"
 "│    │   [ ] 91000  CR-1  V-1    WIP [FEATURE] A new cache backend                        Frédéric                │    │"
 "│    │   [ ] 90001  CR ·  V ·    [TASK] Raise phpstan                                     ?                       │    │"
 "│    │   ‹ previous   page 1 · 1–3   next ›                                                                       │    │"

@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::ctx::{Ctx, DdevEnv, PRIMARY_SITE};
+use crate::core::db::Engine;
 use crate::core::{php, site, vsort};
 
 use super::verbs::VERBS;
@@ -202,12 +203,15 @@ fn worktree(ctx: &Ctx, l: &Line, o: &mut Out) {
                 o.hint("name for the new worktree (becomes worktrees/<name>)");
             } else if l.prev == "--php" {
                 php_versions(ctx, third, o);
+            } else if l.prev == "--db" {
+                engines(ctx, o);
             } else {
                 if l.pos == 3 && !l.wants_flag() {
                     branches(ctx, o);
                 }
                 o.flag(l, "--serve", "serve it immediately");
                 o.flag(l, "--php", "run it on another PHP version");
+                o.flag(l, "--db", "run it on another database type");
                 o.flag(l, "--no-restart", "skip the DDEV restart --serve needs");
             }
         }
@@ -231,11 +235,19 @@ fn worktree(ctx: &Ctx, l: &Line, o: &mut Out) {
         "serve" => {
             if l.prev == "--php" {
                 php_versions(ctx, third, o);
+            } else if l.prev == "--db" {
+                engines(ctx, o);
             } else {
                 if l.pos <= 2 && !l.wants_flag() {
                     worktrees(ctx, Mode::Unserved, o);
                 }
                 o.flag(l, "--php", "run this site on another PHP version");
+                o.flag(l, "--db", "run this site on another database type");
+                o.flag(
+                    l,
+                    "--switch",
+                    "with --db: move a served site, keeping its old database",
+                );
                 o.flag(
                     l,
                     "--no-restart",
@@ -376,6 +388,13 @@ fn branches(ctx: &Ctx, o: &mut Out) {
             what.push_str(" — checked out");
         }
         o.c(&b, &what);
+    }
+}
+
+/// The database types a site can run on, each with what choosing it means.
+fn engines(ctx: &Ctx, o: &mut Out) {
+    for e in Engine::ALL {
+        o.c(e.name(), &e.what(ctx));
     }
 }
 
@@ -533,7 +552,7 @@ mod tests {
         let (_d, ctx) = project();
         assert_eq!(
             names(&ctx, "worktree serve ''"),
-            ["main", "old", "--php", "--no-restart"]
+            ["main", "old", "--php", "--db", "--switch", "--no-restart"]
         );
         assert_eq!(
             names(&ctx, "worktree unserve ''"),
@@ -550,7 +569,25 @@ mod tests {
         assert_eq!(names(&ctx, "launch -"), ["--backend"]);
         assert_eq!(
             names(&ctx, "worktree add x --serve ''"),
-            ["--php", "--no-restart"]
+            ["--php", "--db", "--no-restart"]
+        );
+    }
+
+    #[test]
+    fn database_engines_complete_after_db() {
+        let (_d, ctx) = project();
+        assert_eq!(
+            names(&ctx, "worktree serve old --db ''"),
+            ["mariadb", "mysql", "postgres", "sqlite"]
+        );
+        let out = complete(&ctx, "worktree add x --db ''");
+        assert!(
+            out.contains("postgres\tits own postgres:17 server"),
+            "{out}"
+        );
+        assert!(
+            out.contains("sqlite\ta file in the site, no server"),
+            "{out}"
         );
     }
 
@@ -581,23 +618,26 @@ mod tests {
     #[test]
     fn completion_answers_instantly() {
         let (_d, ctx) = project();
-        let start = std::time::Instant::now();
-        for _ in 0..20 {
-            for line in [
-                "''",
-                "worktree serve ''",
-                "checkout ''",
-                "exec ''",
-                "worktree rename ''",
-            ] {
-                complete(&ctx, line);
-            }
-        }
-        // 100 completions; a TAB must never feel it.
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(5),
-            "{:?}",
-            start.elapsed()
-        );
+        // The fastest of several rounds: a busy machine slows every round, while
+        // something expensive in completion (a git status is seconds on a cold
+        // Core tree, the network worse) slows even the fastest.
+        let fastest = (0..5)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                for line in [
+                    "''",
+                    "worktree serve ''",
+                    "checkout ''",
+                    "exec ''",
+                    "worktree rename ''",
+                ] {
+                    complete(&ctx, line);
+                }
+                start.elapsed()
+            })
+            .min()
+            .expect("five rounds");
+        // Five completions; a TAB must never feel it.
+        assert!(fastest < std::time::Duration::from_secs(1), "{fastest:?}");
     }
 }
