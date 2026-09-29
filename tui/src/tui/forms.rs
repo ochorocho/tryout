@@ -4,6 +4,8 @@
 //! goes; either way it ends in exactly one fully-argued `ddev tryout` command.
 //! Pure state and keys — all of it runs under test.
 
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use serde::Deserialize;
@@ -66,34 +68,39 @@ pub enum Field {
         label: &'static str,
         value: bool,
     },
-    /// Several of a list, ticked with space. `options` None: still loading.
+    /// Open Gerrit changes, a page at a time, searched on Gerrit as you type;
+    /// several ticked with space. `options` None: asking Gerrit.
     Choose {
         label: &'static str,
         options: Option<Vec<Change>>,
+        /// What is typed: the search sent to Gerrit.
         filter: String,
         selected: usize,
+        /// Ticked, in the order ticked — they survive paging and searching.
         chosen: Vec<u64>,
+        /// Which page is shown (from 0), and whether Gerrit has another.
+        page: u32,
+        more: bool,
+        /// A search to send once due: typing waits for a pause, paging does not.
+        pending: Option<(Instant, String, u32)>,
+        /// The search whose answer is awaited; any other answer is stale.
+        asked: Option<(String, u32)>,
+        /// Keys go to the list (move, tick, page) rather than the search box,
+        /// where every character types — a space too.
+        in_list: bool,
     },
 }
 
+/// How long typing pauses before the search goes to Gerrit.
+pub const SEARCH_PAUSE: Duration = Duration::from_millis(400);
+
 impl Field {
-    /// The changes that match the filter — by number, subject or owner.
+    /// The changes on the page shown. Gerrit did the searching.
     pub fn visible_changes(&self) -> Vec<&Change> {
         match self {
             Field::Choose {
-                options: Some(o),
-                filter,
-                ..
-            } => {
-                let f = filter.to_lowercase();
-                o.iter()
-                    .filter(|c| {
-                        c.number.to_string().contains(&f)
-                            || c.subject.to_lowercase().contains(&f)
-                            || c.owner.to_lowercase().contains(&f)
-                    })
-                    .collect()
-            }
+                options: Some(o), ..
+            } => o.iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -232,6 +239,12 @@ impl Form {
                     filter: String::new(),
                     selected: 0,
                     chosen: Vec::new(),
+                    page: 0,
+                    more: false,
+                    // The first page, asked for straight away.
+                    pending: Some((Instant::now(), String::new(), 0)),
+                    asked: None,
+                    in_list: false,
                 }],
                 vec![],
             ),
@@ -248,12 +261,115 @@ impl Form {
         }
     }
 
-    /// The open changes arrived.
-    pub fn set_changes(&mut self, changes: Vec<Change>) {
+    /// Go to the next (`+1`) or previous (`-1`) page of changes, if there is one.
+    pub fn turn_page(&mut self, delta: i32) {
+        let code = if delta > 0 {
+            KeyCode::PageDown
+        } else {
+            KeyCode::PageUp
+        };
+        self.edit(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    /// A click on the `i`th change shown: select it and flip its tick.
+    pub fn click_change(&mut self, i: usize) {
+        if let Some(Field::Choose {
+            selected, in_list, ..
+        }) = self.fields.get_mut(self.focus)
+        {
+            *selected = i;
+            *in_list = true;
+            self.edit(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        }
+    }
+
+    /// Move the selection among the changes shown (the wheel).
+    pub fn move_selection(&mut self, delta: i32) {
+        if let Some(Field::Choose { in_list, .. }) = self.fields.get_mut(self.focus) {
+            *in_list = true;
+        }
+        let code = if delta > 0 {
+            KeyCode::Down
+        } else {
+            KeyCode::Up
+        };
+        for _ in 0..delta.unsigned_abs() {
+            self.edit(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+    }
+
+    /// Whether a change picker's keys go to its list (true) or its search box.
+    pub fn in_change_list(&self) -> bool {
+        matches!(
+            self.fields.get(self.focus),
+            Some(Field::Choose { in_list: true, .. })
+        )
+    }
+
+    /// A search that is due, to send to Gerrit: (search, page). Taking it marks
+    /// it as the one whose answer is awaited.
+    pub fn take_search(&mut self, now: Instant) -> Option<(String, u32)> {
         for f in &mut self.fields {
-            if let Field::Choose { options, .. } = f {
-                *options = Some(changes.clone());
+            if let Field::Choose {
+                options,
+                pending,
+                asked,
+                ..
+            } = f
+                && pending.as_ref().is_some_and(|(due, _, _)| *due <= now)
+            {
+                let (_, search, page) = pending.take()?;
+                *options = None;
+                *asked = Some((search.clone(), page));
+                return Some((search, page));
             }
+        }
+        None
+    }
+
+    /// A page of changes arrived for `search`/`page` — shown only if it is the
+    /// answer awaited, so a slow reply never overwrites a newer search.
+    pub fn set_changes(&mut self, search: &str, page: u32, changes: Vec<Change>, has_more: bool) {
+        for f in &mut self.fields {
+            if let Field::Choose {
+                options,
+                asked,
+                selected,
+                more,
+                ..
+            } = f
+                && asked
+                    .as_ref()
+                    .is_some_and(|(s, p)| s == search && *p == page)
+            {
+                *options = Some(changes.clone());
+                *more = has_more;
+                *selected = 0;
+                *asked = None;
+            }
+        }
+    }
+
+    /// Gerrit could not answer the search awaited.
+    pub fn changes_failed(&mut self, search: &str, page: u32, why: String) {
+        let awaited = self.fields.iter().any(
+            |f| matches!(f, Field::Choose { asked: Some((s, p)), .. } if s == search && *p == page),
+        );
+        if awaited {
+            for f in &mut self.fields {
+                if let Field::Choose {
+                    options,
+                    asked,
+                    more,
+                    ..
+                } = f
+                {
+                    *options = Some(Vec::new());
+                    *asked = None;
+                    *more = false;
+                }
+            }
+            self.error = Some(why);
         }
     }
 
@@ -286,6 +402,13 @@ impl Form {
                 KeyCode::Char('y') | KeyCode::Char('Y') => self.submit(),
                 _ => Outcome::Cancel,
             };
+        }
+        // A change picker is two parts, search box and list: Tab moves between them.
+        if let (KeyCode::Tab | KeyCode::BackTab, Some(Field::Choose { in_list, .. })) =
+            (key.code, self.fields.get_mut(self.focus))
+        {
+            *in_list = !*in_list;
+            return Outcome::Stay;
         }
         match key.code {
             KeyCode::Tab => self.focus = (self.focus + 1) % self.fields.len(),
@@ -321,17 +444,49 @@ impl Form {
                     filter,
                     selected,
                     chosen,
+                    page,
+                    more,
+                    pending,
+                    in_list,
                     ..
                 } = choose
                 else {
                     unreachable!()
                 };
-                match key.code {
-                    KeyCode::Down => {
+                let now = Instant::now();
+                let mut search_changed = false;
+                match (key.code, *in_list) {
+                    // Pages turn from either part.
+                    (KeyCode::PageDown, _) | (KeyCode::Right, true)
+                        if *more && pending.is_none() =>
+                    {
+                        *page += 1;
+                        *pending = Some((now, filter.clone(), *page));
+                    }
+                    (KeyCode::PageUp, _) | (KeyCode::Left, true)
+                        if *page > 0 && pending.is_none() =>
+                    {
+                        *page -= 1;
+                        *pending = Some((now, filter.clone(), *page));
+                    }
+                    // The search box: every character types, a space too.
+                    (KeyCode::Down, false) => *in_list = true,
+                    (KeyCode::Backspace, false) => {
+                        filter.pop();
+                        search_changed = true;
+                    }
+                    (KeyCode::Char(c), false) if !ctrl => {
+                        filter.push(c);
+                        search_changed = true;
+                    }
+                    // The list: move, tick; ↑ past the first row, a letter or
+                    // Backspace goes back to the search.
+                    (KeyCode::Down, true) => {
                         *selected = (*selected + 1).min(visible.len().saturating_sub(1))
                     }
-                    KeyCode::Up => *selected = selected.saturating_sub(1),
-                    KeyCode::Char(' ') => {
+                    (KeyCode::Up, true) if *selected == 0 => *in_list = false,
+                    (KeyCode::Up, true) => *selected -= 1,
+                    (KeyCode::Char(' '), true) => {
                         if let Some(n) = visible.get(*selected) {
                             match chosen.iter().position(|c| c == n) {
                                 Some(i) => {
@@ -341,15 +496,22 @@ impl Form {
                             }
                         }
                     }
-                    KeyCode::Backspace => {
+                    (KeyCode::Backspace, true) => {
+                        *in_list = false;
                         filter.pop();
-                        *selected = 0;
+                        search_changed = true;
                     }
-                    KeyCode::Char(c) if !ctrl => {
+                    (KeyCode::Char(c), true) if !ctrl => {
+                        *in_list = false;
                         filter.push(c);
-                        *selected = 0;
+                        search_changed = true;
                     }
                     _ => {}
+                }
+                if search_changed {
+                    *selected = 0;
+                    *page = 0;
+                    *pending = Some((now + SEARCH_PAUSE, filter.clone(), 0));
                 }
             }
             pick @ Field::Pick { .. } => {
@@ -470,21 +632,17 @@ impl Form {
                 else {
                     unreachable!()
                 };
-                // Ticked ones in list order; none ticked means the one selected.
+                // Ticked ones in the order ticked (they may be on other pages);
+                // none ticked means the one selected.
                 let visible = field.visible_changes();
-                let mut ids: Vec<u64> = match field {
-                    Field::Choose {
-                        options: Some(o), ..
-                    } if !chosen.is_empty() => o
-                        .iter()
-                        .map(|c| c.number)
-                        .filter(|num| chosen.contains(num))
-                        .collect(),
-                    _ => visible
+                let mut ids: Vec<u64> = if chosen.is_empty() {
+                    visible
                         .get(*selected)
                         .map(|c| c.number)
                         .into_iter()
-                        .collect(),
+                        .collect()
+                } else {
+                    chosen.clone()
                 };
                 ids.dedup();
                 if ids.is_empty() {
@@ -789,10 +947,11 @@ mod tests {
     }
 
     #[test]
-    fn patches_are_ticked_with_space_and_applied_in_list_order() {
+    fn patches_are_ticked_with_space_and_applied_in_the_order_ticked() {
         let mut f = Form::new(FormKind::Patch("v13".into()), vec![], "main");
         assert_eq!(key(&mut f, KeyCode::Enter), Outcome::Stay, "still loading");
-        f.set_changes(changes());
+        answer(&mut f, changes(), false);
+        key(&mut f, KeyCode::Down); // from the search into the list, on 91001
         key(&mut f, KeyCode::Down);
         key(&mut f, KeyCode::Down);
         key(&mut f, KeyCode::Char(' ')); // 91003
@@ -801,16 +960,157 @@ mod tests {
         key(&mut f, KeyCode::Char(' ')); // 91001
         assert_eq!(
             args(key(&mut f, KeyCode::Enter)),
-            "patch --site v13 91001 91003"
+            "patch --site v13 91003 91001"
+        );
+    }
+
+    /// Take the due search and answer it, as the app and Gerrit would.
+    fn answer(f: &mut Form, changes: Vec<Change>, more: bool) -> (String, u32) {
+        let (search, page) = f
+            .take_search(Instant::now() + SEARCH_PAUSE)
+            .expect("a search is due");
+        f.set_changes(&search, page, changes, more);
+        (search, page)
+    }
+
+    #[test]
+    fn the_first_page_is_asked_for_at_once() {
+        let mut f = Form::new(FormKind::Patch("main".into()), vec![], "main");
+        assert_eq!(f.take_search(Instant::now()), Some((String::new(), 0)));
+        assert_eq!(f.take_search(Instant::now()), None, "asked once");
+    }
+
+    #[test]
+    fn typing_searches_gerrit_once_it_pauses() {
+        let mut f = Form::new(FormKind::Patch("main".into()), vec![], "main");
+        answer(&mut f, changes(), false);
+        typing(&mut f, "login");
+        assert_eq!(f.take_search(Instant::now()), None, "not while typing");
+        assert_eq!(
+            f.take_search(Instant::now() + SEARCH_PAUSE),
+            Some(("login".into(), 0))
+        );
+        // Gerrit did the searching: its answer is the list, as is.
+        f.set_changes("login", 0, changes()[2..].to_vec(), false);
+        assert_eq!(args(key(&mut f, KeyCode::Enter)), "patch --site main 91003");
+    }
+
+    #[test]
+    fn a_late_answer_never_replaces_a_newer_search() {
+        let mut f = Form::new(FormKind::Patch("main".into()), vec![], "main");
+        answer(&mut f, changes(), false);
+        typing(&mut f, "cache");
+        let asked = f.take_search(Instant::now() + SEARCH_PAUSE).unwrap();
+        assert_eq!(asked, ("cache".into(), 0));
+        // The answer to the very first search comes in late: ignored.
+        f.set_changes("", 0, changes(), false);
+        assert!(
+            f.fields[0].visible_changes().is_empty(),
+            "still waiting for 'cache'"
+        );
+        f.set_changes("cache", 0, changes()[1..2].to_vec(), false);
+        assert_eq!(f.fields[0].visible_changes()[0].number, 91002);
+    }
+
+    #[test]
+    fn pages_move_with_pgup_and_pgdn_and_ticks_survive_them() {
+        let mut f = Form::new(FormKind::Patch("v13".into()), vec![], "main");
+        answer(&mut f, changes(), true);
+        key(&mut f, KeyCode::Tab); // to the list
+        key(&mut f, KeyCode::Char(' ')); // 91001, on page 1
+        key(&mut f, KeyCode::PageUp);
+        assert_eq!(
+            f.take_search(Instant::now()),
+            None,
+            "no page before the first"
+        );
+        key(&mut f, KeyCode::PageDown);
+        let next = vec![Change {
+            number: 92000,
+            subject: "Later".into(),
+            owner: "Dee".into(),
+            scores: String::new(),
+        }];
+        assert_eq!(answer(&mut f, next, false), (String::new(), 1));
+        key(&mut f, KeyCode::PageDown);
+        assert_eq!(
+            f.take_search(Instant::now()),
+            None,
+            "no page after the last"
+        );
+        key(&mut f, KeyCode::Char(' ')); // 92000, on page 2
+        assert_eq!(
+            args(key(&mut f, KeyCode::Enter)),
+            "patch --site v13 91001 92000"
         );
     }
 
     #[test]
-    fn with_nothing_ticked_the_selected_change_is_applied_and_the_filter_finds_it() {
+    fn arrows_turn_pages_too_and_a_click_ticks() {
+        let mut f = Form::new(FormKind::Patch("v13".into()), vec![], "main");
+        answer(&mut f, changes(), true);
+        key(&mut f, KeyCode::Right);
+        assert_eq!(
+            f.take_search(Instant::now()),
+            None,
+            "→ in the search box is no page turn"
+        );
+        key(&mut f, KeyCode::Tab);
+        key(&mut f, KeyCode::Right);
+        assert_eq!(f.take_search(Instant::now()), Some((String::new(), 1)));
+        f.set_changes("", 1, changes(), false);
+        f.turn_page(-1);
+        assert_eq!(f.take_search(Instant::now()), Some((String::new(), 0)));
+        f.set_changes("", 0, changes(), true);
+        f.click_change(2);
+        f.click_change(0);
+        f.click_change(0); // twice: off again
+        assert_eq!(args(key(&mut f, KeyCode::Enter)), "patch --site v13 91003");
+    }
+
+    #[test]
+    fn the_search_box_takes_a_space_so_terms_combine() {
         let mut f = Form::new(FormKind::Patch("main".into()), vec![], "main");
-        f.set_changes(changes());
-        typing(&mut f, "login");
-        assert_eq!(args(key(&mut f, KeyCode::Enter)), "patch --site main 91003");
+        answer(&mut f, changes(), false);
+        typing(&mut f, "owner:jo -is:wip");
+        assert_eq!(
+            f.take_search(Instant::now() + SEARCH_PAUSE),
+            Some(("owner:jo -is:wip".into(), 0))
+        );
+        assert!(!f.in_change_list());
+    }
+
+    #[test]
+    fn tab_and_arrows_move_between_search_and_list_and_a_letter_goes_back() {
+        let mut f = Form::new(FormKind::Patch("main".into()), vec![], "main");
+        answer(&mut f, changes(), false);
+        key(&mut f, KeyCode::Tab);
+        assert!(f.in_change_list());
+        key(&mut f, KeyCode::Char(' '));
+        key(&mut f, KeyCode::Up); // on the first row: back to the search
+        assert!(!f.in_change_list());
+        key(&mut f, KeyCode::Down);
+        assert!(f.in_change_list());
+        key(&mut f, KeyCode::Char('c')); // a letter types into the search again
+        assert!(!f.in_change_list());
+        assert_eq!(
+            f.take_search(Instant::now() + SEARCH_PAUSE),
+            Some(("c".into(), 0))
+        );
+        f.set_changes("c", 0, changes(), false);
+        key(&mut f, KeyCode::BackTab);
+        assert!(f.in_change_list());
+        // The tick from before the search is kept.
+        assert_eq!(args(key(&mut f, KeyCode::Enter)), "patch --site main 91001");
+    }
+
+    #[test]
+    fn gerrit_failing_says_why_instead_of_hanging() {
+        let mut f = Form::new(FormKind::Patch("main".into()), vec![], "main");
+        let (search, page) = f.take_search(Instant::now()).unwrap();
+        f.changes_failed(&search, page, "Gerrit could not be reached".into());
+        assert_eq!(f.error.as_deref(), Some("Gerrit could not be reached"));
+        assert!(f.fields[0].visible_changes().is_empty());
     }
 
     #[test]

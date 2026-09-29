@@ -9,7 +9,7 @@ pre_install_actions:
     # reads the Core checkout there (status, completion, the terminal UI), so a
     # host git is a hard requirement. The work itself runs in the web container.
     if ! command -v git >/dev/null 2>&1; then
-      echo "tryout needs 'git' on the host (Windows: install Git for Windows)."
+      echo "tryout needs 'git' on the host."
       exit 1
     fi
 
@@ -49,7 +49,14 @@ post_install_actions:
     #ddev-description:Make the tryout commands executable
     chmod +x tryout/tryout tryout/tryout-php-fpm.sh \
       commands/host/tryout commands/host/autocomplete/tryout
-    for b in tryout/bin/tryout-*; do [ -f "$b" ] && chmod +x "$b"; done
+    # Each binary onto a file of its own. `ddev add-on get` overwrites an existing
+    # one in place, and macOS remembers the code signature per file: a binary
+    # changed under it is killed on its next start ("signal: killed"). A copy
+    # moved over the old name is a new file, which macOS checks afresh.
+    for b in tryout/bin/tryout-*; do
+      [ -f "$b" ] || continue
+      cp "$b" "$b.tryout-new" && mv -f "$b.tryout-new" "$b" && chmod +x "$b"
+    done
 
   - |
     #ddev-description:Check there is a tryout build for this machine

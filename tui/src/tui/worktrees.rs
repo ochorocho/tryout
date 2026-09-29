@@ -99,8 +99,9 @@ pub fn load_branches(root: &Path) -> Result<Vec<String>> {
     Ok(ctx.local_core_branches())
 }
 
-/// The open Gerrit changes for a site's branch. Asks Gerrit, so off-thread.
-pub fn load_patches(root: &Path, name: &str) -> Result<Vec<crate::tui::forms::Change>> {
+/// One page of the open Gerrit changes on a site's branch that match `search`.
+/// Asks Gerrit, so off-thread.
+pub fn load_patches(root: &Path, name: &str, search: &str, page: u32) -> Result<PatchPage> {
     let ctx = context(root);
     let target = site::for_name(&ctx, name);
     let branch = if !target.is_empty() && !site::is_primary(&target) {
@@ -108,11 +109,12 @@ pub fn load_patches(root: &Path, name: &str) -> Result<Vec<crate::tui::forms::Ch
     } else {
         ctx.branch().to_string()
     };
-    let changes = gerrit::list_open(&branch, 50)
-        .ok()
-        .filter(|c| !c.is_empty())
-        .context("Gerrit could not be reached, or there are no open changes")?;
-    Ok(changes
+    let found = gerrit::search_open(&branch, search, page).map_err(|e| match e {
+        gerrit::Error::Fetch => anyhow::anyhow!("Gerrit could not be reached"),
+        gerrit::Error::Parse => anyhow::anyhow!("Gerrit's answer was not understood"),
+    })?;
+    let changes = found
+        .changes
         .into_iter()
         .map(|c| crate::tui::forms::Change {
             number: c.number,
@@ -120,8 +122,12 @@ pub fn load_patches(root: &Path, name: &str) -> Result<Vec<crate::tui::forms::Ch
             owner: c.owner,
             scores: c.scores,
         })
-        .collect())
+        .collect();
+    Ok((changes, found.more))
 }
+
+/// A page of open changes, and whether Gerrit has another.
+pub type PatchPage = (Vec<crate::tui::forms::Change>, bool);
 
 /// Drop CSI escape sequences: ddev colours its messages even when piped.
 pub fn strip_ansi(s: &str) -> String {

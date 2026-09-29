@@ -183,10 +183,90 @@ fn draw_password(f: &mut Frame, app: &App, screen: Rect) {
 /// How many options a pick list shows at once.
 const PICK_ROWS: usize = 8;
 
-fn draw_form(f: &mut Frame, app: &App, screen: Rect) {
+/// A form's width: the patch form takes room for votes, subject and owner.
+fn form_width(form: &crate::tui::forms::Form, screen: Rect) -> u16 {
+    let want = if form.kind.wants_patches().is_some() {
+        110
+    } else {
+        64
+    };
+    want.min(screen.width)
+}
+
+/// One open change: tick, number, votes (Code-Review, Verified), subject, owner.
+fn change_row(
+    c: &crate::tui::forms::Change,
+    ticked: bool,
+    on: bool,
+    width: usize,
+) -> Line<'static> {
+    const OWNER: usize = 20;
+    let base = if on { theme::selected() } else { theme::text() };
+    let vote = |label: &str| -> Span<'static> {
+        let v = c
+            .scores
+            .split_whitespace()
+            .find_map(|s| s.strip_prefix(label))
+            .unwrap_or("");
+        let colour = match v {
+            "+2" | "+1" => theme::PRIMARY,
+            "-2" | "-1" => theme::ERROR,
+            _ => theme::MUTED,
+        };
+        // No vote yet is a dot, not a blank that reads like a missing column.
+        let text = format!("{label}{}", if v.is_empty() { " ·" } else { v });
+        Span::styled(
+            format!("{text:<5}"),
+            if on { base } else { Style::new().fg(colour) },
+        )
+    };
+    let tick = if ticked { "[x]" } else { "[ ]" };
+    // Indent, tick, number and the two votes take 29 columns; the owner 20 more.
+    let room = width.saturating_sub(4 + 29 + OWNER + 2);
+    Line::from(vec![
+        Span::styled(format!("   {tick} {:<7}", c.number), base),
+        vote("CR"),
+        Span::styled(" ", base),
+        vote("V"),
+        Span::styled("  ", base),
+        Span::styled(format!("{:<room$}", truncate(&c.subject, room)), base),
+        Span::styled(
+            format!("  {:<OWNER$}", truncate(&c.owner, OWNER)),
+            if on { base } else { theme::dim() },
+        ),
+    ])
+}
+
+/// What a line of a form is, for a click on it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FormLine {
+    Other,
+    /// The `i`th change shown.
+    Change(usize),
+    /// The page bar: the columns (from the form's inner left edge) of its
+    /// buttons, when they can be pressed.
+    Pages {
+        prev: Option<(u16, u16)>,
+        next: Option<(u16, u16)>,
+    },
+}
+
+/// Where a click on a form landed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormHit {
+    Change(usize),
+    PrevPage,
+    NextPage,
+}
+
+/// A form's lines, and what each one is. Drawing and clicks both come from here.
+fn form_lines<'a>(
+    form: &'a crate::tui::forms::Form,
+    screen: Rect,
+) -> (Vec<Line<'a>>, Vec<FormLine>) {
     use crate::tui::forms::Field;
-    let Some(form) = &app.form else { return };
     let mut lines: Vec<Line> = Vec::new();
+    let mut roles: Vec<FormLine> = Vec::new();
     if form.is_confirmation() {
         for l in &form.confirm {
             lines.push(Line::styled(format!(" {l}"), theme::text()));
@@ -267,41 +347,94 @@ fn draw_form(f: &mut Frame, app: &App, screen: Rect) {
                 filter,
                 selected,
                 chosen,
+                page,
+                more,
+                pending,
+                in_list,
+                ..
             } => {
-                let head = match (filter.is_empty(), chosen.len()) {
-                    (true, 0) => format!(" {label}"),
-                    (true, n) => format!(" {label}  ({n} ticked)"),
-                    (false, n) => format!(" {label}  (filter: {filter}, {n} ticked)"),
-                };
-                lines.push(Line::styled(head, label_style));
+                let mut head = vec![Span::styled(format!(" {label}"), label_style)];
+                if !chosen.is_empty() {
+                    head.push(Span::styled(
+                        format!("  {} ticked", chosen.len()),
+                        theme::dim(),
+                    ));
+                }
+                lines.push(Line::from(head));
+                // The search box: what is typed goes to Gerrit.
+                lines.push(Line::from(vec![
+                    Span::styled("   search ", theme::dim()),
+                    Span::styled(filter.clone(), theme::text()),
+                    Span::styled(
+                        if focused && !*in_list { "▏" } else { "" },
+                        Style::new().fg(theme::ACCENT),
+                    ),
+                ]));
+                let width = form_width(form, screen) as usize;
                 match options {
                     None => lines.push(Line::styled("   asking Gerrit…", theme::dim())),
                     Some(_) => {
                         let visible = field.visible_changes();
                         if visible.is_empty() {
-                            lines.push(Line::styled("   nothing matches", theme::dim()));
+                            lines.push(Line::styled("   no open change matches", theme::dim()));
                         }
-                        let first = (*selected + 1).saturating_sub(PICK_ROWS);
-                        let room = (screen.width.min(64) as usize).saturating_sub(16);
-                        for (j, c) in visible.iter().enumerate().skip(first).take(PICK_ROWS) {
-                            let on = j == *selected;
-                            let tick = if chosen.contains(&c.number) {
-                                "[x]"
-                            } else {
-                                "[ ]"
-                            };
-                            let style = match (on, focused) {
-                                (true, true) => theme::selected(),
-                                (true, false) => theme::text().bold(),
-                                _ => theme::text(),
-                            };
-                            lines.push(Line::styled(
-                                format!("   {tick} {:<6} {}", c.number, truncate(&c.subject, room)),
-                                style,
-                            ));
+                        // A whole page at once where the screen allows (25 rows),
+                        // scrolling only on a terminal too short for it.
+                        let fit = change_rows(screen, form.error.is_some());
+                        let first = (*selected + 1).saturating_sub(fit);
+                        for (j, c) in visible.iter().enumerate().skip(first).take(fit) {
+                            let on = j == *selected && focused && *in_list;
+                            while roles.len() < lines.len() {
+                                roles.push(FormLine::Other);
+                            }
+                            roles.push(FormLine::Change(j));
+                            lines.push(change_row(c, chosen.contains(&c.number), on, width));
                         }
                     }
                 }
+                // The page bar: previous and next as buttons, where the page is.
+                let shown = options.as_ref().map_or(0, Vec::len) as u32;
+                let from = page * crate::core::gerrit::PAGE_SIZE + 1;
+                let (can_prev, can_next) =
+                    (*page > 0 && pending.is_none(), *more && pending.is_none());
+                let button = |label: &'static str, on: bool| {
+                    Span::styled(
+                        label,
+                        if on {
+                            Style::new().fg(theme::ACCENT).bold()
+                        } else {
+                            theme::dim()
+                        },
+                    )
+                };
+                let prev_label = "‹ previous";
+                let where_ = if shown == 0 {
+                    format!("page {}", page + 1)
+                } else {
+                    format!("page {} · {}–{}", page + 1, from, from + shown - 1)
+                };
+                let middle = format!("   {where_}   ");
+                let prev_at = 3u16;
+                let next_at =
+                    prev_at + prev_label.chars().count() as u16 + middle.chars().count() as u16;
+                let mut spans = vec![
+                    Span::styled("   ", theme::dim()),
+                    button(prev_label, can_prev),
+                    Span::styled(middle, theme::text()),
+                    button("next ›", can_next),
+                ];
+                if pending.is_some() {
+                    spans.push(Span::styled("   searching…", theme::dim()));
+                }
+                while roles.len() < lines.len() {
+                    roles.push(FormLine::Other);
+                }
+                roles.push(FormLine::Pages {
+                    prev: can_prev
+                        .then_some((prev_at, prev_at + prev_label.chars().count() as u16)),
+                    next: can_next.then_some((next_at, next_at + 6)),
+                });
+                lines.push(Line::from(spans));
             }
         }
         lines.push(Line::default());
@@ -312,14 +445,64 @@ fn draw_form(f: &mut Frame, app: &App, screen: Rect) {
             Style::new().fg(theme::ERROR).bold(),
         ));
     }
-    let w = 64.min(screen.width);
-    let h = (lines.len() as u16 + 2).min(screen.height);
-    let area = Rect::new(
+    while roles.len() < lines.len() {
+        roles.push(FormLine::Other);
+    }
+    (lines, roles)
+}
+
+/// Where a form with `lines` lines sits on the screen.
+fn form_area(form: &crate::tui::forms::Form, screen: Rect, lines: usize) -> Rect {
+    let w = form_width(form, screen);
+    let h = (lines as u16 + 2).min(screen.height);
+    Rect::new(
         screen.x + (screen.width - w) / 2,
         screen.y + (screen.height.saturating_sub(h)) / 3,
         w,
         h,
-    );
+    )
+}
+
+/// How many changes the patch form can show without scrolling: a whole page,
+/// unless the terminal is too short — then what fits beside the form's other
+/// lines (title, search, page bar, borders and air).
+fn change_rows(screen: Rect, error: bool) -> usize {
+    let other = 7 + usize::from(error);
+    (screen.height as usize)
+        .saturating_sub(other)
+        .clamp(3, crate::core::gerrit::PAGE_SIZE as usize)
+}
+
+/// What a click at (col, row) hits in the open form, if anything.
+pub fn form_hit(screen: Rect, app: &App, col: u16, row: u16) -> Option<FormHit> {
+    let form = app.form.as_ref()?;
+    let (lines, roles) = form_lines(form, screen);
+    let area = form_area(form, screen, lines.len());
+    let inner = Block::bordered().inner(area);
+    if !inner.contains(ratatui::layout::Position::new(col, row)) {
+        return None;
+    }
+    let x = col - inner.x;
+    match roles.get((row - inner.y) as usize)? {
+        FormLine::Change(i) => Some(FormHit::Change(*i)),
+        FormLine::Pages { prev, next } => {
+            let within = |r: &Option<(u16, u16)>| r.is_some_and(|(a, b)| x >= a && x < b);
+            if within(prev) {
+                Some(FormHit::PrevPage)
+            } else if within(next) {
+                Some(FormHit::NextPage)
+            } else {
+                None
+            }
+        }
+        FormLine::Other => None,
+    }
+}
+
+fn draw_form(f: &mut Frame, app: &App, screen: Rect) {
+    let Some(form) = &app.form else { return };
+    let (lines, _) = form_lines(form, screen);
+    let area = form_area(form, screen, lines.len());
     let border = if form.is_confirmation() {
         Style::new().fg(theme::ERROR)
     } else {
@@ -1268,6 +1451,33 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let hints: &[(&str, &str)] = match (app.menu.is_some(), app.focus) {
         _ if app.password.is_some() => &[("⏎", "send"), ("esc", "cancel the command")],
         _ if app.rename.is_some() => &[("⏎", "keep"), ("esc", "cancel")],
+        _ if app
+            .form
+            .as_ref()
+            .is_some_and(|f| f.kind.wants_patches().is_some() && f.in_change_list()) =>
+        {
+            &[
+                ("↑↓", "choose"),
+                ("space", "tick"),
+                ("←→", "pages"),
+                ("tab", "search"),
+                ("⏎", "apply"),
+                ("esc", "cancel"),
+            ]
+        }
+        _ if app
+            .form
+            .as_ref()
+            .is_some_and(|f| f.kind.wants_patches().is_some()) =>
+        {
+            &[
+                ("type", "search Gerrit"),
+                ("↓ tab", "to the list"),
+                ("PgUp PgDn", "pages"),
+                ("⏎", "apply"),
+                ("esc", "cancel"),
+            ]
+        }
         _ if app.form.as_ref().is_some_and(|f| !f.is_confirmation()) => &[
             ("tab", "next field"),
             ("↑↓", "choose"),
@@ -1410,6 +1620,136 @@ mod tests {
             text.contains("2 patches on top of 13.4: #91234 and 1 more"),
             "the details"
         );
+    }
+
+    #[test]
+    fn the_patch_form_shows_votes_owner_and_where_in_the_pages() {
+        let mut a = loaded();
+        a.open_form(crate::tui::forms::FormKind::Patch("v13".into()));
+        a.tick();
+        let c = |n, subject: &str, owner: &str, scores: &str| crate::tui::forms::Change {
+            number: n,
+            subject: subject.into(),
+            owner: owner.into(),
+            scores: scores.into(),
+        };
+        a.set_patches(
+            "",
+            0,
+            Ok((
+                vec![
+                    c(
+                        91234,
+                        "[BUGFIX] Keep the page tree open after a move",
+                        "Ada Lovelace",
+                        "CR+2 V+1",
+                    ),
+                    c(
+                        91000,
+                        "WIP [FEATURE] A new cache backend",
+                        "Frédéric",
+                        "CR-1 V-1",
+                    ),
+                    c(90001, "[TASK] Raise phpstan", "?", ""),
+                ],
+                true,
+            )),
+        );
+        insta::assert_snapshot!(render(&a, 120, 30).backend());
+    }
+
+    /// The patch form on page 2 of a search, with a whole page of 25 changes.
+    fn full_page(screen_h: u16) -> (App, Rect) {
+        let mut a = loaded();
+        a.open_form(crate::tui::forms::FormKind::Patch("v13".into()));
+        a.tick();
+        a.set_patches("", 0, Ok((Vec::new(), true)));
+        if let Some(f) = a.form.as_mut() {
+            f.turn_page(1);
+        }
+        a.tick();
+        let page: Vec<_> = (0..25)
+            .map(|i| crate::tui::forms::Change {
+                number: 91000 + i,
+                subject: format!("[TASK] Change number {i}"),
+                owner: "Ada".into(),
+                scores: if i % 2 == 0 {
+                    "CR+1".into()
+                } else {
+                    String::new()
+                },
+            })
+            .collect();
+        a.set_patches("", 1, Ok((page, true)));
+        (a, Rect::new(0, 0, 120, screen_h))
+    }
+
+    #[test]
+    fn a_whole_page_of_changes_fits_and_the_page_bar_is_clickable() {
+        let (a, screen) = full_page(40);
+        let t = render(&a, screen.width, screen.height);
+        let text: String = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        for i in 0..25 {
+            assert!(
+                text.contains(&format!("{}", 91000 + i)),
+                "change {i} is on screen"
+            );
+        }
+        assert!(text.contains("page 2 · 26–50"));
+        insta::assert_snapshot!(t.backend());
+
+        // Find the page bar and a change row on screen, then click them.
+        let row_of = |needle: &str| {
+            (0..screen.height)
+                .find(|&y| {
+                    let line: String = (0..screen.width)
+                        .map(|x| t.backend().buffer()[(x, y)].symbol().to_string())
+                        .collect();
+                    line.contains(needle)
+                })
+                .unwrap()
+        };
+        let col_of = |y: u16, needle: &str| {
+            let line: String = (0..screen.width)
+                .map(|x| t.backend().buffer()[(x, y)].symbol().to_string())
+                .collect();
+            line[..line.find(needle).unwrap()].chars().count() as u16
+        };
+        let bar = row_of("‹ previous");
+        assert_eq!(
+            form_hit(screen, &a, col_of(bar, "‹ previous") + 2, bar),
+            Some(FormHit::PrevPage)
+        );
+        assert_eq!(
+            form_hit(screen, &a, col_of(bar, "next ›") + 1, bar),
+            Some(FormHit::NextPage)
+        );
+        assert_eq!(form_hit(screen, &a, col_of(bar, "page 2"), bar), None);
+        let fifth = row_of("91004");
+        assert_eq!(form_hit(screen, &a, 20, fifth), Some(FormHit::Change(4)));
+    }
+
+    #[test]
+    fn a_short_terminal_scrolls_the_page_instead_of_cutting_it() {
+        let (mut a, screen) = full_page(20);
+        let f = a.form.as_mut().unwrap();
+        f.move_selection(24);
+        let t = render(&a, screen.width, screen.height);
+        let text: String = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("91024"), "the selection is kept in view");
+        assert!(text.contains("next ›"), "the page bar stays");
     }
 
     #[test]

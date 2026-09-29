@@ -37,26 +37,47 @@ pub fn validate_name(name: &str) -> Result<(), Vec<String>> {
     Ok(())
 }
 
-/// For a detached HEAD, the branch it was based on: the newest release branch on
-/// origin containing it, else main.
+/// For a detached HEAD, the branch it was based on: the newest release branch
+/// on origin containing it, else main. Applied patches sit on top of that base
+/// and are on no branch, so it walks back from HEAD to the first commit a branch
+/// contains — the base is where the patches start.
 pub fn detect_detached_base_branch(dir: &Path) -> String {
-    let refs: Vec<String> = git::lines(
-        dir,
-        &[
-            "for-each-ref",
-            "--format=%(refname:short)",
-            "--contains",
-            "HEAD",
-            "refs/remotes/origin",
-        ],
-    )
-    .into_iter()
-    .map(|r| r.strip_prefix("origin/").map(String::from).unwrap_or(r))
-    .collect();
-    let mut releases: Vec<String> = refs.iter().filter(|r| is_release(r)).cloned().collect();
-    vsort::sort(&mut releases);
-    releases.pop().unwrap_or_else(|| "main".into())
+    for k in 0..=MAX_PATCHES_ON_TOP {
+        let rev = if k == 0 {
+            "HEAD".to_string()
+        } else {
+            format!("HEAD~{k}")
+        };
+        if !git::ok(dir, &["rev-parse", "--verify", "--quiet", &rev]) {
+            break;
+        }
+        let refs: Vec<String> = git::lines(
+            dir,
+            &[
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "--contains",
+                &rev,
+                "refs/remotes/origin",
+            ],
+        )
+        .into_iter()
+        .map(|r| r.strip_prefix("origin/").map(String::from).unwrap_or(r))
+        .filter(|r| r == "main" || is_release(r))
+        .collect();
+        if refs.is_empty() {
+            continue;
+        }
+        let mut releases: Vec<String> = refs.iter().filter(|r| is_release(r)).cloned().collect();
+        vsort::sort(&mut releases);
+        return releases.pop().unwrap_or_else(|| "main".into());
+    }
+    "main".into()
 }
+
+/// How far back the base is looked for: more patches than this on one checkout
+/// is not a tryout worktree any more.
+const MAX_PATCHES_ON_TOP: usize = 30;
 
 /// `[0-9]+\.[0-9]+`
 pub fn is_release(b: &str) -> bool {
@@ -163,6 +184,31 @@ mod tests {
         assert_eq!(detect_detached_base_branch(d.path()), "main");
         let none = tempfile::tempdir().unwrap();
         assert_eq!(detect_detached_base_branch(none.path()), "main");
+    }
+
+    #[test]
+    fn patches_on_a_detached_release_checkout_keep_its_base() {
+        let d = core_repo();
+        let g = |a: &[&str]| {
+            let ok = Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
+                .arg(d.path())
+                .args(a)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "{a:?}");
+        };
+        // 13.4 moves on past main, a checkout sits detached on it, and two
+        // patches go on top — commits no branch contains.
+        g(&["commit", "-q", "--allow-empty", "-m", "13.4 only"]);
+        g(&["update-ref", "refs/remotes/origin/13.4", "HEAD"]);
+        g(&["checkout", "-q", "--detach", "origin/13.4"]);
+        g(&["commit", "-q", "--allow-empty", "-m", "patch one"]);
+        g(&["commit", "-q", "--allow-empty", "-m", "patch two"]);
+        assert_eq!(detect_detached_base_branch(d.path()), "13.4");
+        assert_eq!(base_info(d.path(), "(detached)"), ("13.4".to_string(), 2));
     }
 
     #[test]

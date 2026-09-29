@@ -164,6 +164,26 @@ fake_install() {
   assert_line --partial "__fpm 8.2"
 }
 
+@test "install puts every binary on a fresh file, so macOS does not kill it" {
+  # `ddev add-on get` overwrites a binary in place; macOS caches the code
+  # signature per file and kills a binary changed under it ("signal: killed").
+  set -eu -o pipefail
+  local action
+  action="$(sed -n '/#ddev-description:Make the tryout commands executable/,/^  - |/p' "${DIR}/install.yaml" \
+    | sed '$d' | sed 's/^    //')"
+  fake_install
+  cd "${FAKEROOT}/.ddev"
+  local before after
+  before="$(ls -i tryout/bin/tryout-linux-x86_64 | awk '{print $1}')"
+  run bash -c "${action}"
+  assert_success
+  after="$(ls -i tryout/bin/tryout-linux-x86_64 | awk '{print $1}')"
+  [ "${before}" != "${after}" ] || fail "the binary kept its inode"
+  assert_file_executable tryout/bin/tryout-linux-x86_64
+  run bash -c 'ls tryout/bin | grep -c tryout-new'
+  assert_output "0"
+}
+
 @test "install moves FPM daemons from the old script to the binary" {
   set -eu -o pipefail
   local action

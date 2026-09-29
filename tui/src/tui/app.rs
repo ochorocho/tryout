@@ -44,7 +44,8 @@ pub enum Effect {
     /// A form needs the branch list; the event loop fetches it off-thread.
     LoadBranches,
     /// A form needs the open Gerrit changes for this worktree's branch.
-    LoadPatches(String),
+    /// A page of open changes for a site: (site, search, page).
+    LoadPatches(String, String, u32),
 }
 
 /// The command menu for one worktree.
@@ -636,6 +637,18 @@ impl App {
         for job in self.jobs.tick(&self.root.clone()) {
             reload |= self.job_finished(&job);
         }
+        // A step that changes the list is shown as soon as it is done — a patch
+        // is applied long before the rebuild after it ends the job.
+        reload |= self.jobs.take_progress();
+        // The patch form's search, once typing has paused (or a page was asked).
+        if let Some(form) = self.form.as_mut()
+            && let crate::tui::forms::FormKind::Patch(site) = &form.kind
+        {
+            let site = site.clone();
+            if !reload && let Some((search, page)) = form.take_search(std::time::Instant::now()) {
+                return Effect::LoadPatches(site, search, page);
+            }
+        }
         // A success has made its point after a few seconds; the one whose log
         // is open stays until it is closed.
         self.jobs
@@ -901,6 +914,19 @@ impl App {
             || self.password.is_some()
     }
 
+    /// A click in the open form.
+    pub fn form_click(&mut self, hit: crate::tui::ui::FormHit) {
+        use crate::tui::ui::FormHit;
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        match hit {
+            FormHit::Change(i) => form.click_change(i),
+            FormHit::PrevPage => form.turn_page(-1),
+            FormHit::NextPage => form.turn_page(1),
+        }
+    }
+
     /// Typing into the password popup. Enter sends it to the job, Esc (or
     /// Ctrl-C) declines; either way what was typed is gone.
     fn password_key(&mut self, key: KeyEvent) {
@@ -947,29 +973,33 @@ impl App {
             _ => base(self.selected().map(|w| w.name.as_str())),
         };
         let wants = kind.wants_branches();
-        let patches = kind.wants_patches().map(String::from);
         let mut form = Form::new(kind, taken, &default);
         self.menu = None;
         if wants && let Some(b) = &self.branches {
             form.set_branches(b);
         }
         self.form = Some(form);
-        if let Some(site) = patches {
-            // Always fresh: the open changes move by the minute.
-            Effect::LoadPatches(site)
-        } else if wants && self.branches.is_none() {
+        // The patch form asks Gerrit itself, through `tick`: its first page is
+        // due at once, and every search or page after it the same way.
+        if wants && self.branches.is_none() {
             Effect::LoadBranches
         } else {
             Effect::None
         }
     }
 
-    /// The open changes arrived (or Gerrit could not be asked).
-    pub fn set_patches(&mut self, result: anyhow::Result<Vec<crate::tui::forms::Change>>) {
+    /// A page of open changes arrived (or Gerrit could not be asked) for the
+    /// search and page given; the form keeps only the answer it awaits.
+    pub fn set_patches(
+        &mut self,
+        search: &str,
+        page: u32,
+        result: anyhow::Result<crate::tui::worktrees::PatchPage>,
+    ) {
         let Some(f) = self.form.as_mut() else { return };
         match result {
-            Ok(c) => f.set_changes(c),
-            Err(e) => f.error = Some(format!("no open changes: {e:#}")),
+            Ok((changes, more)) => f.set_changes(search, page, changes, more),
+            Err(e) => f.changes_failed(search, page, format!("{e:#}")),
         }
     }
 
@@ -1250,6 +1280,26 @@ pub mod tests {
         let mut a = App::new(PathBuf::from("/p/demo"));
         a.set_worktrees(Ok(fixture()));
         a
+    }
+
+    #[test]
+    fn the_patch_form_asks_gerrit_through_tick_and_takes_the_answer() {
+        let mut a = app();
+        a.open_form(crate::tui::forms::FormKind::Patch("v13".into()));
+        assert_eq!(
+            a.tick(),
+            Effect::LoadPatches("v13".into(), String::new(), 0)
+        );
+        assert_eq!(a.tick(), Effect::None, "asked once");
+        let change = crate::tui::forms::Change {
+            number: 91234,
+            subject: "Fix".into(),
+            owner: "Ada".into(),
+            scores: "CR+2 V+1".into(),
+        };
+        a.set_patches("", 0, Ok((vec![change], true)));
+        let f = a.form.as_ref().unwrap();
+        assert_eq!(f.fields[0].visible_changes()[0].number, 91234);
     }
 
     #[test]
@@ -1954,6 +2004,38 @@ pub mod tests {
             .enqueue(&job_action("worktree serve v13", false), false);
         assert_eq!(run_to_end(&mut a), Effect::Reload);
         assert_eq!(a.listing, Listing::Loading);
+    }
+
+    #[test]
+    fn a_patch_shows_in_the_list_as_soon_as_it_is_applied_not_after_the_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("patching");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho '@@tryout {\"level\":\"success\",\"msg\":\"Applied change 91234\"}'\n\
+             echo '@@tryout {\"level\":\"info\",\"msg\":\"Running composer install...\"}'\nsleep 2\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut a = app();
+        a.root = dir.path().to_path_buf();
+        a.jobs = Jobs::new(script);
+        let id = a
+            .jobs
+            .enqueue(&job_action("patch --site v13 91234", false), false);
+        let t = std::time::Instant::now();
+        loop {
+            assert!(t.elapsed().as_secs() < 5, "never reloaded while running");
+            if a.tick() == Effect::Reload {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            matches!(a.jobs.get(id).unwrap().state, JobState::Running { .. }),
+            "reloaded before the job ended"
+        );
     }
 
     #[test]

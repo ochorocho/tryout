@@ -37,7 +37,8 @@ const AGENT_POLL: Duration = Duration::from_secs(1);
 /// The branch list, as the loader delivers it.
 type Branches = Result<Vec<String>>;
 /// The open Gerrit changes, as the loader delivers them.
-type Patches = Result<Vec<crate::tui::forms::Change>>;
+/// A page of open changes, with the search and page it answers.
+type Patches = (String, u32, Result<worktrees::PatchPage>);
 
 /// Which tabs run an agent: tab id → agent name.
 type AgentKinds = HashMap<u64, &'static str>;
@@ -286,8 +287,8 @@ impl Server {
             self.app.set_worktrees(result);
             self.redraw = true;
         }
-        if let Ok(result) = self.patches.1.try_recv() {
-            self.app.set_patches(result);
+        while let Ok((search, page, result)) = self.patches.1.try_recv() {
+            self.app.set_patches(&search, page, result);
             self.redraw = true;
         }
         if let Ok(result) = self.branches.1.try_recv() {
@@ -328,9 +329,15 @@ impl Server {
         if self.app.jobs.list().len() != jobs_before {
             self.redraw = true;
         }
-        if effect == Effect::Reload {
-            self.load();
-            self.redraw = true;
+        match effect {
+            Effect::Reload => {
+                self.load();
+                self.redraw = true;
+            }
+            Effect::None => {}
+            other => {
+                self.apply(other);
+            }
         }
     }
 
@@ -360,10 +367,12 @@ impl Server {
                 let inner = ui::areas(screen, self.app.sidebar_width).pane_inner;
                 open_tab(&mut self.app, &name, inner)
             }
-            Effect::LoadPatches(site) => {
+            Effect::LoadPatches(site, search, page) => {
                 let (root, tx) = (self.app.root.clone(), self.patches.0.clone());
+                self.redraw = true;
                 thread::spawn(move || {
-                    let _ = tx.send(worktrees::load_patches(&root, &site));
+                    let result = worktrees::load_patches(&root, &site, &search, page);
+                    let _ = tx.send((search, page, result));
                 });
             }
             Effect::LoadBranches => {
@@ -414,6 +423,19 @@ impl Server {
             Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
                 self.redraw = true;
                 let (col, row) = (m.column, m.row);
+                // A popup that waits for keys (password, tab name, close the
+                // session?) takes no clicks, and lets none through behind it.
+                if app.password.is_some() || app.rename.is_some() || app.confirm_close {
+                    return Next::Go;
+                }
+                // An open form takes the click: a change ticks, the page bar pages;
+                // nothing behind it is clicked through.
+                if app.form.is_some() {
+                    if let Some(hit) = ui::form_hit(screen, app, col, row) {
+                        app.form_click(hit);
+                    }
+                    return Next::Go;
+                }
                 // The divider first: grabbing it must not select what is beside it.
                 if app.menu.is_none() && app.form.is_none() && ui::divider_at(screen, app, col, row)
                 {
@@ -458,6 +480,22 @@ impl Server {
                 } else if ui::in_pane_body(screen, app, col, row) {
                     app.click_pane();
                 }
+            }
+            // The wheel over an open form moves its selection.
+            Event::Mouse(m)
+                if matches!(
+                    m.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) && app.form.is_some() =>
+            {
+                if let Some(form) = app.form.as_mut() {
+                    form.move_selection(if m.kind == MouseEventKind::ScrollUp {
+                        -1
+                    } else {
+                        1
+                    });
+                }
+                self.redraw = true;
             }
             // The wheel over an open log scrolls it, three rows a notch.
             Event::Mouse(m)

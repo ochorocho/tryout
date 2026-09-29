@@ -63,6 +63,9 @@ pub struct Job {
     pub reveal: bool,
     /// A password prompt it is stopped at, answered through the UI.
     pub waiting: Option<String>,
+    /// It reported a step done that changes what the list shows (a patch
+    /// applied, a worktree created) — before the job itself has finished.
+    pub progressed: bool,
 }
 
 impl Job {
@@ -170,6 +173,7 @@ impl Jobs {
             changes_worktrees: action.changes_worktrees(),
             reveal,
             waiting: None,
+            progressed: false,
         });
         self.sort();
         id
@@ -182,6 +186,15 @@ impl Jobs {
             JobState::Done { ok: true, at, .. } => Some(j.id) == keep || at.elapsed() < after,
             _ => true,
         });
+    }
+
+    /// Did a running job finish a step that changes the list since last asked?
+    pub fn take_progress(&mut self) -> bool {
+        let mut any = false;
+        for j in &mut self.list {
+            any |= std::mem::take(&mut j.progressed);
+        }
+        any
     }
 
     /// The newest job that failed, if the newest finished one did.
@@ -219,6 +232,7 @@ impl Jobs {
             changes_worktrees: changes,
             reveal,
             waiting: None,
+            progressed: false,
         });
         self.sort();
         Some(new)
@@ -321,7 +335,12 @@ fn take_line(job: &mut Job, line: String) {
                     job.last_error = Some(msg);
                 }
             }
-            _ => {
+            level => {
+                // A step done, like "Applied change 88948": what the list shows
+                // may already have changed, long before a rebuild ends the job.
+                if level == "success" && job.changes_worktrees {
+                    job.progressed = true;
+                }
                 if let JobState::Running { step, .. } = &mut job.state {
                     *step = Some(msg);
                 }
@@ -729,6 +748,7 @@ fi
             changes_worktrees: false,
             reveal: false,
             waiting: None,
+            progressed: false,
         };
         for i in 0..LOG_LINES + 10 {
             take_line(&mut job, format!("line {i}"));

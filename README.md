@@ -24,11 +24,15 @@ ddev add-on get bmack/tryout
 ddev start
 ```
 
-On the first run this will:
+`ddev add-on get` clones the TYPO3 Core repository into the project root — on
+the host, because DDEV's file sync leaves a root `.git` out — and the first
+`ddev start` then:
 
-1. Clone the TYPO3 Core repository into the project root
-2. Resolve every Core system extension through Composer
-3. Set up a TYPO3 instance, with a rendered frontend
+1. Resolves every Core system extension through Composer
+2. Sets up a TYPO3 instance, with a rendered frontend
+
+If the clone could not run during the install (no network, say), `ddev start`
+clones instead.
 
 Once finished, open the frontend or the backend:
 
@@ -136,7 +140,7 @@ Your `.ddev/config.yaml` stays as it is. Two things change:
   you added your own dependencies to them, in which case keep `composer.json` — it
   is merged into the overlay from now on.
 
-Your the project root checkout, database and patches are untouched.
+Your Core checkout, database and patches are untouched.
 
 ## Commands
 
@@ -171,10 +175,12 @@ ddev tryout cs uninstall        Remove hooks and reset push URL
 Wherever a site is asked for, a worktree's name works too — including the name the
 primary goes by in `worktree list`, so `ddev tryout exec main …` means the primary.
 
-Once you serve more than one site, `patch`, `reset`, `checkout` and `delete` take an
-optional site name and `delete` takes `--all` — see
+Once you serve more than one site, `patch`, `reset`, `checkout`, `download`,
+`launch` and `delete` take an optional site name and `delete` takes `--all` — see
 [Serving several sites at once](#serving-several-sites-at-once). Leave the name off
-and `exec`, `reset` and `delete` ask which site you mean, showing what each one is:
+and `exec`, `patch`, `reset`, `launch` and `delete` ask which site you mean,
+showing what each one is (`patch`, `reset` and `delete` only ask once something
+besides the primary is served):
 
 ```text
 Reset which site?
@@ -183,7 +189,7 @@ Reset which site?
   v12           https://v12.my-typo3-site.ddev.site  PHP 8.2
 ```
 
-`delete` adds an "every site" entry to that list, so wiping everything is a pick
+`delete` adds an `--all` entry to that list, so wiping everything is a pick
 rather than a flag to remember.
 
 The `worktree` subcommands do the same with checkouts — `use`, `serve`, `unserve`,
@@ -268,6 +274,22 @@ Branches come from the refs already in the project root, never from the network,
 list stays current. Everything else is a directory listing or a marker file — a
 <kbd>Tab</kbd> answers in a few tens of milliseconds.
 
+**How it is wired up.** Nothing is generated, so there is nothing to run after an
+install or an update. DDEV completes the command names itself: every script in
+`.ddev/commands/host/` is a `ddev` subcommand, which is how `ddev tryout` gets
+there. Everything after `ddev tryout` comes from
+`.ddev/commands/host/autocomplete/tryout`, which DDEV runs on each <kbd>Tab</kbd>
+and which asks the binary (`tryout __complete`). This also means a stray script
+in `.ddev/commands/host/` shows up as a command until you delete it.
+
+What it does need is DDEV's own shell completion, once per machine; the add-on
+cannot install that for you. Homebrew installs the scripts with DDEV, but Bash
+also needs `brew install bash-completion` and Zsh needs
+`$(brew --prefix)/share/zsh/site-functions` on `FPATH` before `compinit`.
+Elsewhere, `ddev completion <shell>` prints the script. See
+[DDEV's shell completion docs](https://docs.ddev.com/en/stable/users/install/shell-completion/)
+for your shell and platform.
+
 ### Guided commands
 
 Leave an argument out and the command asks for it instead of failing:
@@ -287,15 +309,9 @@ $ ddev tryout exec                    # pick the site, then type the command
 
 `use`, `remove` and `unserve` ask the same way, each offering only
 what makes sense — `unserve` lists served worktrees, `use` leaves out the primary.
-<kbd>Esc</kbd> cancels. In a script or a pipe there is no one to ask, so the
-commands print their usage line and exit 1 exactly as before.
-
-This needs DDEV's own shell completion to be installed — the add-on cannot do that
-for you. Homebrew installs the scripts with DDEV, but Bash also needs
-`brew install bash-completion` and Zsh needs `$(brew --prefix)/share/zsh/site-functions`
-on `FPATH` before `compinit`. See
-[DDEV's shell completion docs](https://docs.ddev.com/en/stable/users/install/shell-completion/)
-for your shell and platform.
+Typing filters a list, <kbd>Esc</kbd> cancels. In a script or a pipe there is no
+one to ask: a line piped to the command is taken as the answer, and with nothing
+to read the command prints its usage line and exits 1.
 
 ## Contributing to TYPO3 Core
 
@@ -357,41 +373,49 @@ fetched, and cherry-picked onto your local Core branch.
 
 ### Browsing what is open
 
-Run it bare and it asks which site to patch first, then shows what is currently up
-for review **on that site's branch** — a 13.4 site is offered 13.4's changes, not
-main's. Pick one or several — space ticks one, Enter applies:
+Run it bare and it asks which site to patch first (once something besides the
+primary is served), then lists the 50 most recent changes up for review **on that
+site's branch** — a 13.4 site is offered 13.4's changes, not main's:
 
 ```bash
 ddev tryout patch
 ```
 
 ```text
-Apply which changes?
-  95347   [TASK] Skip database setup for database-free…   Wouter Wolters    CR+1 V+1
-> 95074   [BUGFIX] Avoid stale deleted state on reproc…   Benni Mack        CR+2 V+2
-  95671   [BUGFIX] Ensure numeric site identifiers sta…   Oli Bartsch       CR+1 V+1
-  94993   [FEATURE] Add table-specific hidden record v…   Matthias Vogel    V-2
-x toggle • ←↓↑→ navigate • enter submit • ctrl+a select all
+? Apply which changes?
+  [ ] 95347   [TASK] Skip database setup for database-free…   Wouter Wolters    CR+1 V+1
+> [x] 95074   [BUGFIX] Avoid stale deleted state on reproc…   Benni Mack        CR+2 V+2
+  [ ] 95671   [BUGFIX] Ensure numeric site identifiers sta…   Oli Bartsch       CR+1 V+1
+  [ ] 94993   [FEATURE] Add table-specific hidden record v…   Matthias Vogel    V-2
+[↑↓ to move, space to select one, → to all, ← to none, type to filter]
 ```
 
 The columns are the change number, its subject, its owner and its review state
 (`CR` is Code-Review, `V` is Verified). Changes still marked work-in-progress are
-prefixed `WIP`. Everything picked is applied in the order shown, with a single
-rebuild at the end, and you are asked once afterwards whether to add them to your
-patch list so they come back on the next `ddev start` — listed by number *and*
-subject, since that is what ends up in a file you keep:
+prefixed `WIP`. Typing filters the list, Enter applies what is ticked. Everything
+picked is applied in the order shown, with a single rebuild at the end, and you
+are asked once afterwards whether to add them to your patch list so they come back
+on the next `ddev start` — listed by number *and* subject, since that is what ends
+up in a file you keep:
 
 ```text
   Add to your patch list, so they reapply on every ddev start:
     95347 - [TASK] Skip database setup for database-free functional tests
     93838 - [FEATURE] Translate forms in the backend
 
-  Add them? [y/N]
+? Add them? (y/N)
 ```
 
 `--all-branches` widens the list beyond the branch in use. The picker needs a
 terminal; without one — in `ddev start`, or any script — a bare `patch` applies
-the configured list exactly as it always did.
+the configured list exactly as it always did, and so does a bare `patch` when a
+list is configured.
+
+For more than the latest 50, use **Apply Gerrit patch…** in
+[the terminal UI](#the-terminal-ui): it searches Gerrit itself (a change number,
+words from the commit message, or Gerrit operators such as `owner:jdoe
+-is:wip`), pages through every open change 25 at a time and keeps what you ticked
+across pages — see [Applying Gerrit changes](#applying-gerrit-changes).
 
 Check what is currently applied:
 
@@ -435,7 +459,7 @@ This single command switches the Core branch, regenerates the Composer overlay,
 and rebuilds everything. Run without arguments to see all available branches.
 
 Different TYPO3 versions ship different sets of system extensions.
-`checkout` handles this automatically: a PHP script scans
+`checkout` handles this automatically: it scans
 `typo3/sysext/*/composer.json` and rewrites the `require`
 section of `composer.tryout.json` to match exactly what exists on disk.
 
@@ -511,6 +535,7 @@ my-typo3-site/
 │   │   ├── VERSION               # Payload version, compared by `ddev tryout status`
 │   │   ├── .state/php-versions   # Left by post-start: the PHPs the web image has
 │   │   ├── gitmessage.txt        # Commit template installed by `ddev tryout cs`
+│   │   ├── tryout-php-fpm.sh     # Kept one release, for daemons declared before the switch
 │   │   └── …                     # Templates copied out on install (see below)
 │   ├── config.yaml               # Yours, from `ddev config` (name, docroot, PHP, DB)
 │   ├── config.tryout.yaml        # Add-on: TYPO3 env vars + the post-start hook
@@ -540,9 +565,10 @@ generates is kept out of `git status` by `.git/info/exclude` — local to the cl
 never committed, so none of it can reach a Gerrit patch. Core's own `.gitignore`
 is never touched; it has carried `/.ddev/*` since 2018 anyway.
 
-Four files in `tryout/` are templates rather than runtime code: `additional.php`,
-`composer.tryout.json`, `gitignore` and `patches.yaml` are copied out to the project
-on install, which is where the entries above them come from.
+Three files in `tryout/` are templates rather than runtime code:
+`additional.php`, `composer.tryout.json` and `patches.yaml` are copied out on
+install — into `TYPO3-Instances/primary/` and `.ddev/config.tryout-patches.yaml` —
+which is where the entries above come from.
 
 Everything the add-on owns carries a `#ddev-generated` marker. DDEV refuses to
 overwrite a file whose marker you removed, and removes only marked files on
@@ -559,8 +585,8 @@ The overlay declares two path repositories:
 ```json
 {
   "repositories": [
-    { "type": "path", "url": "packages/*" },
-    { "type": "path", "url": "typo3/sysext/*", "options": { "symlink": true } }
+    { "type": "path", "url": "../../packages/*" },
+    { "type": "path", "url": "../../typo3/sysext/*", "options": { "symlink": true } }
   ],
   "extra": {
     "merge-plugin": { "include": ["composer.json"] }
@@ -568,7 +594,8 @@ The overlay declares two path repositories:
 }
 ```
 
-Every system extension inside the Core clone is required at `@dev`. Composer
+The overlay sits in `TYPO3-Instances/primary/`, hence the `../../`. Every system
+extension inside the Core clone is required at `@dev`. Composer
 resolves them from the local path and creates symlinks, so any edit inside
 the project root is immediately active — no reinstall needed. The same mechanism
 applies to `packages/*`: local extensions are symlinked into `vendor/` and behave
@@ -578,10 +605,13 @@ as if they were installed from Packagist.
 project had dependencies before you installed tryout they keep resolving. Your file
 is only ever read, never written.
 
-The `require` block of the overlay is generated: `sync-composer.php` scans
-`typo3/sysext/*/composer.json` and rewrites it, which is what keeps the
-sysext list correct across `ddev tryout checkout`. Anything you add to the overlay
-that is not a `typo3/cms-*` or `typo3/theme-*` package is preserved.
+The `require` block of the overlay is generated: `ddev tryout composer` (run by
+`checkout` and on every start) scans `typo3/sysext/*/composer.json` and rewrites
+it, which is what keeps the sysext list correct across `ddev tryout checkout`.
+It requires only what is on disk and drops `composer.lock`, so a sysext Core
+removed really goes. Anything you add to the overlay that is not a `typo3/cms-*`
+or `typo3/theme-*` package is preserved. `worktree use` points the sysext
+repository at a worktree instead — `../../worktrees/<name>/typo3/sysext/*`.
 
 ### DDEV Configuration
 
@@ -658,11 +688,11 @@ no second clone.
 ```bash
 ddev tryout worktree add v13 13.4   # create worktrees/v13 at origin/13.4
 ddev tryout worktree list           # one card each: base, patches, changes, site
-ddev tryout worktree use v13        # make it the active Core, then rebuild (drops vendor/)
+ddev tryout worktree use v13        # serve it at the project URL instead, then rebuild
 ddev tryout worktree serve v13      # give it its own URL, PHP and database
 ddev tryout worktree unserve v13    # drop that site, keep the worktree
 ddev tryout worktree remove v13     # remove the worktree itself
-ddev tryout worktree rename v13 old # rename the checkout, keep the branch
+ddev tryout worktree rename v13 old # rename the checkout and its site
 ddev tryout worktree help           # flags and the full picture
 ```
 
@@ -679,45 +709,48 @@ serve <name> --php <version>` for a site — instead of Composer's resolver trac
 
 `add` takes `--serve` and `--php 8.2` (which implies `--serve`).
 
-> `use`, `remove` and `unserve` take their flag **after** the name —
-> `worktree use v13 --force`, not `worktree use --force v13`.
+> `remove` and `unserve` take their flags **after** the name —
+> `worktree remove v13 --force`, not `worktree remove --force v13`.
 
-The first `worktree add` moves your existing the project root to
-`worktrees/main/` and turns the project root into a symlink pointing at whichever
-checkout is active. Every path keeps working, so nothing else in the project
-changes.
+Nothing moves when you add the first worktree: the project root stays the Core
+clone and owns the git object store, and every worktree is nested inside it.
 
 ```text
-(the project root is the active Core)
-worktrees/main/                      (the clone; owns the git object store)
-worktrees/v13/                       (worktree, branch v13 tracking origin/13.4)
+./                                   (the root checkout; owns the object store)
+worktrees/v13/                       (worktree, detached at origin/13.4)
+TYPO3-Instances/primary/             (the instance at the project URL)
+TYPO3-Instances/v13/                 (v13's own instance, once it is served)
 ```
 
 Typical use: run a Gerrit patch against v13 while keeping main untouched.
 
 ```bash
-ddev tryout worktree add v13 13.4
-ddev tryout worktree use v13
-ddev tryout patch 56947
-ddev tryout worktree use main        # back to main, patch stays on v13
+ddev tryout worktree add v13 13.4 --serve
+ddev tryout patch 56947 v13          # cherry-picked onto v13's Core only
+ddev tryout launch v13
 ```
 
-New worktrees get a **branch named after the worktree**, tracking the branch they
-were created from — `worktree add v13 13.4` makes a branch `v13` on top of
-`origin/13.4`. Not named after the base, because git allows one worktree per
-branch and a second checkout off `13.4` would be refused.
+New worktrees are **detached** at `origin/<branch>` — they get no branch of their
+own, so two worktrees off the same base never collide, and removing one leaves
+nothing behind. (`--branch` and `--detach` are still accepted and change
+nothing.) The base branch is found again by walking back to the nearest
+`origin/*` commit, which is how `patch` lists the right changes and `download
+<name> --reset` knows what to reset to. Plain `download <name>` refuses on a
+detached checkout rather than resetting away commits that may not be pushed yet.
+Gerrit is unaffected either way: pushes go to `refs/for/<branch>` from `HEAD`.
 
-The upstream is what `ddev tryout download <name>` rebases onto, so a worktree
-knows where to update from. Gerrit is unaffected either way: pushes go to
-`refs/for/<branch>` from `HEAD`, never from a local branch. Pass `--detach` for
-a throwaway checkout with no branch at all.
+`use` makes a worktree the Core behind the **primary** instance by rewriting that
+instance's Composer overlay, then runs `composer install` — without it `vendor/`
+would keep pointing at the previous checkout. `ddev tryout status` warns if the two
+ever drift apart. `worktree use main` switches back: the root goes by its branch's name (`main`
+unless it is on another branch).
 
-Because `use` swaps the Core underneath Composer, it always runs
-`composer install` afterwards — without it `vendor/` would keep pointing at
-the previous checkout. `ddev tryout status` warns if the two ever drift apart.
-
-Two guards worth knowing: you cannot remove the active worktree, and switching
-away from one with uncommitted changes is refused (`--force` overrides).
+The guards worth knowing: the active worktree and the root checkout cannot be
+removed, and `remove` always asks first, naming the directory it deletes — a Core
+checkout always carries untracked files (`vendor/`, `var/`), so git's own refusal
+is no protection. `--yes` skips the question, for scripts. A worktree created by an
+older version still has a branch; `remove` deletes it if it is merged, keeps it
+and says why if it is not, and `--force` drops it anyway.
 Since all worktrees share one object store, a single `ddev tryout cs` sets up the
 Gerrit hooks and commit template for all of them.
 
@@ -729,7 +762,6 @@ it instead:
 
 ```bash
 ddev tryout worktree add v13 13.4 --php 8.2 --serve
-ddev restart          # registers the hostname and issues its certificate
 ```
 
 ```text
@@ -742,10 +774,12 @@ socket, its own vhost, its own `TYPO3-Instances/<name>/` tree with its own `vend
 its own database. Roughly 175 MB per extra site — the Core object store stays
 shared.
 
-The `ddev restart` is only needed when the set of hostnames changes — DDEV owns
-the routing rule and the TLS certificate, and both are keyed on it. **Re-serving a
-site that already exists applies immediately**, with no restart: the webserver is
-reloaded in place, and the other sites keep serving throughout. So changing a
+A new hostname needs a `ddev restart` — DDEV owns the routing rule and the TLS
+certificate, and both are keyed on the set of hostnames — so `serve`, `unserve`,
+`rename` and `add --serve` **restart DDEV themselves** whenever that set changed.
+Pass `--no-restart`, or set `TRYOUT_NO_RESTART=1`, to skip it and restart later.
+**Re-serving a site that already exists applies immediately**, with no restart:
+the webserver is reloaded in place, and the other sites keep serving throughout. So changing a
 served site's PHP version, for instance, costs a reload rather than a full
 container rebuild:
 
@@ -756,11 +790,10 @@ ddev tryout worktree serve v13 --php 8.3   # applied without a restart
 #### Stopping a site
 
 ```bash
-ddev tryout worktree unserve v13    # keeps the database
-ddev restart                        # releases the hostname
+ddev tryout worktree unserve v13    # keeps the database; restarts to release the hostname
 ```
 
-`unserve` removes the site's vhost and its whole `sites/v13/` tree — including that
+`unserve` removes the site's vhost and its whole `TYPO3-Instances/v13/` tree — including that
 `vendor/`, so the ~175 MB comes back — but **keeps the database and the git
 worktree**. Serving it again later restores the site with its content intact. Add
 `--drop-db` to discard the database too.
@@ -769,7 +802,7 @@ To remove the checkout as well, use `ddev tryout worktree remove v13`; it unserv
 first if it has to.
 
 The site-scoped commands take an optional site name, defaulting to the primary
-so existing usage is unchanged:
+so existing usage is unchanged (and asking, on a terminal, once there is a choice):
 
 ```bash
 ddev tryout patch 93202 v13     # cherry-pick onto that site's Core only
@@ -804,7 +837,7 @@ container, and your editor reads it on the host. Its
 `.git` — around 650 MB — is part of the sync, and **must stay so**: excluding
 the checkouts' `.git` in `.ddev/mutagen/mutagen.yml` would leave the container's git
 with nothing to work on. What can safely be excluded is a served site's
-`sites/*/vendor`, which only the container needs; edit that file, **remove the
+`TYPO3-Instances/*/vendor`, which only the container needs; edit that file, **remove the
 `#ddev-generated` line** to take ownership of it, and add the path under
 `ignore.paths`.
 
@@ -842,50 +875,168 @@ site it serves. **For scripting, use
 parses and the one that stays stable — or **`--json`**, one array with a fixed set
 of keys (`name dir head branch base patches modified untracked primary url php db
 subject php_versions changes`; `branch` is `null` for a detached checkout, `dir` is
-relative to the project root, `changes` the Gerrit change numbers among the patches). `--json` prints nothing but the JSON, and is what `ddev tryout ui`
-reads — as are `ddev tryout worktree branches --json` and `ddev tryout patch
---list --json`. With `TRYOUT_EVENTS=1` any command also prints its progress as
-`@@tryout {"level":…,"msg":…}` lines, which is how the TUI shows its steps.
+relative to the project root, `changes` the Gerrit change numbers among the
+patches). `--json` prints nothing but the JSON; so do `ddev tryout worktree
+branches --json` and `ddev tryout patch --list --json` (the 50 most recent open
+changes). The terminal UI is the same program and reads all of this in-process.
+With `TRYOUT_EVENTS=1` any command also prints its progress as
+`@@tryout {"level":…,"msg":…}` lines.
 
-### The terminal UI
+## The terminal UI
 
-`ddev tryout ui` opens a full-screen workspace: the worktrees on the left, and on
-the right the selected worktree's tabs — as many shells as you open, kept running
-while you look at another worktree. Below the worktrees, an **agents pane** lists
-every tab running a coding agent (claude, codex, …) as working, waiting for you,
-or idle. Every tryout command for the selected worktree is behind `a` or a
-right-click: the TUI asks what it needs itself (names, branches, Gerrit changes,
-a confirmation naming what a destructive command removes) and runs it as a job
-in the **Activity** panel — one at a time, with its current step, then ✓ or ✗;
-select a row (or press `L`) for its log.
+`ddev tryout ui` opens a full-screen workspace for the whole project:
 
-| Key | |
+- **Worktrees**, on the left: one row each, with its branch, PHP version, the
+  Gerrit changes applied to it, and its URL if it is served.
+- **Agents**, below them: every tab running a coding agent (claude, codex, …),
+  marked as working, waiting for you, or idle.
+- **Activity**, below that: the commands you started, each with its current step
+  and then ✓ or ✗.
+- **Tabs**, on the right: the selected worktree's shells, as many as you open.
+  They keep running while you look at another worktree.
+
+Every tryout command for the selected worktree is behind `a` or a right-click.
+The TUI asks what a command needs itself, in a form: names, branches, Gerrit
+changes, and a confirmation naming what a destructive command removes. It then
+runs the command as a job in the Activity panel, one at a time, while you keep
+working. If a command asks for your password (DDEV does, now and then, for
+`/etc/hosts`), a popup asks for it.
+
+The keys below apply while the **list** has the focus — the worktrees, agents
+and Activity. Once you are in a shell, every key goes to that shell except
+<kbd>Ctrl-G</kbd>, which brings you back.
+
+### Moving around
+
+| Keyboard | Mouse | Does |
+|---|---|---|
+| `↑` `↓` or `k` `j` | click a worktree | select a worktree |
+| `Home` / `End` | | first / last worktree |
+| `Enter`, `→` or `l` | click in the pane | into the worktree's active shell (a new one if it has none) |
+| `Ctrl-G` | | out of the shell, back to the list |
+| `{` / `}` | drag the border between list and pane | narrow / widen the list (double-click the border resets it) |
+| `r` | | reload the list |
+
+### Shells and tabs
+
+| Keyboard | Mouse | Does |
+|---|---|---|
+| `t` | click `+` after the tabs | open a new shell tab in the selected worktree |
+| `1` … `9` | click a tab | switch to that tab |
+| `[` / `]` | | previous / next tab |
+| `<` / `>` | drag a tab | move the tab left / right |
+| `,` | double-click a tab | rename it (Enter keeps it, Esc cancels, an empty name goes back to its program's title) |
+| `w` | | close the tab |
+
+### Commands
+
+| Keyboard | Mouse | Does |
+|---|---|---|
+| `a` or `Space` | right-click a worktree | the commands for that worktree (the right-click menu leaves out Status and Regenerate the overlay) |
+| `+` | click **+ new** above the list | create a worktree: asks its name, the branch, and whether to serve it now |
+| | click the URL in the title | open that site in the browser |
+
+Inside the menu:
+
+| Keyboard | Does |
 |---|---|
-| `↑` `↓`, or a click | select a worktree |
-| `Enter` | open (or return to) its active tab |
-| `t`, or click `+` | a new shell tab |
-| `1`–`9`, `[` `]`, or click a tab | switch tab · `w` closes one |
-| `,`, or double-click a tab | rename it (empty: back to its program's title) |
-| `<` `>`, or drag a tab | move it |
-| click the URL in the title | open that site in the browser |
-| `+`, or click **+ new** above the list | create a worktree (asks name, then branch) |
-| right-click a worktree | serve/unserve, use, rename or remove it |
-| `n`, or click an agent | jump to the next agent that needs you |
-| `Ctrl-G` | leave the shell for the list — then any key above |
-| `a` | the commands for this worktree |
-| `r` | reload the list |
-| `q` | detach — everything keeps running, jobs included |
-| `L`, or click an Activity row | a command's log |
-| drag the border between list and pane, or `{` `}` | resize them (double-click the border resets) |
-| `Q` | close the session (asks first) |
+| `↑` `↓` or `k` `j` | choose |
+| `Enter`, `→` or `l` | run it, or open a submenu (marked ▸, e.g. **Serve on PHP**) |
+| `←`, `Esc` or `h` | out of a submenu |
+| `Esc` or `q` | close the menu |
 
-**It runs as a session, like herdr or tmux.** `q` detaches and leaves every
-shell, agent and running command going; the next `ddev tryout ui` picks the
-session up exactly as you left it. Only `Q` or `ddev tryout ui stop` ends it. One
-terminal is attached at a time — attaching elsewhere takes the session over.
+The menu offers what fits the worktree: Serve, Serve on PHP ▸, Open site, Open
+backend, Make primary, Unserve (with or without its database), Update from its
+base branch, Switch TYPO3 version…, Apply Gerrit patch…, Reset Core + rebuild,
+Run command…, Fresh install…, Rename…, Remove…, Status and Regenerate the overlay.
+An entry ending in … asks something first.
+
+### Forms
+
+| Keyboard | Does |
+|---|---|
+| `Tab` / `Shift-Tab` | next / previous field |
+| `Enter` | submit |
+| `Esc` | cancel |
+| typing, `Backspace`, `Ctrl-U` | edit a text field (`Ctrl-U` clears it) |
+| typing, `↑` `↓` | in a branch list: filter, then choose |
+| `Space` | toggle a checkbox |
+| `y` | confirm a destructive command; any other key cancels |
+
+### Applying Gerrit changes
+
+**Apply Gerrit patch…** opens a form with a search box above a list of open
+changes on the worktree's branch, 25 per page, each with its number, subject,
+owner and votes (`CR` Code-Review, `V` Verified, `·` no vote yet). The search goes
+to Gerrit, not just this page, shortly after you stop typing:
+
+- a number finds that change;
+- a term with a colon is a Gerrit operator, e.g. `owner:jdoe`, `-is:wip`,
+  `topic:foo`;
+- any other word must appear in the commit message.
+
+Terms combine, so `owner:jdoe -is:wip cache` works. `Tab` moves between the search
+box and the list.
+
+| Keyboard | Mouse | Does |
+|---|---|---|
+| typing, `Backspace` | | edit the search (in the search box, `Space` types a space) |
+| `↓` or `Tab` | | from the search box into the list |
+| `↑` `↓` | wheel | choose a change (`↑` on the first row goes back to the search) |
+| `Space` | click a change | tick or untick it |
+| `PgUp` / `PgDn`, or `←` / `→` in the list | click `‹ previous` / `next ›` | turn the page (ticks are kept across pages) |
+| a letter | | from the list back to the search, typing it |
+| `Enter` | | apply the ticked changes in the order you ticked them, or the selected one if none is ticked |
+| `Esc` | | cancel |
+
+### Activity and logs
+
+| Keyboard | Mouse | Does |
+|---|---|---|
+| `L` | click an Activity row | open that command's log |
+| `R` | click ↻ on a failed row | run the failed command again |
+
+A command that succeeded leaves the list after 5 seconds, and a failed one stays
+until you retry it. Inside the log:
+
+| Keyboard | Mouse | Does |
+|---|---|---|
+| `↑` `↓` or `k` `j` | wheel (3 lines) | scroll a line |
+| `PgUp` / `PgDn`, or `b` / `Space` | | scroll a page |
+| `Home` / `End`, or `g` / `G` | | top / bottom |
+| `r` | click **↻ retry (r)** | run the command again |
+| `Esc`, `q` or `Enter` | | close the log |
+
+### Agents
+
+| Keyboard | Mouse | Does |
+|---|---|---|
+| `n` | click an agent | go to the next agent that needs you: waiting first, then working, then idle |
+
+### Popups
+
+| Popup | Keyboard |
+|---|---|
+| **Password**, when a command asks for one | type it (shown as •), `Enter` sends it to that command, `Esc` or `Ctrl-C` cancels. It is not stored. |
+| **Rename tab** | the old name starts selected, so typing replaces it; `←` `→` `Home` `End` keep it; `Ctrl-U` clears it; `Enter` / `Esc` |
+| **Close the session?** | `y` closes, any other key keeps it |
+
+While a popup or form is open, clicks outside it do nothing.
+
+### The session
+
+| Keyboard | Does |
+|---|---|
+| `q` or `Ctrl-C` | detach: shells, agents and running commands carry on |
+| `Q`, then `y` | close the session and everything in it |
+
+**It runs as a session, like tmux.** The next `ddev tryout ui` picks the session
+up exactly as you left it; only `Q` or `ddev tryout ui stop` ends it. One terminal
+is attached at a time, and attaching from another takes the session over. Running
+`ddev tryout ui` in one of its own shells is refused.
 
 It is the same program as `ddev tryout` itself (Rust, in `tui/`). A session keeps
-running the build it started with: after an update, `ddev tryout ui` says so and
+running the build it started with, so after an update `ddev tryout ui` says so and
 offers to restart the session.
 
 ## Contributing

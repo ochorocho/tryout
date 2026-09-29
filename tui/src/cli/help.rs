@@ -29,7 +29,7 @@ pub fn worktree() -> String {
     for (c, t) in [
         (
             "add <name> [<branch>]",
-            "Create worktrees/<name> on a branch <name>, off origin/<branch>",
+            "Create worktrees/<name>, detached at origin/<branch>",
         ),
         ("list", "List worktrees and served sites"),
         (

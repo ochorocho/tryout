@@ -28,30 +28,9 @@ scripts/stage-bins.sh                                 # all three builds into ..
 ```
 
 In a shell every key is the shell's except **Ctrl-G**, which returns to the
-list — so from a shell, *Ctrl-G then a key* runs any list command below.
-
-| Key (list) | | Mouse | |
-|---|---|---|---|
-| `↑` `↓` / `j` `k` | select a worktree | click a worktree | select it |
-| `Enter` | focus its active tab (opening one if none) | click a tab | switch to it |
-| `t` | new shell tab | click `+` | new shell tab |
-| `1`–`9`, `[` `]` | switch tab | click the terminal | focus it |
-| `w` | close the active tab | click an agent | jump to its tab |
-| `,` | rename the active tab | double-click a tab | rename it |
-| `<` `>` | move the active tab left / right | drag a tab onto another | move it there |
-| `+` | new worktree (`worktree add`) | click **+ new** above the list | new worktree |
-| | | right-click a worktree | its `worktree` commands: serve/unserve, use, rename, remove |
-| | | click the URL in the title | open the site (as `launch`) |
-| `n` | next agent — waiting ones first | | |
-| `L` | the newest job's log | click an Activity row | its log |
-| `↑` `↓` `PgUp` `PgDn` in a log | scroll it | mouse wheel over it | scroll it |
-| `r` in a finished job's log | run the command again | click `↻ retry` in its border | same |
-| `R` | run the command that just failed again | click the `↻` on a failed Activity row | same |
-| `{` `}` | sidebar narrower / wider | drag the border between list and pane | resize; double-click resets |
-| `a` / `Space` | the commands for this worktree | | |
-| `r` | reload the list | | |
-| `q` | detach (the session keeps running) | | |
-| `Q` | close the session (asks y/n) | | |
+list. Every key and mouse action is documented, per context, in the add-on's
+README: [The terminal UI](../README.md#the-terminal-ui). Keep that the one
+reference; a second table here drifted.
 
 A tab whose program exits closes itself; closing a worktree's last tab brings its
 details back. Tabs name themselves after the title their program sets (zsh's
@@ -78,20 +57,24 @@ channel is the terminal bell (`/config` → notifications).
 A command never takes over the screen. What it needs to know is asked by a
 native form (`forms.rs`): text with the add-on's own validation (a worktree
 name that is taken or malformed is refused before anything runs), a filterable
-pick list (branches: main, then releases newest first), ticks (Gerrit changes),
-or — for anything destructive — a confirmation that says exactly what goes and
+pick list (branches: main, then releases newest first), a Gerrit change browser
+(a search box sent to Gerrit, 25 changes a page, ticks kept across pages), or — for anything destructive — a confirmation that says exactly what goes and
 runs only on an explicit `y`. The answers become one fully-argued `ddev tryout …`
 command, queued as a **job** (`jobs.rs`).
 
-Jobs run one at a time (a second waits, visibly), with stdin closed: a prompt
-nobody expected fails fast instead of hanging the queue. Their progress comes
+Jobs run one at a time (a second waits, visibly) on a pseudo-terminal with echo
+off. tryout itself never asks once given its arguments, but DDEV runs `sudo` to
+add a hostname to `/etc/hosts`: a password prompt marks the job as waiting and
+opens a masked popup, whose answer goes to that job and nowhere else. Their progress comes
 from the add-on's event lines — with `TRYOUT_EVENTS=1` every `info`/`success`/
 `warn`/`error` also prints `@@tryout {"level":…,"msg":…}` — so the **Activity**
 row shows the current step (`⠹ PHP 8.4 · Installing dependencies…`), then
 `✓ 13s` or `✗ exit 1` with the error in the footer. `Enter`/click on a row, or
-`L`, opens its log in the right pane (colours kept, PgUp/PgDn scroll). A job
-whose output is the answer (`status`, Run command…) opens its log by itself. A
-job that changes worktrees reloads the list. Jobs live in the session server,
+`L`, opens its log in the right pane (colours kept, it scrolls, `r` or ↻ runs the
+command again). A job whose output is the answer (`status`, Run command…) opens
+its log by itself. A finished success leaves the list after 5 seconds; a failure
+stays for `R`. A job that changes worktrees reloads the list after each step it
+completes, so a row shows a patch as soon as it is applied. Jobs live in the session server,
 so they finish while you are detached.
 
 ## Sessions
@@ -108,7 +91,7 @@ time; attaching from a second one takes the session over, and the first is told
 why. Running `ddev tryout ui` inside one of the session's own tabs is refused —
 it would draw the session within itself.
 
-How it works (`src/session/`): the server renders and the client paints —
+How it works (`src/tui/session/`): the server renders and the client paints —
 tmux's model. The server runs the whole app and draws it into `WireBackend`, a
 ratatui backend with no terminal behind it; ratatui's own diffing makes each
 frame just the cells that changed, sent over a Unix socket as length-prefixed
@@ -117,15 +100,18 @@ state, which is what lets it come and go. The socket is per user and per project
 in `$TMPDIR/tryout-tui-<uid>/` (short on purpose: macOS caps a socket path at 104
 bytes), named from a stable FNV hash of the project path; the server's output
 goes to a `.log` beside it. A client and server of different protocol versions
-refuse each other with the way out — a server outlives an add-on update.
+refuse each other with the way out — a server outlives an add-on update. The
+server also notes its build beside the socket, so attaching from a newer build
+offers to restart the session.
 
 ## How it talks to tryout
 
-It never re-implements tryout. The list is `ddev tryout worktree list --json`,
-the add-on's machine-readable contract (pinned by the add-on's unit suite), run
-off the UI thread. The pickers read `worktree branches --json` and
-`patch --list --json`; commands run as `ddev tryout <verb> …` jobs at the
-project root. `launch` is the one that skips the queue — it raises the browser.
+It is tryout, so it calls the same code rather than a second copy. The list,
+the branch picker and the Gerrit pages are read in-process off the UI thread
+(`worktrees.rs`, from `core::worktree` and `core::gerrit` — the list is the very
+type `worktree list --json` serialises, so the two cannot drift apart). Commands
+run as `ddev tryout <verb> …` jobs at the project root. `launch` is the one that
+skips the queue — it raises the browser.
 
 The command menu follows the removed herdr panel's rules (`actions.rs`): a row is
 only offered where it can work, and every command names its own worktree — a bare
@@ -133,16 +119,22 @@ verb acts on whichever Core is primary when it runs, not the one you selected.
 
 ## Layout
 
-- `worktrees.rs` — parse `--json`, find the project
+`src/tui/`:
+
+- `worktrees.rs` — load the list, branches and Gerrit pages; find the project
 - `agents.rs` — which process is an agent, and its working/waiting/idle state
 - `actions.rs` — which commands a worktree is offered, and how each runs
-- `forms.rs` — the native questions: text, pick list, ticks, confirmation
-- `jobs.rs` — the one-at-a-time queue, the event parser, logs
+- `forms.rs` — the native questions: text, pick list, checkbox, the Gerrit change
+  browser, confirmation
+- `jobs.rs` — the one-at-a-time queue on a PTY, the event parser, password
+  prompts, logs, retry
 - `pane.rs` — a program on a real PTY (`portable-pty`), screen emulated by `vt100`,
   exit code kept
 - `keys.rs` — key events to the bytes a terminal sends
 - `app.rs` — state and key handling; no terminal I/O, so all of it is unit-tested
-- `ui.rs` — layout and theme (`ratatui`, panes drawn by `tui-term`)
+- `ui.rs` — layout and theme (`ratatui`, panes drawn by `tui-term`), and what a
+  click hits
+- `session/` — the server, the client, the wire protocol
 
 Every style names its own foreground colour; a test fails on any drawn cell that
 inherits the terminal's. (A bare modifier inherits the theme — the herdr panel
