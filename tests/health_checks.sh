@@ -11,13 +11,25 @@ assert_file_exist "${TESTDIR}/.ddev/commands/host/tryout"
 assert_file_exist "${TESTDIR}/.ddev/commands/host/autocomplete/tryout"
 assert_file_exist "${TESTDIR}/.ddev/config.tryout.yaml"
 assert_file_exist "${TESTDIR}/.ddev/config.tryout-patches.yaml"
-for f in functions.sh commands.sh tryout-container.sh post-start.sh \
-         sync-composer.php site-composer.php \
-         tryout-php-fpm.sh resolve-patch-ref.sh resolve-gerrit-account.sh \
-         gitmessage.txt composer.tryout.json additional.php \
-         patches.yaml; do
+for f in tryout VERSION tryout-php-fpm.sh gitmessage.txt composer.tryout.json \
+         additional.php patches.yaml; do
   assert_file_exist "${TESTDIR}/.ddev/tryout/${f}"
 done
+# The binaries: the launcher picks one per platform — this machine's must be
+# there — and DDEV only manages a file carrying its marker, which each embeds.
+case "$(uname -s)-$(uname -m)" in
+  Darwin-*)                  here=tryout-macos-universal ;;
+  Linux-aarch64|Linux-arm64) here=tryout-linux-aarch64 ;;
+  *)                         here=tryout-linux-x86_64 ;;
+esac
+assert_file_exist "${TESTDIR}/.ddev/tryout/bin/${here}"
+assert_file_executable "${TESTDIR}/.ddev/tryout/bin/${here}"
+for b in "${TESTDIR}"/.ddev/tryout/bin/tryout-*; do
+  run grep -c '#ddev-generated' "${b}"
+  assert_success
+done
+# Nothing of the bash implementation is shipped any more.
+assert_file_not_exist "${TESTDIR}/.ddev/tryout/functions.sh"
 
 # The add-on must not ship DDEV's own boilerplate or a config.yaml of its own.
 assert_file_not_exist "${TESTDIR}/.ddev/tryout/install.yaml"
@@ -31,8 +43,7 @@ assert_dir_exist "${TESTDIR}/packages"
 assert_file_executable "${TESTDIR}/.ddev/commands/host/tryout"
 # DDEV only wires up completion for an executable script.
 assert_file_executable "${TESTDIR}/.ddev/commands/host/autocomplete/tryout"
-assert_file_executable "${TESTDIR}/.ddev/tryout/post-start.sh"
-assert_file_executable "${TESTDIR}/.ddev/tryout/tryout-container.sh"
+assert_file_executable "${TESTDIR}/.ddev/tryout/tryout"
 
 # The payload version stamp, so `ddev tryout status` can spot a stale install.
 assert_file_exist "${TESTDIR}/.ddev/tryout/.version"
@@ -50,7 +61,7 @@ run grep -q '#ddev-generated' "${TESTDIR}/.ddev/commands/host/autocomplete/tryou
 assert_success
 run grep -q '#ddev-generated' "${TESTDIR}/.ddev/config.tryout.yaml"
 assert_success
-run grep -q '#ddev-generated' "${TESTDIR}/.ddev/tryout/functions.sh"
+run grep -q '#ddev-generated' "${TESTDIR}/.ddev/tryout/tryout"
 assert_success
 run grep -q 'ddev-generated' "${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
 assert_success

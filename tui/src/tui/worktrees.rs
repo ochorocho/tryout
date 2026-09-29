@@ -192,7 +192,7 @@ mod tests {
     fn finds_the_project_from_inside_a_worktree() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join(".ddev/tryout")).unwrap();
-        std::fs::write(root.path().join(".ddev/tryout/functions.sh"), "").unwrap();
+        std::fs::write(root.path().join(".ddev/tryout/VERSION"), "").unwrap();
         let deep = root.path().join("worktrees/v13/typo3/sysext");
         std::fs::create_dir_all(&deep).unwrap();
         assert_eq!(find_project_root(&deep).as_deref(), Some(root.path()));

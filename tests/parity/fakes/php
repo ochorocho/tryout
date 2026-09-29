@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-# The fake `php`: the add-on's own PHP (its generators under .ddev/tryout/, and
-# `php -r` snippets) runs on the real PHP; anything else — a site's console,
-# Composer — is only logged, like every other fake tool.
-case "${1:-}" in
-    -r|*/.ddev/tryout/*.php) exec "${REAL_PHP:?}" "$@" ;;
-esac
-{ printf 'php'; printf ' %q' "$@"; printf '\n'; } >> "${FAKE_LOG:?}"

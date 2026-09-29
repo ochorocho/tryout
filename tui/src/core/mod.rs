@@ -1,6 +1,5 @@
 //! The add-on's own logic, shared by the command line (host and container side)
-//! and the terminal UI. Ported from tryout/functions.sh one helper group per
-//! module.
+//! and the terminal UI, one helper group per module.
 
 pub mod composer;
 pub mod contrib;
@@ -32,9 +31,17 @@ pub struct Failed;
 /// The outcome of a step that reports its own failure.
 pub type Step = Result<(), Failed>;
 
-/// The payload version the add-on stamps into .ddev/tryout/.version, which
-/// `status` compares. Bump it whenever what a user sees changes.
-pub const PAYLOAD_VERSION: &str = "48";
+/// The payload version (tryout/VERSION), which the install stamps into
+/// .ddev/tryout/.version and `status` compares: one number, read by both.
+pub const PAYLOAD_VERSION_FILE: &str = include_str!("../../../tryout/VERSION");
+
+/// The number in tryout/VERSION: its one line that is only digits.
+pub fn payload_version() -> &'static str {
+    PAYLOAD_VERSION_FILE
+        .lines()
+        .find(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()))
+        .unwrap_or("0")
+}
 
 #[cfg(test)]
 mod tests {
@@ -62,16 +69,11 @@ mod tests {
     }
 
     #[test]
-    fn the_payload_version_matches_the_bash_payload() {
-        let f = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../tryout/functions.sh"
-        ))
-        .unwrap();
-        let v = f
-            .lines()
-            .find_map(|l| l.strip_prefix("TRYOUT_VERSION="))
-            .unwrap();
-        assert_eq!(v, super::PAYLOAD_VERSION);
+    fn the_payload_version_is_the_number_in_tryout_version() {
+        assert!(
+            super::payload_version()
+                .parse::<u32>()
+                .is_ok_and(|v| v >= 49)
+        );
     }
 }

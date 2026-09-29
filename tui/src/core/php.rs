@@ -1,5 +1,5 @@
 //! Which PHP a Core checkout accepts, and which of the image's PHPs satisfy it.
-//! A port of the `php -r` snippets in functions.sh, so the host needs no PHP.
+//! Judged in Rust, the way the add-on always judged it, so the host needs no PHP.
 
 use std::cmp::Ordering;
 use std::path::Path;

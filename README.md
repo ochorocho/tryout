@@ -40,25 +40,12 @@ Once finished, open the frontend or the backend:
 To update the add-on later, run `ddev add-on get bmack/tryout` again; to remove it,
 `ddev add-on remove tryout`.
 
-### Optional but recommended
+### What it runs on
 
-One host tool makes the add-on considerably nicer to use. It is not installed by the
-add-on, and **everything works without it** — install it because it improves the
-experience, not because anything depends on it.
-
-**[gum](https://github.com/charmbracelet/gum)** — draws the tables, prompts and
-spinners. With it, `ddev tryout status` is a
-bordered report, and any command missing an argument offers a pick-from-a-list chooser
-instead of asking you to type the answer. Without it every command prints the same
-information as plain text with a typed prompt; the unit suite runs both ways in CI, so
-the no-gum path stays honest. Installation mentions it once and carries on.
-
-```bash
-brew install gum              # macOS
-sudo apt-get install gum      # Debian/Ubuntu
-sudo dnf install gum          # Fedora
-sudo pacman -S gum            # Arch
-```
+macOS and Linux (on Windows: WSL2). There is nothing else to install: `ddev tryout`
+is one program, shipped inside the add-on as a build per platform
+(`.ddev/tryout/bin/`), and `.ddev/tryout/tryout` runs the one for your machine — on
+the host and in the web container alike.
 
 ### Installing from the repository
 
@@ -67,10 +54,14 @@ install an unreleased version — a branch, a commit, or a working checkout — 
 way you install a release.
 
 **From a local checkout** — what you want when developing the add-on itself. No
-commit, push or release is needed; DDEV copies the working tree as it is:
+commit, push or release is needed; DDEV copies the working tree as it is. A
+checkout has no binaries (only releases carry them), so build them once first —
+`tui/scripts/stage-bins.sh` puts all three into `tryout/bin/` (it needs Rust,
+`lipo` and `cargo-zigbuild`, so run it on a Mac):
 
 ```bash
 git clone https://github.com/bmack/tryout.git ~/src/tryout
+~/src/tryout/tui/scripts/stage-bins.sh
 
 mkdir my-typo3-site && cd my-typo3-site
 ddev config --project-type=typo3 --docroot=TYPO3-Instances/primary/public --php-version=8.5
@@ -78,10 +69,15 @@ ddev add-on get ~/src/tryout
 ddev start
 ```
 
-Re-run `ddev add-on get ~/src/tryout` after every change you want to try; it
-overwrites the installed payload in `.ddev/` and leaves your data alone.
+Re-run `stage-bins.sh` and `ddev add-on get ~/src/tryout` after every change you
+want to try; it overwrites the installed payload in `.ddev/` and leaves your data
+alone. `TRYOUT_BIN=/path/to/tryout ddev tryout …` runs a local build on the host
+without reinstalling.
 
-**From a branch or commit** — `--version` takes a tag, a branch name, or a SHA:
+**From a release, branch or commit** — `--version` takes a tag, a branch name, or a
+SHA. Only release tags carry the binaries; a branch or commit installs the source,
+which has none (the install says so), so use those only together with the local
+checkout route above:
 
 ```bash
 ddev add-on get bmack/tryout --version main        # the default branch
@@ -363,7 +359,7 @@ fetched, and cherry-picked onto your local Core branch.
 
 Run it bare and it asks which site to patch first, then shows what is currently up
 for review **on that site's branch** — a 13.4 site is offered 13.4's changes, not
-main's. Pick one or several; gum's own footer names the toggle key:
+main's. Pick one or several — space ticks one, Enter applies:
 
 ```bash
 ddev tryout patch
@@ -394,9 +390,8 @@ subject, since that is what ends up in a file you keep:
 ```
 
 `--all-branches` widens the list beyond the branch in use. The picker needs a
-terminal and [gum](https://github.com/charmbracelet/gum); without either — in
-`ddev start`, or any script — a bare `patch` applies the configured list exactly
-as it always did.
+terminal; without one — in `ddev start`, or any script — a bare `patch` applies
+the configured list exactly as it always did.
 
 Check what is currently applied:
 
@@ -507,19 +502,14 @@ root holds the Core checkout and the Composer overlay:
 my-typo3-site/
 ├── .ddev/
 │   ├── commands/host/
-│   │   ├── tryout                # The ddev tryout entry point (host: prompts)
+│   │   ├── tryout                # The ddev tryout entry point — hands over to the binary
 │   │   └── autocomplete/
-│   │       └── tryout            # Tab-completion for it (DDEV runs this on TAB)
+│   │       └── tryout            # Tab-completion — the binary's `__complete`
 │   ├── tryout/                   # Add-on payload, namespaced so it cannot collide
-│   │   ├── functions.sh          # Shared helpers (Gerrit API, patching, worktrees)
-│   │   ├── commands.sh           # The verbs' work, run inside the web container
-│   │   ├── tryout-container.sh   # In-container dispatcher the host command calls
-│   │   ├── post-start.sh         # Runs on ddev start, in the container (clone, patch, setup)
-│   │   ├── sync-composer.php     # Regenerates the overlay from Core sysexts
-│   │   ├── site-composer.php     # Builds a served site's own composer root
-│   │   ├── tryout-php-fpm.sh     # Extra php-fpm master for a site on another PHP
-│   │   ├── resolve-patch-ref.sh  # Fetches + parses a Gerrit change (runs in-container)
-│   │   ├── resolve-gerrit-account.sh  # Looks up a Gerrit account (runs in-container)
+│   │   ├── tryout                # Runs the build for this machine (host and container)
+│   │   ├── bin/                  # The tryout binary: macOS universal, Linux x86_64/aarch64
+│   │   ├── VERSION               # Payload version, compared by `ddev tryout status`
+│   │   ├── .state/php-versions   # Left by post-start: the PHPs the web image has
 │   │   ├── gitmessage.txt        # Commit template installed by `ddev tryout cs`
 │   │   └── …                     # Templates copied out on install (see below)
 │   ├── config.yaml               # Yours, from `ddev config` (name, docroot, PHP, DB)
@@ -612,10 +602,10 @@ that is not a `typo3/cms-*` or `typo3/theme-*` package is preserved.
 `ddev tryout` is a host command, and the host keeps what only the host can do:
 the prompts and pick-lists, the confirmation before `delete`, tab completion, and
 opening the browser. **The work of every other verb runs inside the web
-container** — the host resolves the arguments, then makes one `ddev exec` into
-`.ddev/tryout/tryout-container.sh`. In there git, Composer, PHP, curl and the
-database clients are the container's own, so a Core clone, a cherry-pick, a
-`composer install` or a Gerrit lookup all use the same tools TYPO3 itself runs on,
+container** — the host resolves the arguments, then makes one `ddev exec` of the
+same program, `.ddev/tryout/tryout ctr <verb>`, its Linux build. In there git,
+Composer, PHP and the database clients are the container's own, so a Core clone, a
+cherry-pick or a `composer install` all use the same tools TYPO3 itself runs on,
 and never a host PHP or a host Composer.
 
 Two consequences are worth knowing:
@@ -841,29 +831,18 @@ where both the host and the container can see it.
   worktrees are recorded with relative paths, which older gits handle for reading
   and not for `git worktree` commands. The git that does the work is built into
   the web image by the add-on.
-- A `bash` shell on the host — `ddev tryout` is a host command that hands the work
-  to the container. On Windows this means Git Bash (bundled with Git for Windows);
-  DDEV finds it automatically. An SSH client on the host is only needed to push to
-  Gerrit from a host shell; `ddev auth ssh` covers pushing from the container.
-- Optional but recommended: [gum](https://github.com/charmbracelet/gum) — draws the
-  tables, pick-from-a-list prompts and spinners. Without it every command still works
-  and prints the same information, just as plain text with a typed prompt instead of a
-  chooser; installation says so once and carries on. Install with `brew install gum`,
-  `sudo apt-get install gum`, `sudo dnf install gum` or `sudo pacman -S gum`.
-
-It is covered with a little more context under
-[Optional but recommended](#optional-but-recommended).
+- macOS or Linux (Windows: WSL2). An SSH client on the host is only needed to push
+  to Gerrit from a host shell; `ddev auth ssh` covers pushing from the container.
 
 Output is meant to be read by people: `ddev tryout worktree list` draws one card
 per worktree — its base branch, the patches on top, uncommitted changes and the
-site it serves — and with gum installed `ddev tryout status` is a bordered
-report; without it, the same content in plain columns. **For scripting, use
+site it serves. **For scripting, use
 `ddev tryout worktree list --plain`** — space-padded columns
 (`NAME HEAD BRANCH STATE PHP DB URL`), which is the format the Playwright suite
 parses and the one that stays stable — or **`--json`**, one array with a fixed set
 of keys (`name dir head branch base patches modified untracked primary url php db
-subject`; `branch` is `null` for a detached checkout, `dir` is relative to the
-project root). `--json` prints nothing but the JSON, and is what `ddev tryout ui`
+subject php_versions changes`; `branch` is `null` for a detached checkout, `dir` is
+relative to the project root, `changes` the Gerrit change numbers among the patches). `--json` prints nothing but the JSON, and is what `ddev tryout ui`
 reads — as are `ddev tryout worktree branches --json` and `ddev tryout patch
 --list --json`. With `TRYOUT_EVENTS=1` any command also prints its progress as
 `@@tryout {"level":…,"msg":…}` lines, which is how the TUI shows its steps.
@@ -905,15 +884,9 @@ shell, agent and running command going; the next `ddev tryout ui` picks the
 session up exactly as you left it. Only `Q` or `ddev tryout ui stop` ends it. One
 terminal is attached at a time — attaching elsewhere takes the session over.
 
-It is a separate program (Rust, in `tui/`), one self-contained file per platform.
-The first run downloads the right one for your machine from this repository's
-releases, verifies its checksum and keeps it in `.ddev/tryout/bin/`; nothing is
-downloaded until you use it. To run a local build instead, point
-`TRYOUT_TUI_BIN` at it.
-
-The host scripts are POSIX-minded bash and run on **macOS and Linux alike**: no
-GNU-only utilities (`readlink -f`, `grep -P`, `stat -c`, `date -d`), and nothing that
-needs bash 4, since macOS still ships 3.2. Tests enforce both.
+It is the same program as `ddev tryout` itself (Rust, in `tui/`). A session keeps
+running the build it started with: after an update, `ddev tryout ui` says so and
+offers to restart the session.
 
 ## Contributing
 
@@ -928,12 +901,17 @@ checkout — no release or tarball needed:
 ```bash
 mkdir /tmp/tryout-test && cd /tmp/tryout-test
 ddev config --project-type=typo3 --docroot=TYPO3-Instances/primary/public --php-version=8.5
+/path/to/your/tryout/checkout/tui/scripts/stage-bins.sh
 ddev add-on get /path/to/your/tryout/checkout
 ddev start
 ```
 
 The payload lives at the repo root (`install.yaml`, `commands/`, `tryout/`,
-`config.tryout.yaml`) and is copied into the project's `.ddev/` on install.
+`config.tryout.yaml`) and is copied into the project's `.ddev/` on install. All of
+`ddev tryout` is the Rust program in `tui/` (`cargo test` there); the shell left in
+the payload is the command and completion shims and the launcher. A release is
+made from the Actions tab (`release.yml`): it builds the three binaries and tags a
+release-only commit carrying them, since `ddev add-on get` installs the tagged tree.
 
 ### Tests
 
@@ -949,11 +927,12 @@ It is split by cost, because every DDEV-backed test builds and destroys a whole
 project:
 
 ```bash
-bats tests/unit.bats      # seconds — pure helpers in tryout/functions.sh, no containers
+(cd tui && cargo test)    # the program itself — seconds
+bats tests/unit.bats      # seconds — the shims, launcher and install.yaml, no containers
 bats tests/test.bats --filter-tags '!release'
                           # minutes — install, config, overlay, guarded files, removal
-bats tests/lifecycle.bats # much longer — clones TYPO3 Core, patches, served worktrees
-bats tests --filter-tags '!release,!lifecycle'   # the 100 fast tests
+bats tests/lifecycle.bats # much longer — every command, against a real project
+bats tests --filter-tags '!release,!lifecycle'   # the fast suites
 bats tests --filter-tags '!release'              # everything runnable locally
 ```
 

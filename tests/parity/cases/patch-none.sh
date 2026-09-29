@@ -1,2 +1,0 @@
-SIDE=ctr
-ARGS=(patch)

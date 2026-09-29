@@ -1,0 +1,6 @@
+#ddev-generated
+# The payload version, stamped into .ddev/tryout/.version at install so
+# `ddev tryout status` can tell a project runs an older copy. Bump it whenever
+# what a user sees changes — a verb, a flag, a completion candidate. The binary
+# reads this same file (include_str!), so there is one number.
+49

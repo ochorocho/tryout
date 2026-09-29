@@ -1,2 +1,0 @@
-SIDE=host
-ARGS=(frobnicate)

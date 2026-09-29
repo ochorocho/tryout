@@ -28,7 +28,7 @@ const KEEP_DONE: usize = 5;
 /// A log longer than this keeps its tail: a composer install can run to
 /// thousands of lines, and it is the end that says what went wrong.
 const LOG_LINES: usize = 3000;
-/// The add-on's event marker, see `tryout_event` in functions.sh.
+/// The add-on's event marker, see `core::out::event`.
 const MARKER: &str = "@@tryout ";
 
 #[derive(Debug, Clone, PartialEq)]

@@ -31,41 +31,19 @@ jobs:
   # install suite costs a full DDEV project lifecycle, so the slow tests that
   # clone TYPO3 Core are sharded into their own job below.
   tests:
-    name: ${{ matrix.suite }} (${{ matrix.ddev_version }}${{ matrix.gum == 'absent' && ', no gum' || '' }})
+    name: ${{ matrix.suite }} (${{ matrix.ddev_version }}, ${{ matrix.os }})
     strategy:
       matrix:
+        # More runners (e.g. ubuntu-24.04-arm) are one word away: the build step
+        # makes the binary for whatever architecture it runs on.
+        os: [ubuntu-latest]
         ddev_version: [stable, HEAD]
         suite: [unit, install]
-        gum: [present]
-        # gum is optional, so one extra shard runs without it to prove the
-        # plain-text fallback still passes — otherwise CI would only ever
-        # exercise the styled path. This is `include` adding a combination, not
-        # merging into one: it sets a value for `gum`, which the base matrix
-        # already defines, so it cannot silently overwrite a existing job.
-        include:
-          - ddev_version: stable
-            suite: unit
-            gum: absent
       fail-fast: false
 
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
 
     steps:
-      # gum is optional — the ui_* helpers fall back to plain text without it.
-      # Most jobs install it so the gum path is what CI exercises; the `unit`
-      # suite additionally runs a gumless variant (see the matrix) to prove the
-      # fallback, which is the path a user without gum actually gets.
-      - name: Install gum
-        if: matrix.gum != 'absent'
-        run: |
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL https://repo.charm.sh/apt/gpg.key \
-            | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
-          echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
-            | sudo tee /etc/apt/sources.list.d/charm.list >/dev/null
-          sudo apt-get update && sudo apt-get install -y gum
-          gum --version
-
       - uses: ddev/github-action-add-on-test@v2
         with:
           ddev_version: ${{ matrix.ddev_version }}
@@ -79,38 +57,23 @@ jobs:
           test_command: |
             case "${{ matrix.suite }}" in
               unit)    bats tests/unit.bats ;;
-              install) bats tests/test.bats --filter-tags '!release' ;;
+              # The binary is part of the payload: build it before installing.
+              install) tui/scripts/build-linux.sh && bats tests/test.bats --filter-tags '!release' ;;
             esac
 
   # Slow: clones TYPO3 Core, runs composer install and sets up a real TYPO3.
   # Minutes per test, so it is kept off the every-push path.
-  #
-  # Until the switch-over to the Rust binary, every lifecycle run happens twice:
-  # once on the bash implementation, once with TRYOUT_IMPL=rust, which hands
-  # each verb to a Linux build of tui/ (host and web container alike).
   lifecycle:
-    name: lifecycle (${{ matrix.ddev_version }}, ${{ matrix.impl }})
+    name: lifecycle (${{ matrix.ddev_version }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         ddev_version: [stable, HEAD]
-        impl: [bash, rust]
       fail-fast: false
 
     runs-on: ubuntu-latest
 
     steps:
-      # gum is optional, but installing it means CI exercises the styled path.
-      - name: Install gum
-        run: |
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL https://repo.charm.sh/apt/gpg.key \
-            | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
-          echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
-            | sudo tee /etc/apt/sources.list.d/charm.list >/dev/null
-          sudo apt-get update && sudo apt-get install -y gum
-          gum --version
-
       - uses: ddev/github-action-add-on-test@v2
         with:
           ddev_version: ${{ matrix.ddev_version }}
@@ -118,17 +81,7 @@ jobs:
           debug_enabled: ${{ github.event.inputs.debug_enabled }}
           addon_repository: ${{ env.GITHUB_REPOSITORY }}
           addon_ref: ${{ env.GITHUB_REF }}
-          test_command: |
-            if [ "${{ matrix.impl }}" = rust ]; then
-              sudo apt-get install -y musl-tools
-              rustup target add x86_64-unknown-linux-musl
-              (cd tui && cargo build --release --locked --target x86_64-unknown-linux-musl)
-              mkdir -p tryout/bin
-              cp tui/target/x86_64-unknown-linux-musl/release/tryout tryout/bin/tryout-linux-x86_64
-              TRYOUT_IMPL=rust bats tests/lifecycle.bats
-            else
-              bats tests/lifecycle.bats
-            fi
+          test_command: tui/scripts/build-linux.sh && bats tests/lifecycle.bats
 
   # Browser tests: does each served worktree URL really render a frontend and log
   # into its backend? A URL returning 200 does not prove either. Gated like
@@ -158,6 +111,7 @@ jobs:
           mkdir -p "$PROJECT" && cd "$PROJECT"
           ddev config --project-name=tryout-e2e --project-tld=ddev.site \
             --project-type=typo3 --docroot=TYPO3-Instances/primary/public --php-version=8.5
+          "$GITHUB_WORKSPACE/tui/scripts/build-linux.sh"
           ddev add-on get "$GITHUB_WORKSPACE"
           ddev start -y
           # A 13.4 secondary: renders a styleguide frontend and logs in, so the
@@ -188,17 +142,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # gum is optional, but installing it means CI exercises the styled path.
-      - name: Install gum
-        run: |
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL https://repo.charm.sh/apt/gpg.key \
-            | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
-          echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
-            | sudo tee /etc/apt/sources.list.d/charm.list >/dev/null
-          sudo apt-get update && sudo apt-get install -y gum
-          gum --version
-
       - uses: ddev/github-action-add-on-test@v2
         with:
           ddev_version: ${{ matrix.ddev_version }}

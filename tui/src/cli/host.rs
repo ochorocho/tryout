@@ -74,7 +74,7 @@ fn status(ctx: &Ctx, args: &[String]) -> Res {
     reject_args("status", args)?;
     // On the host, before anything: an older install is why a command or its
     // completion can look broken, and this must work with the containers down.
-    if status::addon_is_stale(ctx, crate::core::PAYLOAD_VERSION) {
+    if status::addon_is_stale(ctx, crate::core::payload_version()) {
         print(&format!(
             "\n  {YELLOW}!{NC} This project runs an older copy of the tryout add-on\n\
 \x20   {DIM}the command and its tab-completion offer the previous feature set{NC}\n\

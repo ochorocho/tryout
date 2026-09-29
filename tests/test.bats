@@ -118,7 +118,7 @@ teardown() { load teardown.sh; }
   set -eu -o pipefail
   run ddev add-on get "${DIR}"
   assert_success
-  run grep -q 'bash .ddev/tryout/post-start.sh' "${TESTDIR}/.ddev/config.tryout.yaml"
+  run grep -q '.ddev/tryout/tryout __post-start' "${TESTDIR}/.ddev/config.tryout.yaml"
   assert_success
 }
 

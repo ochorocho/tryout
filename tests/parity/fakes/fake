@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-# One fake for every external tool the add-on drives (mysql, composer, nginx,
-# ssh, ddev, …): it records its name and argv, one line per call, and answers
-# from answers/<name> when a case provides one. Symlinked under each name.
-name="$(basename "$0")"
-{ printf '%s' "${name}"; printf ' %q' "$@"; printf '\n'; } >> "${FAKE_LOG:?}"
-answer="${FAKE_ANSWERS:-/nonexistent}/${name}"
-[ -f "${answer}" ] && cat "${answer}"
-exit "${FAKE_EXIT:-0}"

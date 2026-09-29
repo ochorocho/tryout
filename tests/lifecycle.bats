@@ -73,25 +73,11 @@ assert_backend_gone() {
   assert_failure
 }
 
-# TRYOUT_IMPL=rust: the Rust port answers `ddev tryout`. Its binaries are not
-# part of the payload until the switch-over, so they come from a local build
-# (tui/scripts/stage-bins.sh) — the host one and the container's alike.
-use_rust_if_asked() {
-  [ "${TRYOUT_IMPL:-}" = "rust" ] || return 0
-  [ -f "${DIR}/tryout/bin/tryout-linux-x86_64" ] || fail "no Rust build — run tui/scripts/stage-bins.sh"
-  mkdir -p .ddev/tryout/bin
-  cp "${DIR}"/tryout/bin/tryout-* .ddev/tryout/bin/
-  cp "${DIR}/tryout/tryout" .ddev/tryout/tryout
-  # The post-start hook, too: it runs `tryout __post-start` when this is there.
-  touch .ddev/tryout/.impl-rust
-}
-
 # Clone only what the test needs. `ddev start` runs the post-start hook, which
 # clones Core, syncs the overlay, installs dependencies and sets up TYPO3.
 addon_start() {
   run ddev add-on get "${DIR}"
   assert_success
-  use_rust_if_asked
   run ddev start -y
   assert_success
 }
@@ -322,7 +308,6 @@ addon_start() {
   set -eu -o pipefail
   run ddev add-on get "${DIR}"
   assert_success
-  use_rust_if_asked
 
   local change
   change=$(curl -s 'https://review.typo3.org/changes/?q=status:open+project:Packages/TYPO3.CMS+branch:main&n=1' \

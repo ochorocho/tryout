@@ -1,6 +1,16 @@
-# tryout-tui
+# tryout
 
-The terminal UI behind `ddev tryout ui`: the Core worktrees on the left, and on
+All of `ddev tryout`, in one program: the command line on the host (`tryout
+<verb>`, what the `ddev tryout` shim runs), its far end in the web container
+(`tryout ctr <verb>`), the post-start hook (`__post-start`), the PHP-FPM daemons
+(`__fpm`), tab completion (`__complete`) — and the terminal UI, `tryout ui`.
+
+- `src/core/` — the add-on's logic: worktrees, sites, Composer overlays, vhosts,
+  Gerrit, patches, contribution setup, prompts, output.
+- `src/cli/` — argument parsing and the verbs, host and container side.
+- `src/tui/` — the terminal UI and its session server.
+
+The terminal UI: the Core worktrees on the left, and on
 the right that worktree's tabs — as many shells as you open, kept running while
 you look at another worktree. Below the worktrees, an agents pane lists every tab
 running a coding agent and whether it needs you. Every tryout command for a
@@ -8,13 +18,13 @@ worktree is behind `a` or a right-click: the TUI asks its questions itself — a
 form, a branch list, a list of open Gerrit changes, a confirmation that names
 what goes — and runs it as a job in the **Activity** panel.
 
-It is **not shipped** by `ddev add-on get` — `install.yaml` lists its payload
-explicitly and `tui/` is not in it. Users get a release binary, fetched by
-`ddev tryout ui` on first use (see *Releasing*).
+The source in `tui/` is not shipped; its builds are, in `tryout/bin/` of a
+release (see *Releasing*).
 
 ```bash
-cargo run -- /path/to/tryout-project     # or run it from inside the project
-TRYOUT_TUI_BIN=$PWD/target/release/tryout ddev tryout ui   # through the add-on
+cargo test                                            # everything, in seconds
+TRYOUT_BIN=$PWD/target/release/tryout ddev tryout ui  # a local build, through the add-on
+scripts/stage-bins.sh                                 # all three builds into ../tryout/bin/
 ```
 
 In a shell every key is the shell's except **Ctrl-G**, which returns to the
@@ -161,7 +171,7 @@ cargo build --release                                           # macOS arm64
 cargo zigbuild --release --target x86_64-apple-darwin
 cargo zigbuild --release --target x86_64-unknown-linux-musl     # static ELF
 cargo zigbuild --release --target aarch64-unknown-linux-musl    # static ELF
-lipo -create -output tryout-tui-macos-universal \
+lipo -create -output tryout-macos-universal \
   target/release/tryout target/x86_64-apple-darwin/release/tryout
 ```
 
@@ -171,12 +181,13 @@ Sizes are ~2.5 MB (universal) and ~1 MB per Linux binary.
 
 ## Releasing
 
-`.github/workflows/tui-release.yml` builds the three assets
-(`tryout-tui-macos-universal`, `tryout-tui-linux-x86_64`,
-`tryout-tui-linux-aarch64`), a `.sha256` beside each, and publishes them as a
-GitHub release on a `tui-v<version>` tag. `fetch_tui` in `tryout/functions.sh`
-downloads from exactly there and refuses a file whose checksum does not match.
+`.github/workflows/release.yml`, run from the Actions tab with a version, builds
+`tryout-macos-universal`, `tryout-linux-x86_64` and `tryout-linux-aarch64`,
+checks each carries `#ddev-generated` (DDEV manages only files that do), commits
+them into `tryout/bin/` on a release-only commit, tags that commit and publishes
+the release with the binaries and their `.sha256` attached. `ddev add-on get`
+installs the tagged tree, so the binaries have to be in it; main stays free of
+them (`tryout/bin/` is gitignored).
 
-To release: bump `version` in `Cargo.toml` **and** `TRYOUT_TUI_VERSION` in
-`tryout/functions.sh` (a unit test fails when they differ), then push the tag
-`tui-v<version>`.
+Bump `tryout/VERSION` whenever what a user sees changes: `ddev tryout status`
+compares it with the stamp an install recorded.

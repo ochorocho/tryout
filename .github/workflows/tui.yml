@@ -1,13 +1,13 @@
 name: tui
-# Checks the terminal UI in tui/. Its release binaries are built by
-# tui-release.yml; this only proves every change still builds, lints and tests
+# Checks the tryout binary in tui/. Its release builds come from
+# release.yml; this only proves every change still builds, lints and tests
 # on both platforms it ships for.
 on:
   pull_request:
-    paths: [ "tui/**", ".github/workflows/tui*.yml" ]
+    paths: [ "tui/**", "tryout/VERSION", ".github/workflows/tui.yml" ]
   push:
     branches: [ main ]
-    paths: [ "tui/**", ".github/workflows/tui*.yml" ]
+    paths: [ "tui/**", "tryout/VERSION", ".github/workflows/tui.yml" ]
 
 permissions:
   contents: read

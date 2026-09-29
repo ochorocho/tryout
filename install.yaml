@@ -6,9 +6,8 @@ pre_install_actions:
   - |
     #ddev-description:Check host requirements
     # The tryout command runs on the HOST — prompts, tab completion — and
-    # reads the Core checkout there (status, completion), so a host
-    # git is still a hard requirement (on Windows this is Git Bash, which DDEV
-    # finds itself). The work itself runs in the web container.
+    # reads the Core checkout there (status, completion, the terminal UI), so a
+    # host git is a hard requirement. The work itself runs in the web container.
     if ! command -v git >/dev/null 2>&1; then
       echo "tryout needs 'git' on the host (Windows: install Git for Windows)."
       exit 1
@@ -27,30 +26,14 @@ pre_install_actions:
         ;;
     esac
 
-    # gum draws the tables, prompts and spinners. It is OPTIONAL: without it the
-    # ui_* helpers in functions.sh fall back to plain text and a typed prompt, so
-    # every command still works — it just looks plainer. Hence a note, not an
-    # exit. It cannot be sourced from functions.sh here (the payload is not
-    # copied yet), so the platform hint is spelled out inline.
-    if ! command -v gum >/dev/null 2>&1; then
-      echo "Optional: 'gum' is not installed — tryout will use plain output."
-      case "$(uname -s 2>/dev/null || echo "${OSTYPE:-}")" in
-        Darwin|darwin*) echo "  -> brew install gum" ;;
-        Linux|linux*)
-          if command -v apt-get >/dev/null 2>&1; then
-            echo "  -> sudo apt-get install gum"
-          elif command -v dnf >/dev/null 2>&1; then
-            echo "  -> sudo dnf install gum"
-          elif command -v pacman >/dev/null 2>&1; then
-            echo "  -> sudo pacman -S gum"
-          else
-            echo "  -> install 'gum' with your package manager"
-          fi
-          ;;
-        *) echo "  -> see https://github.com/charmbracelet/gum#installation" ;;
-      esac
-      echo "  https://github.com/charmbracelet/gum#installation"
-    fi
+    # tryout is a binary built for macOS and Linux (tryout/bin/); Windows has
+    # none. WSL2 is Linux and works.
+    case "$(uname -s 2>/dev/null || echo "${OSTYPE:-}")" in
+      MINGW*|MSYS*|CYGWIN*|mingw*|msys*|cygwin*)
+        echo "tryout runs on macOS and Linux, not Windows — use WSL2."
+        exit 1
+        ;;
+    esac
 
 project_files:
   - commands/host/tryout
@@ -63,9 +46,26 @@ post_install_actions:
   # These run with the working directory set to the project's .ddev/, so the
   # project root is "..".
   - |
-    #ddev-description:Make the tryout scripts executable
-    chmod +x tryout/*.sh \
+    #ddev-description:Make the tryout commands executable
+    chmod +x tryout/tryout tryout/tryout-php-fpm.sh \
       commands/host/tryout commands/host/autocomplete/tryout
+    for b in tryout/bin/tryout-*; do [ -f "$b" ] && chmod +x "$b"; done
+
+  - |
+    #ddev-description:Check there is a tryout build for this machine
+    # A release carries one per platform in tryout/bin/. A plain checkout of the
+    # source has none until tui/scripts/stage-bins.sh builds them.
+    case "$(uname -s 2>/dev/null)-$(uname -m 2>/dev/null)" in
+      Darwin-*)                bin=tryout-macos-universal ;;
+      Linux-x86_64|Linux-amd64) bin=tryout-linux-x86_64 ;;
+      Linux-aarch64|Linux-arm64) bin=tryout-linux-aarch64 ;;
+      *) bin="" ;;
+    esac
+    if [ -z "$bin" ] || [ ! -f "tryout/bin/$bin" ]; then
+      echo "No tryout build for this machine in .ddev/tryout/bin/."
+      echo "  -> install a release: ddev add-on get bmack/tryout"
+      echo "  -> or, from a source checkout: tui/scripts/stage-bins.sh, then add-on get again"
+    fi
 
   - |
     #ddev-description:Install the Gerrit patch list
@@ -149,14 +149,31 @@ post_install_actions:
     # dropped from the payload linger in projects installed before — here, the
     # removed herdr integration. Only our own copies (marker present) go.
     for f in ../herdr-plugin.toml tryout/herdr-panel.sh tryout/herdr-panel-open.sh \
-             tryout/herdr-panel-run.sh tryout/herdr-plugin.toml; do
+             tryout/herdr-panel-run.sh tryout/herdr-plugin.toml \
+             tryout/functions.sh tryout/commands.sh tryout/tryout-container.sh \
+             tryout/post-start.sh tryout/list-patches.sh tryout/resolve-patch-ref.sh \
+             tryout/resolve-gerrit-account.sh tryout/sync-composer.php \
+             tryout/site-composer.php tryout/use-core.php tryout/gitignore; do
       if [ -f "$f" ] && grep -q '#ddev-generated' "$f"; then
         rm -f "$f"
       fi
     done
+    # The terminal UI used to be downloaded per version; it is the tryout
+    # binary now. Those downloads carried no marker, so they go by name.
+    rm -f tryout/bin/tryout-tui-* tryout/.impl-rust
     if [ -f ../.git/info/exclude ]; then
       grep -vxF /herdr-plugin.toml ../.git/info/exclude > ../.git/info/exclude.tmp 2>/dev/null \
         && mv ../.git/info/exclude.tmp ../.git/info/exclude
+    fi
+
+  - |
+    #ddev-description:Point PHP-FPM daemons at the tryout binary
+    # config.worktrees.yaml from an earlier tryout starts them through the bash
+    # script; the binary is `tryout __fpm` now. sed -i with a suffix works with
+    # BSD and GNU sed alike.
+    if [ -f config.worktrees.yaml ]; then
+      sed -i.tryout-bak 's#bash /var/www/html/.ddev/tryout/tryout-php-fpm.sh #/var/www/html/.ddev/tryout/tryout __fpm #' config.worktrees.yaml
+      rm -f config.worktrees.yaml.tryout-bak
     fi
 
   - |
@@ -164,7 +181,7 @@ post_install_actions:
     # Lets `ddev tryout status` notice that a project is running an older copy
     # than the source it was installed from — the command and its tab-completion
     # keep working, they just offer the previous feature set.
-    sed -n 's/^TRYOUT_VERSION=//p' tryout/functions.sh | head -1 > tryout/.version
+    grep -E '^[0-9]+$' tryout/VERSION | head -1 > tryout/.version
 
   - |
     #ddev-description:Report next steps
@@ -216,9 +233,9 @@ removal_actions:
     rm -f tryout/.version
 
   - |
-    #ddev-description:Remove the downloaded terminal UI
-    # Fetched by `ddev tryout ui` on first use, so it is not a project file.
-    rm -rf tryout/bin
+    #ddev-description:Remove what tryout left for the host
+    # The PHP versions post-start notes for the terminal UI.
+    rm -rf tryout/.state
 
   - |
     #ddev-description:Remove generated worktree config and vhosts
