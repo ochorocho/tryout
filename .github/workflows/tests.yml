@@ -51,15 +51,10 @@ jobs:
           debug_enabled: ${{ github.event.inputs.debug_enabled }}
           addon_repository: ${{ env.GITHUB_REPOSITORY }}
           addon_ref: ${{ env.GITHUB_REF }}
-          # An explicit test_command bypasses the action's automatic
-          # `--filter-tags !release`, so exclude the release test here. It is
-          # covered by the nightly schedule job below.
-          test_command: |
-            case "${{ matrix.suite }}" in
-              unit)    bats tests/unit.bats ;;
-              # The binary is part of the payload: build it before installing.
-              install) tui/scripts/build-linux.sh && bats tests/test.bats --filter-tags '!release' ;;
-            esac
+          # The action runs test_command as plain words (no shell), so each
+          # suite is a case in tests/ci.sh. `install` leaves the release test
+          # out; the nightly job below covers it.
+          test_command: bash tests/ci.sh ${{ matrix.suite }}
 
   # Slow: clones TYPO3 Core, runs composer install and sets up a real TYPO3.
   # Minutes per test, so it is kept off the every-push path.
@@ -81,7 +76,7 @@ jobs:
           debug_enabled: ${{ github.event.inputs.debug_enabled }}
           addon_repository: ${{ env.GITHUB_REPOSITORY }}
           addon_ref: ${{ env.GITHUB_REF }}
-          test_command: tui/scripts/build-linux.sh && bats tests/lifecycle.bats
+          test_command: bash tests/ci.sh lifecycle
 
   # Browser tests: does each served worktree URL really render a frontend and log
   # into its backend? A URL returning 200 does not prove either. Gated like
@@ -148,4 +143,4 @@ jobs:
           debug_enabled: ${{ github.event.inputs.debug_enabled }}
           addon_repository: ${{ env.GITHUB_REPOSITORY }}
           addon_ref: ${{ env.GITHUB_REF }}
-          test_command: bats tests/test.bats --filter-tags release
+          test_command: bash tests/ci.sh release
