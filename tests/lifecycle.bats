@@ -73,11 +73,23 @@ assert_backend_gone() {
   assert_failure
 }
 
+# TRYOUT_IMPL=rust: the Rust port answers `ddev tryout`. Its binaries are not
+# part of the payload until the switch-over, so they come from a local build
+# (tui/scripts/stage-bins.sh) — the host one and the container's alike.
+use_rust_if_asked() {
+  [ "${TRYOUT_IMPL:-}" = "rust" ] || return 0
+  [ -f "${DIR}/tryout/bin/tryout-linux-x86_64" ] || fail "no Rust build — run tui/scripts/stage-bins.sh"
+  mkdir -p .ddev/tryout/bin
+  cp "${DIR}"/tryout/bin/tryout-* .ddev/tryout/bin/
+  cp "${DIR}/tryout/tryout" .ddev/tryout/tryout
+}
+
 # Clone only what the test needs. `ddev start` runs the post-start hook, which
 # clones Core, syncs the overlay, installs dependencies and sets up TYPO3.
 addon_start() {
   run ddev add-on get "${DIR}"
   assert_success
+  use_rust_if_asked
   run ddev start -y
   assert_success
 }
@@ -134,7 +146,9 @@ addon_start() {
   run bash -c "cd '${TESTDIR}' && git branch --show-current"
   assert_output "13.4"
 
-  run ddev exec vendor/bin/typo3 --version
+  # The primary's console lives in its instance, not at the root (the Core
+  # checkout) where a bare `ddev exec` starts.
+  run ddev tryout exec @primary vendor/bin/typo3 --version
   assert_success
   assert_output --partial "TYPO3 CMS 13.4"
 
@@ -306,6 +320,7 @@ addon_start() {
   set -eu -o pipefail
   run ddev add-on get "${DIR}"
   assert_success
+  use_rust_if_asked
 
   local change
   change=$(curl -s 'https://review.typo3.org/changes/?q=status:open+project:Packages/TYPO3.CMS+branch:main&n=1' \
@@ -429,4 +444,209 @@ JSON
   # Still clean, after all of it.
   run bash -c "git -C '${TESTDIR}' status --porcelain | head -5"
   assert_output ""
+}
+
+# ─── Journeys: every command a user can type, the way a user runs them ──────
+# One project per journey and many commands in a row, so each Core clone pays
+# for as much of the surface as possible. tests/unit.bats checks that every
+# verb, subcommand and flag appears somewhere in here or in test.bats.
+
+# An open change on main, resolved live so the test does not rot.
+open_change() {
+  curl -s 'https://review.typo3.org/changes/?q=status:open+project:Packages/TYPO3.CMS+branch:main&n=1' \
+    | tail -c +6 | sed -n 's/.*"_number": *\([0-9]*\).*/\1/p' | head -1
+}
+
+# How many tables a database holds.
+table_count() {
+  ddev mysql -uroot -proot -N -e \
+    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$1';" 2>/dev/null | tr -dc '0-9'
+}
+
+# bats test_tags=lifecycle
+@test "journey: the primary is inspected, patched, updated, rebuilt and wiped" {
+  set -eu -o pipefail
+  addon_start
+
+  # The tools' contracts: one JSON value each, and nothing else on stdout.
+  run bash -c "ddev tryout worktree branches --json | jq -e 'index(\"main\") != null'"
+  assert_success
+  run bash -c "ddev tryout worktree list --json | jq -e '.[0].primary == true and .[0].name == \"main\"'"
+  assert_success
+  run bash -c "ddev tryout patch --list --json | jq -e 'type == \"array\" and length > 0'"
+  assert_success
+
+  local change
+  change="$(open_change)"
+  [ -n "${change}" ]
+  run ddev tryout patch "${change}"
+  assert_success
+  run ddev tryout status
+  assert_output --partial "1 applied"
+
+  # Update refuses a dirty tree and says how to get past it...
+  echo "local edit" >> "${TESTDIR}/README.md"
+  run ddev tryout download
+  assert_failure
+  assert_output --partial "download --reset"
+  # ...and --reset drops the edit and the patch alike.
+  run ddev tryout download --reset
+  assert_success
+  run ddev tryout status
+  assert_output --partial "none applied"
+  run bash -c "cd '${TESTDIR}' && git status --porcelain | wc -l | tr -d ' '"
+  assert_output "0"
+  run ddev tryout download
+  assert_success
+
+  # composer puts back a sysext taken out of the overlay by hand.
+  local overlay="${TESTDIR}/TYPO3-Instances/primary/composer.tryout.json"
+  sed -i.bak '/"typo3\/cms-backend"/d' "${overlay}" && rm -f "${overlay}.bak"
+  run grep -q '"typo3/cms-backend"' "${overlay}"
+  assert_failure
+  run ddev tryout composer
+  assert_success
+  run grep -q '"typo3/cms-backend"' "${overlay}"
+  assert_success
+
+  # delete asks first; with nobody to ask it refuses and names the way past.
+  run ddev tryout delete
+  assert_failure
+  assert_output --partial "--yes"
+  local fileadmin="${TESTDIR}/TYPO3-Instances/primary/public/fileadmin"
+  mkdir -p "${fileadmin}" && echo x > "${fileadmin}/tryout-marker.txt"
+  run ddev tryout delete --yes
+  assert_success
+  assert_file_not_exist "${fileadmin}/tryout-marker.txt"
+  [ "$(table_count db)" -gt 0 ]
+  assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
+}
+
+# bats test_tags=lifecycle
+@test "journey: a served worktree is switched, reset, renamed, opened, wiped and removed" {
+  set -eu -o pipefail
+  addon_start
+
+  # --serve creates a hostname, and the command restarts DDEV for it by itself.
+  run ddev tryout worktree add side 13.4 --serve --php 8.4
+  assert_success
+  assert_backend_loads "https://side.${PROJNAME}.ddev.site/typo3/"
+
+  run ddev tryout checkout 12.4 --site side
+  assert_success
+  run ddev tryout exec side vendor/bin/typo3 --version
+  assert_success
+  assert_output --partial "TYPO3 CMS 12.4"
+
+  run ddev tryout reset side
+  assert_success
+  run ddev tryout download side --reset
+  assert_success
+
+  # A served worktree renamed moves its site: new hostname up, old one gone.
+  run ddev tryout worktree rename side lts
+  assert_success
+  assert_dir_exist "${TESTDIR}/worktrees/lts"
+  assert_dir_not_exist "${TESTDIR}/worktrees/side"
+  assert_backend_loads "https://lts.${PROJNAME}.ddev.site/typo3/"
+  assert_backend_gone "https://side.${PROJNAME}.ddev.site/typo3/"
+
+  # launch hands the URL to the desktop's opener; a stand-in records it.
+  local bin="${BATS_TEST_TMPDIR}/bin"
+  mkdir -p "${bin}"
+  printf '#!/bin/sh\necho "$1" > "%s/opened"\n' "${BATS_TEST_TMPDIR}" > "${bin}/open"
+  cp "${bin}/open" "${bin}/xdg-open"
+  chmod +x "${bin}/open" "${bin}/xdg-open"
+  PATH="${bin}:${PATH}" run ddev tryout launch lts --backend
+  assert_success
+  run cat "${BATS_TEST_TMPDIR}/opened"
+  assert_output "https://lts.${PROJNAME}.ddev.site/typo3/"
+
+  # --all wipes every site, the served one included, and both come back fresh.
+  run ddev tryout delete --all --yes
+  assert_success
+  assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
+  assert_backend_loads "https://lts.${PROJNAME}.ddev.site/typo3/"
+
+  run ddev tryout worktree unserve lts --drop-db
+  assert_success
+  [ "$(table_count db_lts)" = "0" ]
+
+  # remove asks first; --yes is the scripted answer, and it takes the directory.
+  run ddev tryout worktree remove lts
+  assert_failure
+  assert_output --partial "--yes"
+  run ddev tryout worktree remove lts --yes
+  assert_success
+  assert_dir_not_exist "${TESTDIR}/worktrees/lts"
+  run bash -c "cd '${TESTDIR}' && git worktree list --porcelain"
+  refute_output --partial "worktrees/lts"
+}
+
+# bats test_tags=lifecycle
+@test "journey: contribution is set up, diagnosed and taken back out" {
+  set -eu -o pipefail
+  addon_start
+  local user="tryout-e2e-user"
+
+  # The account lookup finds nobody by this name and the SSH probe cannot
+  # authenticate here; both only inform, so setup still completes.
+  run ddev tryout cs setup "${user}"
+  assert_success
+  assert_output --partial "Contribution setup complete"
+  assert_file_executable "${TESTDIR}/.git/hooks/commit-msg"
+  assert_file_executable "${TESTDIR}/.git/hooks/pre-commit"
+  run git -C "${TESTDIR}" config --get commit.template
+  assert_output ".ddev/tryout/gitmessage.txt"
+  run git -C "${TESTDIR}" remote get-url --push origin
+  assert_output "ssh://${user}@review.typo3.org:29418/Packages/TYPO3.CMS"
+
+  run ddev tryout cs doctor
+  assert_success
+  assert_output --partial "${user}"
+  assert_output --partial "installed"
+  assert_output --partial "Gerrit SSH"
+
+  run ddev tryout cs uninstall
+  assert_success
+  assert_file_not_exist "${TESTDIR}/.git/hooks/commit-msg"
+  run git -C "${TESTDIR}" remote get-url --push origin
+  assert_output "$(git -C "${TESTDIR}" remote get-url origin)"
+
+  run ddev tryout help
+  assert_success
+  assert_output --partial "Commands:"
+
+  # No session was ever started: stop says so and succeeds.
+  run ddev tryout ui stop
+  assert_success
+  assert_output --partial "No session running"
+}
+
+# bats test_tags=lifecycle
+@test "serving works when DDEV has to write the hostname into /etc/hosts" {
+  set -eu -o pipefail
+  # With use_dns_when_possible off, DDEV never trusts DNS for *.ddev.site: every
+  # hostname goes into /etc/hosts through `sudo ddev-hostname` — the route a
+  # machine with DNS-rebinding protection takes, and the one that asks for a
+  # password. It runs where sudo needs none (CI); anywhere else it would stop at
+  # the prompt, which the TUI's own tests cover with a stand-in.
+  sudo -n true 2>/dev/null || skip "needs passwordless sudo — DDEV edits /etc/hosts here"
+  run ddev config --use-dns-when-possible=false
+  assert_success
+  addon_start
+
+  run ddev tryout worktree add hosts 13.4 --serve
+  assert_success
+  run grep -F "hosts.${PROJNAME}.ddev.site" /etc/hosts
+  assert_success
+  assert_backend_loads "https://hosts.${PROJNAME}.ddev.site/typo3/"
+
+  # A --php switch keeps the hostname set, so it applies in place — no restart,
+  # and no second trip through sudo.
+  run ddev tryout worktree serve hosts --php 8.4
+  assert_success
+  assert_output --partial "Applied without a restart"
+  run ddev tryout exec hosts vendor/bin/typo3 --version
+  assert_output --partial "PHP 8.4"
 }

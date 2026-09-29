@@ -33,11 +33,29 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
         Some(Verb::Reset) => reset(ctx, rest),
         Some(Verb::Delete) => delete(ctx, rest),
         Some(Verb::Exec) => exec(ctx, rest),
-        Some(_) => {
-            out::error(format!("'{action}' is not in this build yet"));
-            Err(Exit(70))
+        Some(Verb::Cs) => {
+            require_core(ctx)?;
+            match rest.first().map(String::as_str).unwrap_or("setup") {
+                "setup" => step(crate::core::contrib::setup(
+                    ctx,
+                    rest.get(1).map(String::as_str).unwrap_or(""),
+                )),
+                "doctor" => {
+                    crate::core::contrib::doctor(ctx);
+                    Ok(())
+                }
+                "uninstall" => {
+                    crate::core::contrib::uninstall(ctx);
+                    Ok(())
+                }
+                sub => {
+                    out::error(format!("Unknown cs command: {sub}"));
+                    Err(Exit(1))
+                }
+            }
         }
-        None => {
+        // Host-only verbs never reach the container.
+        Some(_) | None => {
             out::error(format!("tryout-container: unknown verb '{action}'"));
             Err(Exit(64))
         }

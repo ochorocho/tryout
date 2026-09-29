@@ -44,7 +44,8 @@ Stage 8 is done.
 ## Stage 6: Host orchestration
 **Goal**: delegate (`ddev exec --raw`), Mutagen flush, restart-on-hostname-change, confirmations, patch picker + persist, cs, `ui` on /dev/tty.
 **Success Criteria**: `lifecycle.bats` green with `TRYOUT_IMPL=rust`.
-**Status**: Not Started
+**Status**: Complete — `cs setup/doctor/uninstall` ported (Gerrit account lookup, SSH diagnosis by TCP connect + ssh, host report), 9 more parity cases (83 in all). `TRYOUT_IMPL=rust` in the bash host command hands verbs to the launcher; lifecycle.bats copies the staged binaries in. Lifecycle against Rust: 8/9 on the first run; the ninth (checkout) failed identically on bash — a stale `ddev exec vendor/bin/typo3` from before TYPO3-Instances/, fixed to `ddev tryout exec @primary`.
+Also: TUI jobs run on a pseudo-terminal (echo off) so DDEV's `sudo` can ask; a password prompt opens a masked popup that answers or cancels it.
 
 ## Stage 7: Container lifecycle
 **Goal**: `__post-start`, `__fpm`, php-versions snapshot.
@@ -78,12 +79,12 @@ Stage 8 is done.
 - [x] unserve keeps DB, saves settings.php; setup restores it when tables exist
 - [x] styleguide frontend best-effort; `db_site_sql` targets the site DB
 - [ ] Gerrit: XSSI strip, merged/abandoned skipped, Change-Id dedupe, cherry-pick abort, one rebuild, site asked first, `@primary` blanked, persist offer, picker skipped without TTY/with list
-- [ ] cs: SSH verdict from ssh; ssh-add only classifies; host report; author identity by account id
-- [ ] Mutagen flush after mutating verbs only
-- [ ] nothing container-side calls `ddev`; `require_core` on the host first; env forwarded
+- [x] cs: SSH verdict from ssh; ssh-add only classifies; host report; author identity by account id
+- [x] Mutagen flush after mutating verbs only
+- [x] nothing container-side calls `ddev`; `require_core` on the host first; env forwarded
 - [x] `site_for_name` maps the active worktree to `@primary`
 - [ ] `ctr` never prompts; ask-then-`explain_missing`; no TTY → BRANCH fallback
-- [ ] every error states a next step; `reject_args` for no-arg verbs
+- [x] every error states a next step; `reject_args` for no-arg verbs
 - [x] completion: `value<TAB>desc` / `_activeHelp_`, flags once and after `-`, `''` = empty, root from `$0`, exit 0, no stderr
 - [x] `addon_is_stale` ignores a missing stamp
 - [ ] `ui stop` never downloads or starts a session; session protocol VERSION bumped on wire changes

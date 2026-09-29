@@ -3803,3 +3803,35 @@ print("ok")' "${output}"
   printf '%s' "${fn}" | grep -q 'mysql -h db -uroot -proot -D "${db}"' \
     || fail "mysql must select the named database"
 }
+
+@test "every command a user can type runs somewhere against a real DDEV project" {
+  set -eu -o pipefail
+  # One pattern per verb, subcommand and flag. Each must match a `ddev tryout …`
+  # line in the DDEV-backed suites; the journeys in lifecycle.bats exist so
+  # that it does. A new verb or flag with no end-to-end test fails here.
+  local patterns=(
+    'status' 'help' 'composer' 'launch .*--backend' 'ui stop'
+    'download$' 'download --reset' 'download [a-z0-9-]+ --reset'
+    'checkout [0-9.]+' 'checkout .*--site'
+    'patch "?\$\{?change' 'patch --list --json' 'patch [0-9]+'
+    'reset$' 'reset [a-z0-9-]+'
+    'delete$' 'delete --yes' 'delete --all'
+    'exec [a-z@]'
+    'cs setup' 'cs doctor' 'cs uninstall' 'cs help'
+    'worktree add [a-z0-9-]+ [0-9.]+$' 'worktree add .*--serve' 'worktree add .*--php'
+    'worktree list$' 'worktree list --plain' 'worktree list --json'
+    'worktree branches --json'
+    'worktree use' 'worktree serve [a-z0-9-]+ --php' 'worktree unserve [a-z0-9-]+$'
+    'worktree unserve .*--drop-db' 'worktree rename'
+    'worktree remove [a-z0-9-]+$' 'worktree remove .*--yes'
+  )
+  # Not covered on purpose: `ui` attaching needs a terminal to draw on; the TUI
+  # is tested by its own Rust suite (pseudo-terminal and snapshot tests).
+  local lines p missing=()
+  lines="$(grep -hoE 'ddev tryout [^|;&)`]*' "${DIR}/tests/test.bats" "${DIR}/tests/lifecycle.bats" \
+    | sed -e 's/["]*[[:space:]]*$//')"
+  for p in "${patterns[@]}"; do
+    printf '%s\n' "${lines}" | grep -qE "^ddev tryout ${p}" || missing+=("${p}")
+  done
+  [ ${#missing[@]} -eq 0 ] || fail "no end-to-end test runs: ${missing[*]}"
+}

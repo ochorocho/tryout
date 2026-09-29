@@ -37,6 +37,29 @@ pub const PAYLOAD_VERSION: &str = "48";
 
 #[cfg(test)]
 mod tests {
+    /// `ddev` is only a stub inside the web image: the only code allowed to run
+    /// it is the host's side of the split, core/ddev.rs.
+    #[test]
+    fn nothing_but_the_host_side_runs_ddev() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![src.join("cli/container.rs")];
+        files.extend(
+            std::fs::read_dir(src.join("core"))
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.file_name().is_some_and(|n| n != "ddev.rs")),
+        );
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            assert!(
+                !text.contains("Command::new(\"ddev\")"),
+                "{} runs ddev",
+                f.display()
+            );
+        }
+    }
+
     #[test]
     fn the_payload_version_matches_the_bash_payload() {
         let f = std::fs::read_to_string(concat!(

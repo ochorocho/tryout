@@ -84,12 +84,17 @@ jobs:
 
   # Slow: clones TYPO3 Core, runs composer install and sets up a real TYPO3.
   # Minutes per test, so it is kept off the every-push path.
+  #
+  # Until the switch-over to the Rust binary, every lifecycle run happens twice:
+  # once on the bash implementation, once with TRYOUT_IMPL=rust, which hands
+  # each verb to a Linux build of tui/ (host and web container alike).
   lifecycle:
-    name: lifecycle (${{ matrix.ddev_version }})
+    name: lifecycle (${{ matrix.ddev_version }}, ${{ matrix.impl }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         ddev_version: [stable, HEAD]
+        impl: [bash, rust]
       fail-fast: false
 
     runs-on: ubuntu-latest
@@ -113,7 +118,17 @@ jobs:
           debug_enabled: ${{ github.event.inputs.debug_enabled }}
           addon_repository: ${{ env.GITHUB_REPOSITORY }}
           addon_ref: ${{ env.GITHUB_REF }}
-          test_command: bats tests/lifecycle.bats
+          test_command: |
+            if [ "${{ matrix.impl }}" = rust ]; then
+              sudo apt-get install -y musl-tools
+              rustup target add x86_64-unknown-linux-musl
+              (cd tui && cargo build --release --locked --target x86_64-unknown-linux-musl)
+              mkdir -p tryout/bin
+              cp tui/target/x86_64-unknown-linux-musl/release/tryout tryout/bin/tryout-linux-x86_64
+              TRYOUT_IMPL=rust bats tests/lifecycle.bats
+            else
+              bats tests/lifecycle.bats
+            fi
 
   # Browser tests: does each served worktree URL really render a frontend and log
   # into its backend? A URL returning 200 does not prove either. Gated like

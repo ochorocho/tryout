@@ -13,6 +13,12 @@
 
 set -euo pipefail
 
+# During the Rust port only: TRYOUT_IMPL=rust hands every verb to the Rust binary,
+# so the DDEV-backed bats suites can run against either implementation. Removed at
+# the switch-over, when this file becomes a shim that always does this.
+if [ "${TRYOUT_IMPL:-}" = "rust" ]; then
+    exec "${DDEV_APPROOT}/.ddev/tryout/tryout" "$@"
+fi
 
 source "${DDEV_APPROOT}/.ddev/tryout/functions.sh"
 
@@ -36,7 +42,8 @@ shift || true
 # When the verb comes back the host is brought up to date: with Mutagen a
 # worktree the container just checked out is not on the host for a few seconds
 # more, and `ddev tryout worktree add x && cd worktrees/x` must not race that.
-# The two verbs that change nothing skip the flush.
+# The verbs that change nothing skip the flush. `composer` is not one of them: it
+# rewrites the overlay, and a host that reads it straight after must see it.
 delegate() {
     local envs=() rc=0
     [ -n "${TRYOUT_BRANCH:-}" ]      && envs+=("TRYOUT_BRANCH=${TRYOUT_BRANCH}")
@@ -48,7 +55,7 @@ delegate() {
     # ${envs[@]+…}: an empty array is "unbound" to bash 3.2 under set -u.
     ddev exec "$(quote_for_exec env ${envs[@]+"${envs[@]}"} bash /var/www/html/.ddev/tryout/tryout-container.sh "$@")" || rc=$?
     case "${1:-} ${2:-}" in
-        "status "*|"exec "*|"composer "*|"worktree list"*|"cs doctor"*) ;;
+        "status "*|"exec "*|"worktree list"*|"cs doctor"*) ;;
         *) flush_mutagen ;;
     esac
     return "${rc}"

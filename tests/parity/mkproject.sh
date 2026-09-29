@@ -23,6 +23,9 @@ for ext in core backend frontend; do
     mkdir -p "typo3/sysext/${ext}"
     printf '{\n    "name": "typo3/cms-%s"\n}\n' "${ext}" > "typo3/sysext/${ext}/composer.json"
 done
+mkdir -p Build/git-hooks/unix+mac
+printf '#!/bin/sh\n# Change-Id\n' > Build/git-hooks/commit-msg
+printf '#!/bin/sh\n# CGL\n' > Build/git-hooks/unix+mac/pre-commit
 g add -A && g commit -qm "[TASK] Initial"
 g branch TYPO3_4-5
 # Release branches each carry a commit of their own, so the base a detached

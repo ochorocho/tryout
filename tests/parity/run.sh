@@ -67,7 +67,7 @@ run_case() {
         DDEV_WEBSERVER_TYPE=nginx-fpm DDEV_DATABASE=mariadb:10.11
         DDEV_PRIMARY_URL=https://parity.ddev.site
         FAKE_LOG="${out}/calls" FAKE_ANSWERS="${work}/run/answers"
-        TRYOUT_GERRIT_API="http://127.0.0.1:${port}"
+        TRYOUT_GERRIT_API="http://127.0.0.1:${port}" TRYOUT_GERRIT_SSH_HOST=127.0.0.1
         REAL_PHP="$(command -v php)" TRYOUT_FPM_RUN_DIR="${work}/run/fpm"
         GIT_AUTHOR_NAME=Parity GIT_AUTHOR_EMAIL=parity@example.com
         GIT_COMMITTER_NAME=Parity GIT_COMMITTER_EMAIL=parity@example.com

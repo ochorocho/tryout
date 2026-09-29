@@ -43,13 +43,6 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
     }
 }
 
-/// A verb the Rust side does not do yet; the bash implementation still does.
-fn not_ported(what: &str) -> Res {
-    out::error(format!("'{what}' is not in this build yet"));
-    out::error("  → run it without TRYOUT_BIN");
-    Err(Exit(70))
-}
-
 pub fn print(s: &str) {
     let mut o = std::io::stdout().lock();
     let _ = o.write_all(s.as_bytes());
@@ -58,13 +51,14 @@ pub fn print(s: &str) {
 
 fn delegate(ctx: &Ctx, args: &[&str]) -> Res {
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    // The verbs that change nothing skip the Mutagen flush.
+    // The verbs that change nothing skip the Mutagen flush. `composer` is not
+    // one: it rewrites the overlay the host may read next.
     let quiet = matches!(
         (
             args.first().map(String::as_str),
             args.get(1).map(String::as_str)
         ),
-        (Some("status" | "exec" | "composer"), _)
+        (Some("status" | "exec"), _)
             | (Some("worktree"), Some("list"))
             | (Some("cs"), Some("doctor"))
     );
@@ -822,13 +816,48 @@ fn worktree_remove(ctx: &Ctx, args: &[String]) -> Res {
 
 // ─── cs ─────────────────────────────────────────────────────────────────────
 
-fn cs(_ctx: &Ctx, args: &[String]) -> Res {
+fn cs(ctx: &Ctx, args: &[String]) -> Res {
     match args.first().map(String::as_str).unwrap_or("setup") {
         "help" | "-h" | "--help" => {
             print(&help::cs());
             Ok(())
         }
-        "setup" | "doctor" | "uninstall" => not_ported("cs"),
+        "setup" => {
+            require_core(ctx)?;
+            // The username is the one thing setup may ask for: resolve it here,
+            // where a prompt can be answered.
+            let mut user = args.get(1).cloned().unwrap_or_default();
+            if user.is_empty() {
+                user = std::env::var("TRYOUT_GERRIT_USER").unwrap_or_default();
+            }
+            if user.is_empty() {
+                user = crate::core::git::out(&ctx.root, &["config", "--get", "tryout.gerritUser"])
+                    .unwrap_or_default();
+            }
+            if user.is_empty() {
+                user = prompt::ask_text("Gerrit username (review.typo3.org)", "").ok_or_else(
+                    || {
+                        explain_missing("ddev tryout cs setup <username>");
+                        Exit(1)
+                    },
+                )?;
+            }
+            delegate(ctx, &["cs", "setup", &user])?;
+            crate::core::contrib::host_ssh_report(&user);
+            Ok(())
+        }
+        "doctor" => {
+            require_core(ctx)?;
+            delegate(ctx, &["cs", "doctor"])?;
+            let user = crate::core::git::out(&ctx.root, &["config", "--get", "tryout.gerritUser"])
+                .unwrap_or_default();
+            crate::core::contrib::host_ssh_report(&user);
+            Ok(())
+        }
+        "uninstall" => {
+            require_core(ctx)?;
+            delegate(ctx, &["cs", "uninstall"])
+        }
         sub => {
             out::error(format!("Unknown cs command: {sub}"));
             print(&help::cs());

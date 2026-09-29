@@ -32,7 +32,7 @@ GERRIT_REMOTE="https://review.typo3.org/Packages/TYPO3.CMS"
 # TRYOUT_GERRIT_API points the REST calls elsewhere — the parity tests use it.
 GERRIT_API="${TRYOUT_GERRIT_API:-https://review.typo3.org}"
 GERRIT_URL="https://review.typo3.org/c/Packages/TYPO3.CMS/+/"
-GERRIT_SSH_HOST="review.typo3.org"
+GERRIT_SSH_HOST="${TRYOUT_GERRIT_SSH_HOST:-review.typo3.org}"
 GERRIT_SSH_PORT="29418"
 GERRIT_PROJECT="Packages/TYPO3.CMS"
 COMMIT_TEMPLATE_SRC="${PROJECT_ROOT}/.ddev/tryout/gitmessage.txt"
