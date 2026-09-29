@@ -58,8 +58,10 @@ jobs:
 
   # Slow: clones TYPO3 Core, runs composer install and sets up a real TYPO3.
   # Minutes per test, so it is kept off the every-push path.
+  # No `name:` on the jobs that `if:` can skip: GitHub renders a skipped job's
+  # name without expanding the matrix, so `${{ matrix.* }}` would show as is.
+  # Without one it is the job id, and GitHub appends the matrix values itself.
   lifecycle:
-    name: lifecycle (${{ matrix.ddev_version }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
@@ -125,8 +127,7 @@ jobs:
 
   # The published release, checked nightly so a broken tag is caught even when
   # nobody pushes.
-  release:
-    name: install from release (${{ matrix.ddev_version }})
+  install-from-release:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
