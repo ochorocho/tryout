@@ -140,6 +140,44 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.confirm_close {
         draw_confirm_close(f, app, f.area());
     }
+    if app.password.is_some() {
+        draw_password(f, app, f.area());
+    }
+}
+
+/// A job asks for a password (sudo, for DDEV's hosts file): a masked field.
+fn draw_password(f: &mut Frame, app: &App, screen: Rect) {
+    let Some(p) = &app.password else { return };
+    let w = 60.min(screen.width);
+    let area = Rect::new(
+        screen.x + (screen.width - w) / 2,
+        screen.y + screen.height / 3,
+        w,
+        8,
+    )
+    .intersection(screen);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::ACCENT))
+        .title(Span::styled(" Password needed ", theme::text().bold()));
+    let dots = "•".repeat(p.value.chars().count());
+    let lines = vec![
+        Line::styled(format!(" {} asks:", p.label), theme::text()),
+        Line::styled(format!(" {}", p.prompt), theme::text().bold()),
+        Line::default(),
+        Line::from(vec![
+            Span::styled("   ", theme::text()),
+            Span::styled(dots, theme::text()),
+            Span::styled("▏", Style::new().fg(theme::ACCENT)),
+        ]),
+        Line::default(),
+        Line::styled(
+            " Sent to that command only — never stored or logged.",
+            theme::dim(),
+        ),
+    ];
+    f.render_widget(Clear, area);
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// How many options a pick list shows at once.
@@ -640,6 +678,21 @@ pub fn agent_at(screen: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
 }
 
 /// The job whose Activity row is at a screen cell, if any.
+/// Is the pointer on a failed Activity row's ↻, its last column? The job's id.
+pub fn activity_retry_at(screen: Rect, app: &App, col: u16, row: u16) -> Option<u64> {
+    let inner =
+        Block::bordered().inner(side(areas(screen, app.sidebar_width).sidebar, app).activity?);
+    if col + 2 != inner.x + inner.width || !inner.contains(ratatui::layout::Position::new(col, row))
+    {
+        return None;
+    }
+    app.jobs
+        .list()
+        .get((row - inner.y) as usize)
+        .filter(|j| matches!(j.state, crate::tui::jobs::JobState::Done { ok: false, .. }))
+        .map(|j| j.id)
+}
+
 pub fn activity_at(screen: Rect, app: &App, col: u16, row: u16) -> Option<u64> {
     let inner =
         Block::bordered().inner(side(areas(screen, app.sidebar_width).sidebar, app).activity?);
@@ -676,6 +729,11 @@ fn draw_activity(f: &mut Frame, app: &App, area: Rect) {
         .take(inner.height as usize)
         .map(|j| {
             let (glyph, glyph_style, tail) = match &j.state {
+                JobState::Running { .. } if j.waiting.is_some() => (
+                    "?",
+                    Style::new().fg(theme::ACCENT).bold(),
+                    "waiting for password".into(),
+                ),
                 JobState::Running { step, since } => (
                     SPINNER[(since.elapsed().as_millis() / 100) as usize % SPINNER.len()],
                     Style::new().fg(theme::ACCENT),
@@ -693,16 +751,68 @@ fn draw_activity(f: &mut Frame, app: &App, area: Rect) {
                     code.map_or("failed".into(), |c| format!("exit {c}")),
                 ),
             };
-            let label = truncate(&j.label, width.saturating_sub(4).min(24));
-            let rest = truncate(&tail, width.saturating_sub(label.chars().count() + 6));
-            Line::from(vec![
+            // A failed row ends in a ↻ to click, its own column.
+            let failed = matches!(j.state, JobState::Done { ok: false, .. });
+            let room = width.saturating_sub(if failed { 3 } else { 0 });
+            let label = truncate(&j.label, room.saturating_sub(4).min(24));
+            let rest = truncate(&tail, room.saturating_sub(label.chars().count() + 6));
+            let mut spans = vec![
                 Span::styled(format!(" {glyph} "), glyph_style),
-                Span::styled(label, theme::text()),
+                Span::styled(label.clone(), theme::text()),
                 Span::styled(format!(" · {rest}"), theme::dim()),
-            ])
+            ];
+            if failed {
+                let used = 3 + label.chars().count() + 3 + rest.chars().count();
+                spans.push(Span::raw(" ".repeat(width.saturating_sub(used + 2))));
+                spans.push(Span::styled("↻ ", Style::new().fg(theme::ACCENT).bold()));
+            }
+            Line::from(spans)
         })
         .collect();
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The clickable retry in a finished job's log border.
+const RETRY_BUTTON: &str = " ↻ retry (r) ";
+
+/// Where the log's text goes: the pane inside its border.
+pub fn log_inner(screen: Rect, app: &App) -> Rect {
+    let pane = areas(screen, app.sidebar_width).pane;
+    Rect::new(
+        pane.x + 1,
+        pane.y + 1,
+        pane.width.saturating_sub(2),
+        pane.height.saturating_sub(2),
+    )
+}
+
+/// A job's log run through a terminal emulator the size of `inner`.
+fn log_parser(job: &crate::tui::jobs::Job, inner: Rect) -> vt100::Parser {
+    let mut parser = vt100::Parser::new(inner.height.max(1), inner.width.max(1), 4000);
+    for line in &job.log {
+        parser.process(line.as_bytes());
+        parser.process(b"\r\n");
+    }
+    parser
+}
+
+/// How far back the log can scroll at this size: its rows beyond one screen,
+/// wrapped lines counted as the rows they take.
+pub fn log_max_scroll(job: &crate::tui::jobs::Job, inner: Rect) -> usize {
+    let mut parser = log_parser(job, inner);
+    parser.screen_mut().set_scrollback(usize::MAX);
+    parser.screen().scrollback()
+}
+
+/// Is the pointer on the retry button of the open log?
+pub fn log_retry_at(screen: Rect, app: &App, col: u16, row: u16) -> bool {
+    if !app.log_retryable() {
+        return false;
+    }
+    let pane = areas(screen, app.sidebar_width).pane;
+    let w = RETRY_BUTTON.chars().count() as u16;
+    let right = pane.x + pane.width.saturating_sub(1);
+    row == pane.y + pane.height.saturating_sub(1) && col >= right.saturating_sub(w) && col < right
 }
 
 /// A job's log in the right pane: its output through a terminal emulator, so
@@ -737,15 +847,22 @@ fn draw_log(f: &mut Frame, app: &App, job: &crate::tui::jobs::Job, area: Rect) {
         ))
         .title_bottom(Line::from(vec![
             state,
-            Span::styled(" Esc closes · PgUp/PgDn scroll ", theme::dim()),
+            Span::styled(" esc closes · ↑↓ wheel PgUp PgDn scroll ", theme::dim()),
         ]));
+    let block = if matches!(job.state, JobState::Done { .. }) {
+        block.title_bottom(
+            Line::from(Span::styled(
+                RETRY_BUTTON,
+                Style::new().fg(theme::ACCENT).bold(),
+            ))
+            .right_aligned(),
+        )
+    } else {
+        block
+    };
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let mut parser = vt100::Parser::new(inner.height.max(1), inner.width.max(1), 4000);
-    for line in &job.log {
-        parser.process(line.as_bytes());
-        parser.process(b"\r\n");
-    }
+    let mut parser = log_parser(job, inner);
     parser.screen_mut().set_scrollback(app.log_scroll);
     let mut cursor = tui_term::widget::Cursor::default();
     cursor.hide();
@@ -1121,6 +1238,7 @@ fn placeholder<'a>(w: &'a crate::tui::worktrees::Worktree, width: u16) -> Paragr
 
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let hints: &[(&str, &str)] = match (app.menu.is_some(), app.focus) {
+        _ if app.password.is_some() => &[("⏎", "send"), ("esc", "cancel the command")],
         _ if app.rename.is_some() => &[("⏎", "keep"), ("esc", "cancel")],
         _ if app.form.as_ref().is_some_and(|f| !f.is_confirmation()) => &[
             ("tab", "next field"),
@@ -1130,7 +1248,19 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             ("esc", "cancel"),
         ],
         _ if app.form.is_some() => &[("y", "go ahead"), ("", "any other key cancels")],
-        _ if app.log_view.is_some() => &[("esc", "close the log"), ("PgUp PgDn", "scroll")],
+        _ if app.log_retryable() => &[
+            ("esc", "close the log"),
+            ("↑↓ wheel", "scroll"),
+            ("r", "retry"),
+        ],
+        _ if app.log_view.is_some() => &[("esc", "close the log"), ("↑↓ wheel", "scroll")],
+        _ if app.focus == Focus::List && app.jobs.last_failed().is_some() => &[
+            ("↑↓", "select"),
+            ("⏎", "shell"),
+            ("a", "actions"),
+            ("R", "retry the failed command"),
+            ("L", "its log"),
+        ],
         (true, _) => &[("↑↓", "select"), ("⏎", "run"), ("esc", "cancel")],
         (false, Focus::List) => &[
             ("↑↓", "select"),
@@ -1195,6 +1325,59 @@ mod tests {
         let mut a = App::new(PathBuf::from("/p/demo"));
         a.set_worktrees(Ok(fixture()));
         a
+    }
+
+    #[test]
+    fn a_finished_logs_retry_button_is_where_it_is_drawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = loaded();
+        a.root = dir.path().to_path_buf();
+        a.jobs = crate::tui::jobs::Jobs::new(crate::tui::jobs::tests::fake(dir.path()));
+        let action = crate::tui::actions::Action {
+            label: "Serve".into(),
+            hint: String::new(),
+            args: vec!["fail".into()],
+            run: crate::tui::actions::Run::Background,
+        };
+        let id = a.jobs.enqueue(&action, false);
+        let t = std::time::Instant::now();
+        while !a
+            .jobs
+            .get(id)
+            .is_some_and(|j| matches!(j.state, crate::tui::jobs::JobState::Done { .. }))
+        {
+            a.tick();
+            assert!(t.elapsed().as_secs() < 10);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        a.open_log(id);
+        a.screen = Rect::new(0, 0, 100, 24);
+        let backend = render(&a, 100, 24);
+        let bottom: String = (0..100)
+            .map(|x| backend.backend().buffer()[(x, 22)].symbol().to_string())
+            .collect();
+        let at = bottom
+            .find("↻")
+            .map(|b| bottom[..b].chars().count() as u16)
+            .expect("the button is drawn");
+        assert!(log_retry_at(a.screen, &a, at, 22), "{bottom}");
+        assert!(!log_retry_at(a.screen, &a, at, 21));
+        assert!(!log_retry_at(a.screen, &a, 40, 22));
+    }
+
+    #[test]
+    fn a_password_popup_masks_what_is_typed() {
+        let mut a = loaded();
+        a.password = Some(crate::tui::app::PasswordPrompt {
+            job: 1,
+            prompt: "Password:".into(),
+            label: "Serve v13".into(),
+            value: "hunter2".into(),
+        });
+        let text = format!("{}", render(&a, 90, 24).backend());
+        assert!(text.contains("•••••••"), "{text}");
+        assert!(!text.contains("hunter2"));
+        insta::assert_snapshot!(render(&a, 90, 24).backend());
     }
 
     #[test]
@@ -1543,6 +1726,23 @@ mod tests {
             worktree_at(screen, &a, 5, 2),
             Some(0),
             "the list above still maps"
+        );
+        // The failed row's ↻ retries it; the rest of the row opens its log.
+        let retry_col = area.x + area.width - 3;
+        let failed_row = (1..area.height - 1)
+            .map(|r| area.y + r)
+            .find(|&y| activity_retry_at(screen, &a, retry_col, y).is_some())
+            .expect("a failed row with its ↻");
+        let failed = activity_retry_at(screen, &a, retry_col, failed_row).unwrap();
+        assert_eq!(a.jobs.get(failed).unwrap().label, "fail");
+        assert_eq!(
+            activity_retry_at(screen, &a, retry_col - 1, failed_row),
+            None
+        );
+        assert_eq!(
+            activity_retry_at(screen, &a, retry_col, area.y + 1),
+            None,
+            "a success has none"
         );
         insta::assert_snapshot!(render(&a, 80, 24).backend());
         // And the log it opens.

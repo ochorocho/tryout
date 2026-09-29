@@ -53,12 +53,38 @@ pub fn run(args: &[String]) -> Result<()> {
                     "already inside this project's session — it cannot show itself\n  → Ctrl-G q detaches the terminal you are in"
                 );
             }
+            offer_restart_on_new_build(&root)?;
             let stream = session::connect_or_start(&root)?;
             let reason = session::client::attach(stream)?;
             println!("{reason}");
             Ok(())
         }
     }
+}
+
+/// A session keeps running the build it started with — an add-on update or a
+/// rebuild does not reach it, so its new features stay invisible. Say so, and
+/// offer to restart it (which closes everything in it); the default keeps it.
+fn offer_restart_on_new_build(root: &Path) -> Result<()> {
+    if !session::runs_another_build(root) || !crate::core::prompt::have_tty() {
+        return Ok(());
+    }
+    eprintln!("This session was started by another build of tryout, and keeps running that one.");
+    eprintln!(
+        "Restarting it uses this build — and closes every shell, agent and running command in it."
+    );
+    if crate::core::prompt::confirm("Restart the session now?") == crate::core::prompt::Confirm::Yes
+    {
+        session::stop(root)?;
+        // The old server says goodbye before it lets go of its socket; attach
+        // only once it has, or the new client reaches the old one on its way out.
+        let socket = session::socket_path(root);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while socket.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    Ok(())
 }
 
 /// The tryout project a directory (default: the current one) belongs to.

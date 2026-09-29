@@ -71,11 +71,18 @@ pub fn serve(root: PathBuf, socket: &Path, loader: Loader) -> Result<()> {
     // this one says goodbye — `stop` then `ddev tryout ui` does exactly that —
     // and removing the path blindly would take the NEW session's socket with it.
     let ours = socket_inode(socket);
+    // Which build this session runs, so a client from a newer one can say so.
+    let build = socket.with_extension("build");
+    let stamp = super::build_stamp();
+    let _ = std::fs::write(&build, &stamp);
     let (in_tx, in_rx) = mpsc::channel();
     accept(listener, in_tx);
     let result = Server::new(root, loader).run(in_rx);
     if ours.is_some() && socket_inode(socket) == ours {
         let _ = std::fs::remove_file(socket);
+        if std::fs::read_to_string(&build).ok() == Some(stamp) {
+            let _ = std::fs::remove_file(&build);
+        }
     }
     result
 }
@@ -268,6 +275,7 @@ impl Server {
     fn tick(&mut self) {
         let screen = self.screen();
         self.app.sidebar_max = ui::sidebar_max(screen.width);
+        self.app.screen = screen;
         let inner = ui::areas(screen, self.app.sidebar_width).pane_inner;
         for ws in self.app.workspaces.values_mut() {
             for tab in &mut ws.tabs {
@@ -410,6 +418,9 @@ impl Server {
                 // anything else just closes it — and selects nothing behind it.
                 let effect = if app.menu.is_some() {
                     Some(app.click_menu(ui::menu_at(screen, app, col, row)))
+                } else if app.log_view.is_some() && ui::log_retry_at(screen, app, col, row) {
+                    app.retry_log();
+                    return Next::Go;
                 } else if ui::new_button_at(screen, app, col, row) {
                     Some(app.new_worktree())
                 } else if ui::url_at(screen, app, col, row) {
@@ -419,6 +430,8 @@ impl Server {
                 };
                 if let Some(effect) = effect {
                     return self.apply(effect);
+                } else if let Some(id) = ui::activity_retry_at(screen, app, col, row) {
+                    app.retry(id);
                 } else if let Some(id) = ui::activity_at(screen, app, col, row) {
                     app.open_log(id);
                 } else if let Some(i) = ui::agent_at(screen, app, col, row) {
@@ -439,6 +452,23 @@ impl Server {
                 } else if ui::in_pane_body(screen, app, col, row) {
                     app.click_pane();
                 }
+            }
+            // The wheel over an open log scrolls it, three rows a notch.
+            Event::Mouse(m)
+                if matches!(
+                    m.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) && app.log_view.is_some()
+                    && ui::areas(screen, app.sidebar_width)
+                        .pane
+                        .contains(ratatui::layout::Position::new(m.column, m.row)) =>
+            {
+                app.scroll_log(if m.kind == MouseEventKind::ScrollUp {
+                    3
+                } else {
+                    -3
+                });
+                self.redraw = true;
             }
             // A right-click on a worktree opens its `worktree` commands there.
             Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => {

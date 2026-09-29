@@ -183,6 +183,16 @@ pub struct AgentRow {
     pub status: Status,
 }
 
+/// The password popup: which job asks, what it asked, and the typed value —
+/// kept only until it is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasswordPrompt {
+    pub job: u64,
+    pub prompt: String,
+    pub label: String,
+    pub value: String,
+}
+
 pub struct App {
     pub root: PathBuf,
     pub project: String,
@@ -199,12 +209,18 @@ pub struct App {
     pub rename: Option<Rename>,
     /// `Q` asked whether to close the session; waiting for y or n.
     pub confirm_close: bool,
+    /// A job stopped at a password prompt (sudo, for DDEV's hosts file), and
+    /// what has been typed for it so far.
+    pub password: Option<PasswordPrompt>,
     /// Commands running and done, one at a time, in the Activity panel.
     pub jobs: Jobs,
     /// The job whose log fills the right pane, while it does.
     pub log_view: Option<u64>,
     /// How far the log view is scrolled back from its end, in lines.
     pub log_scroll: usize,
+    /// The terminal's size, as the server last drew it: what the log can show,
+    /// and so how far back it can scroll.
+    pub screen: ratatui::layout::Rect,
     /// A native form asking a command's questions.
     pub form: Option<Form>,
     /// The branch list, fetched once when a form first needs it.
@@ -248,9 +264,11 @@ impl App {
             menu: None,
             rename: None,
             confirm_close: false,
+            password: None,
             jobs: Jobs::new("ddev"),
             log_view: None,
             log_scroll: 0,
+            screen: ratatui::layout::Rect::new(0, 0, 80, 24),
             form: None,
             branches: None,
             sidebar_width: SIDEBAR_DEFAULT,
@@ -292,6 +310,11 @@ impl App {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
         self.notice = None;
+        // A job waiting for a password comes before everything: it is blocked.
+        if self.password.is_some() {
+            self.password_key(key);
+            return Effect::None;
+        }
         // Modal first: a confirmation, a form, a rename, a log, then the menu.
         if self.confirm_close {
             self.confirm_close = false;
@@ -488,6 +511,10 @@ impl App {
                 self.set_sidebar_width(i32::from(self.sidebar_width.min(self.sidebar_max)) + 4);
                 Effect::None
             }
+            KeyCode::Char('R') => {
+                self.retry_last_failed();
+                Effect::None
+            }
             KeyCode::Char('L') => {
                 match self.jobs.list().first().map(|j| j.id) {
                     Some(id) => self.open_log(id),
@@ -586,6 +613,23 @@ impl App {
             tab.pane.mark_seen();
         }
 
+        // A job asking for a password gets the popup; one that stopped asking
+        // (it ended, or moved on) loses it.
+        match (&self.password, self.jobs.waiting()) {
+            (None, Some((job, prompt, label))) => {
+                self.password = Some(PasswordPrompt {
+                    job,
+                    prompt,
+                    label,
+                    value: String::new(),
+                });
+            }
+            (Some(p), waiting) if waiting.as_ref().is_none_or(|w| w.0 != p.job) => {
+                self.password = None
+            }
+            _ => {}
+        }
+
         // Finished jobs: say how it went, show the output where it is the point,
         // and reload the list when a job changed what it shows.
         let mut reload = false;
@@ -612,7 +656,7 @@ impl App {
                 .last_error
                 .clone()
                 .unwrap_or_else(|| format!("exit {}", code.map_or("?".into(), |c| c.to_string())));
-            format!("✗ {}: {why} — L shows the log", job.label)
+            format!("✗ {}: {why} — R retries · L shows the log", job.label)
         });
         // Its output is its answer: show it, unless you are typing somewhere.
         if job.reveal && self.focus == Focus::List && !self.modal() {
@@ -631,27 +675,72 @@ impl App {
     }
 
     fn log_key(&mut self, key: KeyEvent) -> Effect {
-        let len = self
-            .log_view
-            .and_then(|id| self.jobs.get(id))
-            .map_or(0, |j| j.log.len());
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => self.log_view = None,
-            KeyCode::PageUp | KeyCode::Char('b') => {
-                self.log_scroll = (self.log_scroll + 20).min(len)
-            }
-            KeyCode::PageDown | KeyCode::Char(' ') => {
-                self.log_scroll = self.log_scroll.saturating_sub(20)
-            }
-            KeyCode::Up | KeyCode::Char('k') => self.log_scroll = (self.log_scroll + 1).min(len),
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.log_scroll = self.log_scroll.saturating_sub(1)
-            }
-            KeyCode::Home | KeyCode::Char('g') => self.log_scroll = len,
+            KeyCode::PageUp | KeyCode::Char('b') => self.scroll_log(20),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_log(-20),
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_log(1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_log(-1),
+            KeyCode::Home | KeyCode::Char('g') => self.scroll_log(isize::MAX),
             KeyCode::End | KeyCode::Char('G') => self.log_scroll = 0,
+            KeyCode::Char('r') => self.retry_log(),
             _ => {}
         }
         Effect::None
+    }
+
+    /// Scroll the open log: positive goes back in time. Kept within what the
+    /// log can actually scroll, so the way back is never a run of dead keys.
+    pub fn scroll_log(&mut self, delta: isize) {
+        let Some(job) = self.log_view.and_then(|id| self.jobs.get(id)) else {
+            return;
+        };
+        let max = crate::tui::ui::log_max_scroll(job, crate::tui::ui::log_inner(self.screen, self));
+        self.log_scroll = self.log_scroll.saturating_add_signed(delta).min(max);
+    }
+
+    /// Run the command that just failed again, from the list.
+    pub fn retry_last_failed(&mut self) {
+        match self.jobs.last_failed() {
+            Some(id) => self.retry(id),
+            None => self.notice = Some("nothing failed to retry".into()),
+        }
+    }
+
+    /// Run a finished job's command again. The log follows it when it was open.
+    pub fn retry(&mut self, id: u64) {
+        let Some(new) = self.jobs.retry(id) else {
+            self.notice = Some("still running — retry once it has finished".into());
+            return;
+        };
+        let label = self
+            .jobs
+            .get(new)
+            .map(|j| j.label.clone())
+            .unwrap_or_default();
+        self.notice = Some(format!("↻ {label} — queued again"));
+        if self.log_view.is_some() {
+            self.log_view = Some(new);
+            self.log_scroll = 0;
+        }
+    }
+
+    /// Run the open log's command again and follow the new run.
+    pub fn retry_log(&mut self) {
+        let Some(id) = self.log_view else { return };
+        match self.jobs.retry(id) {
+            Some(new) => {
+                let label = self
+                    .jobs
+                    .get(new)
+                    .map(|j| j.label.clone())
+                    .unwrap_or_default();
+                self.notice = Some(format!("↻ {label} — queued again"));
+                self.log_view = Some(new);
+                self.log_scroll = 0;
+            }
+            None => self.notice = Some("still running — retry once it has finished".into()),
+        }
     }
 
     fn set_sidebar_width(&mut self, width: i32) {
@@ -793,8 +882,49 @@ impl App {
         }
     }
 
+    /// The open log's command has finished, so it can be run again.
+    pub fn log_retryable(&self) -> bool {
+        self.log_view
+            .and_then(|id| self.jobs.get(id))
+            .is_some_and(|j| matches!(j.state, JobState::Done { .. }))
+    }
+
     fn modal(&self) -> bool {
-        self.menu.is_some() || self.rename.is_some() || self.confirm_close || self.form.is_some()
+        self.menu.is_some()
+            || self.rename.is_some()
+            || self.confirm_close
+            || self.form.is_some()
+            || self.password.is_some()
+    }
+
+    /// Typing into the password popup. Enter sends it to the job, Esc (or
+    /// Ctrl-C) declines; either way what was typed is gone.
+    fn password_key(&mut self, key: KeyEvent) {
+        let Some(p) = self.password.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Enter => {
+                let (job, value) = (p.job, std::mem::take(&mut p.value));
+                self.jobs.answer(job, &value);
+                self.password = None;
+            }
+            KeyCode::Esc => self.decline_password(),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.decline_password()
+            }
+            KeyCode::Backspace => {
+                p.value.pop();
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => p.value.push(c),
+            _ => {}
+        }
+    }
+
+    fn decline_password(&mut self) {
+        if let Some(p) = self.password.take() {
+            self.jobs.cancel_prompt(p.job);
+        }
     }
 
     /// Open a form. The branch list comes from the add-on, once: until it is
@@ -1113,6 +1243,82 @@ pub mod tests {
         let mut a = App::new(PathBuf::from("/p/demo"));
         a.set_worktrees(Ok(fixture()));
         a
+    }
+
+    #[test]
+    fn a_job_asking_for_a_password_gets_a_popup_that_answers_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = App::new(dir.path().to_path_buf());
+        a.jobs = Jobs::new(crate::tui::jobs::tests::asking(dir.path()));
+        let action = Action {
+            label: "Serve".into(),
+            hint: String::new(),
+            args: vec!["x".into()],
+            run: Run::Background,
+        };
+        let id = a.jobs.enqueue(&action, false);
+        let t = std::time::Instant::now();
+        while a.password.is_none() {
+            a.tick();
+            assert!(t.elapsed() < std::time::Duration::from_secs(10), "no popup");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(a.password.as_ref().unwrap().prompt, "Password:");
+        // Everything goes to the popup while it is open — even q.
+        for c in "secreq".chars() {
+            a.handle_key(KeyEvent::new(KeyCode::Char(c), M::NONE));
+        }
+        a.handle_key(KeyEvent::new(KeyCode::Backspace, M::NONE));
+        a.handle_key(KeyEvent::new(KeyCode::Char('t'), M::NONE));
+        assert_eq!(a.password.as_ref().unwrap().value, "secret");
+        a.handle_key(KeyEvent::new(KeyCode::Enter, M::NONE));
+        assert!(a.password.is_none());
+        while !matches!(a.jobs.get(id).unwrap().state, JobState::Done { .. }) {
+            a.tick();
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(10),
+                "never finished"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(matches!(
+            a.jobs.get(id).unwrap().state,
+            JobState::Done { ok: true, .. }
+        ));
+    }
+
+    #[test]
+    fn escape_declines_the_password_and_the_job_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = App::new(dir.path().to_path_buf());
+        a.jobs = Jobs::new(crate::tui::jobs::tests::asking(dir.path()));
+        let action = Action {
+            label: "Serve".into(),
+            hint: String::new(),
+            args: vec!["x".into()],
+            run: Run::Background,
+        };
+        let id = a.jobs.enqueue(&action, false);
+        let t = std::time::Instant::now();
+        while a.password.is_none() {
+            a.tick();
+            assert!(t.elapsed() < std::time::Duration::from_secs(10), "no popup");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        a.handle_key(KeyEvent::new(KeyCode::Esc, M::NONE));
+        assert!(a.password.is_none());
+        while !matches!(a.jobs.get(id).unwrap().state, JobState::Done { .. }) {
+            a.tick();
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(10),
+                "never finished"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(matches!(
+            a.jobs.get(id).unwrap().state,
+            JobState::Done { ok: false, .. }
+        ));
     }
 
     fn press(a: &mut App, code: KeyCode) -> Effect {
@@ -1597,7 +1803,7 @@ pub mod tests {
         };
         assert_eq!(
             action.command_line(),
-            "ddev tryout worktree add feature-x main"
+            "ddev tryout worktree add feature-x main --serve"
         );
         assert_eq!(action.run, Run::Job { reveal: false });
         assert!(a.form.is_none());
@@ -1723,7 +1929,7 @@ pub mod tests {
         run_to_end(&mut a);
         assert_eq!(
             a.notice.as_deref(),
-            Some("✗ fail: it broke — L shows the log")
+            Some("✗ fail: it broke — R retries · L shows the log")
         );
         assert_eq!(
             a.log_view, None,
@@ -1750,13 +1956,104 @@ pub mod tests {
         let id = a.jobs.enqueue(&job_action("status", true), true);
         run_to_end(&mut a);
         a.open_log(id);
+        // A log shorter than the screen has nothing to scroll back to.
         press(&mut a, KeyCode::PageUp);
-        assert_eq!(a.log_scroll, 1, "clamped to the one line of log");
-        press(&mut a, KeyCode::PageDown);
         assert_eq!(a.log_scroll, 0);
         // A worktree click leaves the log.
         a.click_worktree(1);
         assert_eq!(a.log_view, None);
+    }
+
+    #[test]
+    fn a_long_log_scrolls_to_its_top_and_back_without_dead_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("long");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nfor i in $(seq 1 100); do echo \"line $i\"; done\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut a = app();
+        a.root = dir.path().to_path_buf();
+        a.jobs = Jobs::new(script);
+        let id = a.jobs.enqueue(&job_action("status", true), true);
+        run_to_end(&mut a);
+        a.open_log(id);
+        let max = crate::tui::ui::log_max_scroll(
+            a.jobs.get(id).unwrap(),
+            crate::tui::ui::log_inner(a.screen, &a),
+        );
+        assert!(max > 50, "100 lines on a 24-row screen: {max}");
+        press(&mut a, KeyCode::Home);
+        assert_eq!(a.log_scroll, max);
+        press(&mut a, KeyCode::Up);
+        assert_eq!(a.log_scroll, max, "the top is the top");
+        press(&mut a, KeyCode::Down);
+        assert_eq!(
+            a.log_scroll,
+            max - 1,
+            "and the first key back moves at once"
+        );
+        a.scroll_log(-3);
+        assert_eq!(a.log_scroll, max - 4, "the wheel's three rows");
+        press(&mut a, KeyCode::End);
+        assert_eq!(a.log_scroll, 0);
+    }
+
+    #[test]
+    fn shift_r_retries_the_command_that_just_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = with_fake_jobs(dir.path());
+        press(&mut a, KeyCode::Char('R'));
+        assert_eq!(a.notice.as_deref(), Some("nothing failed to retry"));
+        a.jobs.enqueue(&job_action("fail", false), false);
+        run_to_end(&mut a);
+        assert!(a.notice.as_deref().is_some_and(|n| n.contains("R retries")));
+        press(&mut a, KeyCode::Char('R'));
+        assert!(
+            a.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("queued again"))
+        );
+        run_to_end(&mut a);
+        assert_eq!(
+            a.jobs.list().iter().filter(|j| j.label == "fail").count(),
+            2
+        );
+        // A success since then leaves nothing to retry.
+        a.jobs.enqueue(&job_action("ok", false), false);
+        run_to_end(&mut a);
+        press(&mut a, KeyCode::Char('R'));
+        assert_eq!(a.notice.as_deref(), Some("nothing failed to retry"));
+    }
+
+    #[test]
+    fn r_runs_a_finished_command_again_and_follows_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = with_fake_jobs(dir.path());
+        let first = a.jobs.enqueue(&job_action("fail", true), true);
+        run_to_end(&mut a);
+        a.open_log(first);
+        assert!(a.log_retryable());
+        press(&mut a, KeyCode::Char('r'));
+        let again = a.log_view.unwrap();
+        assert_ne!(again, first, "the log follows the new run");
+        assert!(
+            a.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("queued again"))
+        );
+        a.tick();
+        assert!(!a.log_retryable(), "not while it runs");
+        press(&mut a, KeyCode::Char('r'));
+        assert_eq!(a.log_view, Some(again));
+        run_to_end(&mut a);
+        assert_eq!(
+            a.jobs.list().iter().filter(|j| j.label == "fail").count(),
+            2
+        );
     }
 
     #[test]

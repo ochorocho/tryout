@@ -66,6 +66,37 @@ pub fn log_path(root: &Path) -> PathBuf {
     socket_path(root).with_extension("log")
 }
 
+/// Where a server notes the build it runs, beside its socket.
+pub fn build_path(root: &Path) -> PathBuf {
+    socket_path(root).with_extension("build")
+}
+
+/// This binary's build, as its file on disk says: size and modification time.
+/// A rebuild or an add-on update changes it; a running server keeps the one it
+/// started with, because a process keeps the code it was started from.
+pub fn build_stamp() -> String {
+    std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .map(|m| {
+            let t = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .unwrap_or_default();
+            format!("{}-{}.{:09}", m.len(), t.as_secs(), t.subsec_nanos())
+        })
+        .unwrap_or_default()
+}
+
+/// Is a session running on another build than this binary? A server too old
+/// to note its build counts as another. False when nothing is running.
+pub fn runs_another_build(root: &Path) -> bool {
+    if !socket_path(root).exists() {
+        return false;
+    }
+    std::fs::read_to_string(build_path(root)).ok().as_deref() != Some(build_stamp().as_str())
+}
+
 /// Is a session answering there? A socket file whose server is gone is removed,
 /// so a fresh one can take its place.
 pub fn connect(socket: &Path) -> io::Result<Option<UnixStream>> {
@@ -185,6 +216,26 @@ mod tests {
             !is_inside(root, Some(other.as_os_str())),
             "another project's session is fine"
         );
+    }
+
+    #[test]
+    fn a_session_is_on_another_build_when_its_note_differs_or_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj-build-test");
+        std::fs::create_dir_all(socket_dir()).unwrap();
+        let (sock, build) = (socket_path(&root), build_path(&root));
+        assert!(!runs_another_build(&root), "no session, nothing to compare");
+        std::fs::write(&sock, "").unwrap();
+        assert!(
+            runs_another_build(&root),
+            "a server too old to note its build"
+        );
+        std::fs::write(&build, "1-2.000000003").unwrap();
+        assert!(runs_another_build(&root));
+        std::fs::write(&build, build_stamp()).unwrap();
+        assert!(!runs_another_build(&root));
+        let _ = std::fs::remove_file(sock);
+        let _ = std::fs::remove_file(build);
     }
 
     #[test]

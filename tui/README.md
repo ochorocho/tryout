@@ -34,6 +34,9 @@ list — so from a shell, *Ctrl-G then a key* runs any list command below.
 | | | click the URL in the title | open the site (as `launch`) |
 | `n` | next agent — waiting ones first | | |
 | `L` | the newest job's log | click an Activity row | its log |
+| `↑` `↓` `PgUp` `PgDn` in a log | scroll it | mouse wheel over it | scroll it |
+| `r` in a finished job's log | run the command again | click `↻ retry` in its border | same |
+| `R` | run the command that just failed again | click the `↻` on a failed Activity row | same |
 | `{` `}` | sidebar narrower / wider | drag the border between list and pane | resize; double-click resets |
 | `a` / `Space` | the commands for this worktree | | |
 | `r` | reload the list | | |

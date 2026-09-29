@@ -162,7 +162,8 @@ impl Form {
                     branch_pick("Based on"),
                     Field::Check {
                         label: "Serve it now (its own URL, the best PHP it accepts)",
-                        value: false,
+                        // Ticked: a new worktree is nearly always made to be looked at.
+                        value: true,
                     },
                 ],
                 vec![],
@@ -653,20 +654,21 @@ mod tests {
         f.set_branches(&branches());
         typing(&mut f, "bugfix-9");
         key(&mut f, KeyCode::Enter);
-        // Straight Enter takes the preselected branch.
+        // Straight Enter takes the preselected branch, and serves it: the box
+        // starts ticked.
         let mut g = f.clone();
         assert_eq!(
             args(g.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))),
-            "worktree add bugfix-9 13.4"
+            "worktree add bugfix-9 13.4 --serve"
         );
-        // Tab to the list, type to filter, Tab to the box, tick it.
+        // Tab to the list, type to filter, Tab to the box, untick it.
         key(&mut f, KeyCode::Tab);
         typing(&mut f, "12");
         key(&mut f, KeyCode::Tab);
         key(&mut f, KeyCode::Char(' '));
         assert_eq!(
             args(key(&mut f, KeyCode::Enter)),
-            "worktree add bugfix-9 12.4 --serve"
+            "worktree add bugfix-9 12.4"
         );
     }
 
