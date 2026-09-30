@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#ddev-silent-no-warn
+#ddev-generated
+
+## Description: Every branch of this project, served side by side
+## Usage: tryout [command] [args]
+## Example: "ddev tryout status\nddev tryout worktree add feature-x feature/x --serve\nddev tryout help"
+# Description and Example are this project type's: tryout writes them at
+# install and on every start (`tryout __host-command`).
+# NO ## AutocompleteTerms: header on purpose. It sets cobra's ValidArgs, which
+# then rejects any second argument during completion — so ValidArgsFunction,
+# i.e. commands/host/autocomplete/tryout, is never called and
+# `ddev tryout cs <TAB>` completes nothing. No ## Flags: either: it makes DDEV
+# parse flags and reject the ones it does not know, like `--php 8.2`.
+
+# Everything is the tryout binary (.ddev/tryout/tryout picks the build for this
+# machine); this file only exists because DDEV discovers commands as files.
+# Through bash, so a launcher that lost its executable bit still runs.
+exec bash "${DDEV_APPROOT}/.ddev/tryout/tryout" "$@"

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#ddev-generated
+
+# Tab completion for `ddev tryout`, answered by the tryout binary.
+#
+# DDEV runs this on every TAB with the command line as argv and reads the
+# candidates from stdout. It merges stderr into them and drops everything if
+# this exits non-zero — so stderr goes nowhere and the exit is always 0. It
+# gets no DDEV_* variables and an arbitrary cwd, so the project comes from
+# where this file lives: <project>/.ddev/commands/host/autocomplete/tryout.
+
+self="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+root="${self%/.ddev/commands/host/autocomplete}"
+# Through bash: the launcher still runs when an unzip lost its executable bit.
+if [ "${root}" != "${self}" ] && [ -f "${root}/.ddev/tryout/tryout" ]; then
+    DDEV_APPROOT="${root}" bash "${root}/.ddev/tryout/tryout" __complete "$@" 2>/dev/null
+fi
+exit 0

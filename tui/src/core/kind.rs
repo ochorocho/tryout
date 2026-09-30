@@ -1,0 +1,396 @@
+//! What kind of project tryout works on, and what differs between kinds.
+//!
+//! **Core mode** is the TYPO3 Core checkout tryout was built for: the project
+//! root is a Core clone, instances overlay its sysexts, changes come from
+//! TYPO3's Gerrit. **Project mode** is a project of the user's own, of any DDEV
+//! type — worktrees of its own repository, served side by side. Everything that
+//! differs between them is asked of a `ProjectKind`; everything else (worktrees,
+//! sites, database servers, the TUI) is the same for all.
+
+use std::path::Path;
+
+use super::ctx::{CORE_REPO, GERRIT_REMOTE};
+
+/// Which of the two tryout works in, decided by what the project root holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// A TYPO3 Core checkout — or nothing yet, since the install clones Core.
+    Core,
+    /// A repository of the user's own.
+    Project,
+}
+
+impl Mode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Core => "TYPO3 Core",
+            Mode::Project => "project",
+        }
+    }
+}
+
+/// The root is a Core checkout when it holds Core's sysexts, or its origin is
+/// TYPO3's repository; with no repository at all, it is about to become one.
+/// Anything else is a project of the user's own.
+pub fn detect_mode(root: &Path) -> Mode {
+    if !root.join(".git").exists() || root.join("typo3/sysext/core/composer.json").is_file() {
+        return Mode::Core;
+    }
+    let origin = super::git::out(root, &["remote", "get-url", "origin"]).unwrap_or_default();
+    if is_core_origin(&origin) {
+        Mode::Core
+    } else {
+        Mode::Project
+    }
+}
+
+/// The kind a mode works with: TYPO3 Core, or a generic project of the
+/// user's own.
+pub fn for_mode(mode: Mode) -> &'static dyn ProjectKind {
+    match mode {
+        Mode::Core => &TYPO3_CORE,
+        Mode::Project => &GENERIC_PROJECT,
+    }
+}
+
+/// TYPO3 Core's own repository, on GitHub or Gerrit — and not one whose name
+/// only starts like it (the site distribution, TYPO3.CMS.BaseDistribution).
+fn is_core_origin(url: &str) -> bool {
+    let u = url.trim().to_lowercase();
+    let u = u.trim_end_matches('/');
+    let u = u.strip_suffix(".git").unwrap_or(u);
+    u.ends_with("typo3/typo3") || u.ends_with("packages/typo3.cms")
+}
+
+/// What tryout needs to know about a kind of project.
+pub trait ProjectKind: Sync {
+    /// For messages: "TYPO3 Core".
+    fn label(&self) -> &'static str;
+
+    /// Where the root checkout comes from, when tryout clones it.
+    fn clone_url(&self) -> Option<&'static str>;
+
+    /// A second remote to add beside origin (the review system's), if any.
+    fn review_remote(&self) -> Option<(&'static str, &'static str)>;
+
+    /// The branch a fresh checkout starts on.
+    fn default_branch(&self) -> &'static str;
+
+    /// Branches a worktree can be based on.
+    fn is_base_branch(&self, branch: &str) -> bool;
+
+    /// What `.git/info/exclude` keeps out of `git status`: tryout's own files.
+    fn git_excludes(&self) -> &'static [&'static str];
+
+    /// The PHP versions a checkout accepts, as its composer.json says.
+    fn php_constraint(&self, checkout: &Path) -> Option<String>;
+
+    /// The command a fresh site is set up with (run in the site, its database
+    /// settings passed in the environment).
+    fn setup_command(&self, webserver_type: &str) -> Vec<String>;
+
+    /// What runs in a site after every install or rebuild.
+    fn rebuild_commands(&self) -> &'static [&'static [&'static str]];
+
+    /// The site's admin, below its URL, when it has one.
+    fn backend_path(&self) -> Option<&'static str>;
+
+    /// Whether a verb applies to this kind (`patch`, `cs` … need Core).
+    fn supports(&self, verb: &str) -> bool;
+
+    /// Whether a new site's database starts as a copy (`--db-from`,
+    /// `--db-empty`) — rather than from the kind's own setup.
+    fn seeds_databases(&self) -> bool {
+        self.setup_command("").is_empty()
+    }
+
+    /// Whether changes come as pull/merge requests of origin (`--pr`) —
+    /// rather than from the kind's own review system (TYPO3's Gerrit).
+    fn opens_pull_requests(&self) -> bool {
+        self.review_remote().is_none()
+    }
+}
+
+/// A project of the user's own, of any DDEV type: its own repository, never
+/// cloned, no review system, no setup of its own — its worktrees are served as
+/// they are, after their own `composer install`.
+pub struct GenericProject;
+
+pub static GENERIC_PROJECT: GenericProject = GenericProject;
+
+impl ProjectKind for GenericProject {
+    fn label(&self) -> &'static str {
+        "this project"
+    }
+
+    fn clone_url(&self) -> Option<&'static str> {
+        None
+    }
+
+    fn review_remote(&self) -> Option<(&'static str, &'static str)> {
+        None
+    }
+
+    fn default_branch(&self) -> &'static str {
+        "main"
+    }
+
+    /// Any branch a worktree could start from.
+    fn is_base_branch(&self, _branch: &str) -> bool {
+        true
+    }
+
+    /// Only what tryout generates: a project's own .ddev/ is usually committed.
+    fn git_excludes(&self) -> &'static [&'static str] {
+        &[
+            "/worktrees/",
+            "/.ddev/tryout-sites/",
+            "/.ddev/config.worktrees.yaml",
+            "/.ddev/docker-compose.tryout-db.yaml",
+            "/.ddev/nginx_full/tryout-*",
+            "/.ddev/apache/tryout-*",
+            "/.ddev/tryout/.state/",
+            "/.ddev/tryout/.version",
+            "/.ddev/tryout/.mode",
+        ]
+    }
+
+    fn php_constraint(&self, checkout: &Path) -> Option<String> {
+        super::php::core_constraint(&checkout.join("composer.json"))
+    }
+
+    fn setup_command(&self, _webserver_type: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn rebuild_commands(&self) -> &'static [&'static [&'static str]] {
+        &[]
+    }
+
+    fn backend_path(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Everything but what needs TYPO3 Core: its clone, its branches, its
+    /// review system, its overlay (`worktree use` rewrites it) and its
+    /// contribution setup.
+    fn supports(&self, verb: &str) -> bool {
+        !matches!(
+            verb,
+            "download" | "checkout" | "patch" | "cs" | "composer" | "reset" | "worktree use"
+        )
+    }
+}
+
+/// The one kind today: a TYPO3 Core checkout.
+pub struct Typo3Core;
+
+pub static TYPO3_CORE: Typo3Core = Typo3Core;
+
+impl ProjectKind for Typo3Core {
+    fn label(&self) -> &'static str {
+        "TYPO3 Core"
+    }
+
+    fn clone_url(&self) -> Option<&'static str> {
+        Some(CORE_REPO)
+    }
+
+    fn review_remote(&self) -> Option<(&'static str, &'static str)> {
+        Some(("gerrit", GERRIT_REMOTE))
+    }
+
+    fn default_branch(&self) -> &'static str {
+        "main"
+    }
+
+    /// `main` and the release branches, `<major>.<minor>`.
+    fn is_base_branch(&self, branch: &str) -> bool {
+        branch == "main" || super::worktree::is_release(branch)
+    }
+
+    fn git_excludes(&self) -> &'static [&'static str] {
+        &["/.ddev/", "/worktrees/", "/TYPO3-Instances/", "/packages/"]
+    }
+
+    fn php_constraint(&self, checkout: &Path) -> Option<String> {
+        super::php::core_constraint(&checkout.join("composer.json"))
+    }
+
+    fn setup_command(&self, webserver_type: &str) -> Vec<String> {
+        let server_type = if webserver_type.starts_with("apache") || webserver_type.is_empty() {
+            "apache"
+        } else {
+            "other"
+        };
+        ["vendor/bin/typo3", "setup", "--no-interaction", "--force"]
+            .iter()
+            .map(|s| s.to_string())
+            .chain(std::iter::once(format!("--server-type={server_type}")))
+            .collect()
+    }
+
+    fn rebuild_commands(&self) -> &'static [&'static [&'static str]] {
+        &[
+            &["vendor/bin/typo3", "extension:setup"],
+            &["vendor/bin/typo3", "cache:flush"],
+        ]
+    }
+
+    fn backend_path(&self) -> Option<&'static str> {
+        Some("/typo3/")
+    }
+
+    fn supports(&self, _verb: &str) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+
+    #[test]
+    fn a_core_checkout_or_nothing_yet_is_core_mode_and_any_other_repo_a_project() {
+        // Nothing there: the install is about to clone Core into it.
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(detect_mode(empty.path()), Mode::Core);
+
+        // A Core checkout, recognised by its sysexts.
+        let core = tempfile::tempdir().unwrap();
+        git(core.path(), &["init", "-q"]);
+        std::fs::create_dir_all(core.path().join("typo3/sysext/core")).unwrap();
+        std::fs::write(core.path().join("typo3/sysext/core/composer.json"), "{}").unwrap();
+        assert_eq!(detect_mode(core.path()), Mode::Core);
+
+        // One not checked out yet, recognised by where it comes from.
+        let fetched = tempfile::tempdir().unwrap();
+        git(fetched.path(), &["init", "-q"]);
+        git(fetched.path(), &["remote", "add", "origin", CORE_REPO]);
+        assert_eq!(detect_mode(fetched.path()), Mode::Core);
+
+        // Anything else is a project of the user's own.
+        let own = tempfile::tempdir().unwrap();
+        git(own.path(), &["init", "-q"]);
+        git(
+            own.path(),
+            &["remote", "add", "origin", "git@github.com:acme/shop.git"],
+        );
+        assert_eq!(detect_mode(own.path()), Mode::Project);
+
+        // Core's repository by any of its addresses; its site distribution is
+        // a project like any other.
+        for core in [
+            "https://github.com/typo3/typo3.git",
+            "git@github.com:TYPO3/TYPO3.git",
+            "https://github.com/TYPO3/TYPO3",
+            "https://review.typo3.org/Packages/TYPO3.CMS",
+            "ssh://jdoe@review.typo3.org:29418/Packages/TYPO3.CMS.git",
+        ] {
+            assert!(is_core_origin(core), "{core}");
+        }
+        for project in [
+            "https://github.com/TYPO3/TYPO3.CMS.BaseDistribution.git",
+            "https://github.com/typo3/typo3-extension.git",
+            "git@github.com:acme/typo3.git",
+        ] {
+            assert!(!is_core_origin(project), "{project}");
+        }
+    }
+
+    #[test]
+    fn a_project_is_served_as_it_is_and_says_no_to_what_needs_core() {
+        let k: &dyn ProjectKind = &GENERIC_PROJECT;
+        assert_eq!(k.clone_url(), None);
+        assert_eq!(k.review_remote(), None);
+        assert!(k.is_base_branch("feature/anything"));
+        assert!(k.setup_command("nginx-fpm").is_empty());
+        assert!(k.rebuild_commands().is_empty());
+        assert_eq!(k.backend_path(), None);
+        for verb in [
+            "download",
+            "checkout",
+            "patch",
+            "cs",
+            "composer",
+            "reset",
+            "worktree use",
+        ] {
+            assert!(!k.supports(verb), "{verb}");
+        }
+        for verb in [
+            "worktree",
+            "worktree add",
+            "worktree serve",
+            "status",
+            "exec",
+            "launch",
+            "delete",
+            "ui",
+            "help",
+        ] {
+            assert!(k.supports(verb), "{verb}");
+        }
+        // Its own committed .ddev/ stays visible to git; only tryout's files go.
+        assert!(!k.git_excludes().contains(&"/.ddev/"));
+        assert!(k.git_excludes().contains(&"/worktrees/"));
+    }
+
+    #[test]
+    fn install_writes_and_removes_the_same_excludes_as_each_kind() {
+        let install = include_str!("../../../install.yaml");
+        let (post, removal) = install.split_once("\nremoval_actions:").unwrap();
+        for kind in [&TYPO3_CORE as &dyn ProjectKind, &GENERIC_PROJECT] {
+            for entry in kind.git_excludes() {
+                assert!(post.contains(entry), "install does not write {entry}");
+                assert!(removal.contains(entry), "removal leaves {entry}");
+            }
+        }
+    }
+
+    #[test]
+    fn typo3_core_answers_what_tryout_always_did() {
+        let k: &dyn ProjectKind = &TYPO3_CORE;
+        assert_eq!(k.clone_url(), Some("https://github.com/typo3/typo3.git"));
+        assert_eq!(k.default_branch(), "main");
+        assert!(k.is_base_branch("main") && k.is_base_branch("13.4"));
+        assert!(!k.is_base_branch("feature/x"));
+        assert_eq!(
+            k.git_excludes(),
+            ["/.ddev/", "/worktrees/", "/TYPO3-Instances/", "/packages/"]
+        );
+        assert_eq!(
+            k.setup_command("nginx-fpm"),
+            [
+                "vendor/bin/typo3",
+                "setup",
+                "--no-interaction",
+                "--force",
+                "--server-type=other"
+            ]
+        );
+        assert_eq!(
+            k.setup_command("apache-fpm").last().unwrap(),
+            "--server-type=apache"
+        );
+        assert_eq!(k.backend_path(), Some("/typo3/"));
+        for verb in [
+            "download", "checkout", "patch", "cs", "reset", "composer", "worktree",
+        ] {
+            assert!(k.supports(verb), "{verb}");
+        }
+    }
+}
