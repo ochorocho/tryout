@@ -300,6 +300,17 @@ addon_start() {
   assert_success
   refute_output "0"
 
+  # Two sites switched to one version: neither holds the branch, so the second
+  # switch is not refused ("Branch '13.4' is checked out in v12").
+  run ddev tryout checkout --site v12 13.4
+  assert_success
+  run ddev tryout checkout --site v13 13.4
+  assert_success
+  run ddev tryout exec v12 vendor/bin/typo3 --version
+  assert_output --partial "TYPO3 CMS 13.4"
+  run git -C "${TESTDIR}/worktrees/v12" branch --show-current
+  assert_output ""
+
   # Dropping one leaves the others serving.
   run ddev tryout worktree unserve v12
   assert_success

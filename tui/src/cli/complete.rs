@@ -207,9 +207,15 @@ fn worktree(ctx: &Ctx, l: &Line, o: &mut Out) {
                 engines(ctx, o);
             } else if l.prev == "--db-from" {
                 db_sources(ctx, o);
+            } else if l.prev == "--pr" {
+                // Listing them asks the forge: completion never goes online.
+                o.hint("the pull or merge request's number");
             } else {
                 if l.pos == 3 && !l.wants_flag() {
                     branches(ctx, o);
+                }
+                if ctx.kind().opens_pull_requests() {
+                    o.flag(l, "--pr", "a pull or merge request of origin, served");
                 }
                 o.flag(l, "--serve", "serve it immediately");
                 o.flag(l, "--php", "run it on another PHP version");

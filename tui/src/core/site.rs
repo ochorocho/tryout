@@ -323,6 +323,7 @@ mod tests {
                     "DATABASE_URL",
                     "mysql://db:db@db:3306/db_feat_x?serverVersion=11.8-MariaDB&charset=utf8mb4"
                 ),
+                ("TRYOUT_URL", "https://feat-x..ddev.site"),
             ])
         );
         // On another server: that server's host and port.
@@ -344,6 +345,7 @@ mod tests {
                     "DATABASE_URL",
                     "sqlite:////var/www/html/.ddev/tryout-sites/lite/sqlite/db_lite.sqlite"
                 ),
+                ("TRYOUT_URL", "https://lite..ddev.site"),
             ])
         );
         // `delete --all` never takes the project's own database.

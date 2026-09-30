@@ -45,6 +45,8 @@ pub enum Effect {
     LoadBranches,
     /// A page of open changes for a site: (site, search, page).
     LoadPatches(String, String, u32),
+    /// The project's open pull requests: search, page.
+    LoadPullRequests(String, u32),
 }
 
 /// The command menu for one worktree.
@@ -678,12 +680,18 @@ impl App {
         // is applied long before the rebuild after it ends the job.
         reload |= self.jobs.take_progress();
         // The patch form's search, once typing has paused (or a page was asked).
-        if let Some(form) = self.form.as_mut()
-            && let crate::tui::forms::FormKind::Patch(site) = &form.kind
-        {
-            let site = site.clone();
-            if !reload && let Some((search, page)) = form.take_search(std::time::Instant::now()) {
-                return Effect::LoadPatches(site, search, page);
+        if let Some(form) = self.form.as_mut() {
+            let kind = form.kind.clone();
+            if !reload
+                && kind.wants_patches().is_some()
+                && let Some((search, page)) = form.take_search(std::time::Instant::now())
+            {
+                return match kind {
+                    crate::tui::forms::FormKind::Patch(site) => {
+                        Effect::LoadPatches(site, search, page)
+                    }
+                    _ => Effect::LoadPullRequests(search, page),
+                };
             }
         }
         // A success has made its point after a few seconds; the one whose log

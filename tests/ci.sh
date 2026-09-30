@@ -19,7 +19,13 @@ case "${1:-}" in
   project)
     # Project mode: a plain PHP app of the test's own, no Core clone.
     tui/scripts/build-linux.sh
-    bats tests/project.bats
+    bats tests/project.bats --filter-tags 'project,!db'
+    ;;
+  project-*)
+    # One framework's journey (project-laravel, project-drupal, …): its
+    # installer, its database, its own settings — minutes each.
+    tui/scripts/build-linux.sh
+    bats tests/project.bats --filter-tags "project,${1#project-}"
     ;;
   lifecycle)
     tui/scripts/build-linux.sh
@@ -29,7 +35,7 @@ case "${1:-}" in
     bats tests/test.bats --filter-tags release
     ;;
   *)
-    echo "Usage: tests/ci.sh unit|install|project|lifecycle|release" >&2
+    echo "Usage: tests/ci.sh unit|install|project|project-<framework>|lifecycle|release" >&2
     exit 2
     ;;
 esac

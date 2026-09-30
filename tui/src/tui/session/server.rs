@@ -397,6 +397,14 @@ impl Server {
                     let _ = tx.send((search, page, result));
                 });
             }
+            Effect::LoadPullRequests(search, page) => {
+                let (root, tx) = (self.app.root.clone(), self.patches.0.clone());
+                self.redraw = true;
+                thread::spawn(move || {
+                    let result = worktrees::load_pull_requests(&root, &search, page);
+                    let _ = tx.send((search, page, result));
+                });
+            }
             Effect::LoadBranches => {
                 let (root, tx) = (self.app.root.clone(), self.branches.0.clone());
                 thread::spawn(move || {

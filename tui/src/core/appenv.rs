@@ -33,6 +33,8 @@ pub fn vars(project_type: &str, site: &SiteDb, url: &str) -> Vec<(&'static str, 
         ]);
     }
     v.push(("DATABASE_URL", database_url(site)));
+    v.push(("TRYOUT_URL", url.to_string()));
+    let host_port = format!("{}:{port}", site.host);
     match project_type {
         "laravel" => {
             let connection = match db.engine {
@@ -72,6 +74,66 @@ pub fn vars(project_type: &str, site: &SiteDb, url: &str) -> Vec<(&'static str, 
             ]);
         }
         "shopware6" => v.push(("APP_URL", url.to_string())),
+        "cakephp" => v.push(("APP_FULL_BASE_URL", url.to_string())),
+        // Laravel's names, without a connection type.
+        "asterios" if !sqlite => v.extend([
+            ("DB_HOST", site.host.to_string()),
+            ("DB_PORT", port.clone()),
+            ("DB_DATABASE", site.name.to_string()),
+            ("DB_USERNAME", "db".to_string()),
+            ("DB_PASSWORD", "db".to_string()),
+            ("APP_URL", url.to_string()),
+        ]),
+        // Bedrock's dotenv never overrides a real variable.
+        "wp-bedrock" if !sqlite => v.extend([
+            ("DB_NAME", site.name.to_string()),
+            ("DB_USER", "db".to_string()),
+            ("DB_PASSWORD", "db".to_string()),
+            ("DB_HOST", host_port),
+            ("WP_HOME", url.to_string()),
+            ("WP_SITEURL", format!("{url}/wp")),
+        ]),
+        "silverstripe" => {
+            let class = match db.engine {
+                Engine::Postgres => "PostgreSQLDatabase",
+                Engine::Sqlite => "SQLite3Database",
+                _ => "MySQLDatabase",
+            };
+            v.extend([
+                ("SS_DATABASE_CLASS", class.to_string()),
+                ("SS_DATABASE_NAME", site.name.to_string()),
+                ("SS_BASE_URL", url.to_string()),
+            ]);
+            if !sqlite {
+                v.extend([
+                    ("SS_DATABASE_SERVER", site.host.to_string()),
+                    ("SS_DATABASE_PORT", port),
+                    ("SS_DATABASE_USERNAME", "db".to_string()),
+                    ("SS_DATABASE_PASSWORD", "db".to_string()),
+                ]);
+            }
+        }
+        // CodeIgniter 4 reads its config keys, dots and all, from the environment.
+        "codeigniter" => {
+            let driver = match db.engine {
+                Engine::Postgres => "Postgre",
+                Engine::Sqlite => "SQLite3",
+                _ => "MySQLi",
+            };
+            v.extend([
+                ("database.default.DBDriver", driver.to_string()),
+                ("database.default.database", site.name.to_string()),
+                ("app.baseURL", format!("{url}/")),
+            ]);
+            if !sqlite {
+                v.extend([
+                    ("database.default.hostname", site.host.to_string()),
+                    ("database.default.port", port),
+                    ("database.default.username", "db".to_string()),
+                    ("database.default.password", "db".to_string()),
+                ]);
+            }
+        }
         _ => {}
     }
     v
@@ -146,7 +208,23 @@ mod tests {
         // Every type gets tryout's own names.
         let php = vars("php", &site, url);
         assert_eq!(get(&php, "TRYOUT_DB_NAME"), Some("db_one"));
+        assert_eq!(get(&php, "TRYOUT_URL"), Some(url));
         assert_eq!(get(&php, "APP_URL"), None);
+
+        let bedrock = vars("wp-bedrock", &site, url);
+        assert_eq!(get(&bedrock, "DB_HOST"), Some("db:3306"));
+        assert_eq!(
+            get(&bedrock, "WP_SITEURL"),
+            Some("https://one.shop.ddev.site/wp")
+        );
+
+        let ss = vars("silverstripe", &site, url);
+        assert_eq!(get(&ss, "SS_DATABASE_CLASS"), Some("MySQLDatabase"));
+        assert_eq!(get(&ss, "SS_DATABASE_NAME"), Some("db_one"));
+
+        let ci = vars("codeigniter", &site, url);
+        assert_eq!(get(&ci, "database.default.database"), Some("db_one"));
+        assert_eq!(get(&ci, "app.baseURL"), Some("https://one.shop.ddev.site/"));
     }
 
     #[test]

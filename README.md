@@ -3,17 +3,42 @@
 [![last commit](https://img.shields.io/github/last-commit/bmack/tryout)](https://github.com/bmack/tryout/commits)
 [![release](https://img.shields.io/github/v/release/bmack/tryout)](https://github.com/bmack/tryout/releases/latest)
 
-# TYPO3 tryout
+# tryout
 
-Get a working TYPO3 development setup in minutes — backed by the real TYPO3 Core
-git repository, with Gerrit patches one command away.
+Every branch of your DDEV project, served side by side — each worktree at its
+own URL, on its own PHP and its own database, driven from the command line or a
+terminal UI.
 
-**tryout** is a DDEV add-on for people who want to contribute to TYPO3 Core, test
-Gerrit patches, or develop custom extensions against the latest Core source — without
-wrestling with manual setup. It is aimed at Core contributors, extension developers, and
-anyone who wants to quickly spin up a TYPO3 instance backed by the actual Core repository.
+**tryout** is a DDEV add-on that works in two modes, decided by what the project
+root holds:
+
+- **Your own project**, of any DDEV type (Laravel, Symfony, Drupal, WordPress, a
+  TYPO3 site, plain PHP, …): worktrees of its repository and its pull requests,
+  each served with a copy of the primary's database. The install changes nothing
+  of the project's.
+- **TYPO3 Core**: a working TYPO3 development setup in minutes, backed by the real
+  Core git repository, with Gerrit patches one command away — for Core
+  contributors, extension developers and anyone who wants a TYPO3 instance of the
+  actual Core source.
 
 ## Quick Start
+
+### Your own project
+
+In an existing DDEV project whose root is a git repository:
+
+```bash
+ddev add-on get bmack/tryout
+ddev restart
+ddev tryout worktree add feature-x feature/x --serve   # https://feature-x.<project>.ddev.site
+ddev tryout worktree add --pr 42                        # a pull request, served as pr-42
+ddev tryout ui                                          # all of it in a terminal UI
+```
+
+See [Your own project](#your-own-project-project-mode) for databases, frameworks and
+what each DDEV type supports.
+
+### TYPO3 Core
 
 Pick a folder name for your project (e.g. `my-typo3-site`) and run:
 
@@ -140,6 +165,65 @@ Your `.ddev/config.yaml` stays as it is. Two things change:
   is merged into the overlay from now on.
 
 Your Core checkout, database and patches are untouched.
+
+## Your own project (project mode)
+
+tryout works on any DDEV project, not only a TYPO3 Core checkout. On a
+repository of your own, `ddev add-on get` clones and changes nothing; tryout
+serves the project's worktrees side by side, each at `<name>.<project>.ddev.site`
+from its own checkout, on its own PHP and database:
+
+```bash
+ddev tryout worktree add feature-x feature/x --serve   # a branch, local or on origin
+ddev tryout worktree add try main --serve --db-empty    # start with an empty database
+ddev tryout worktree add --pr 42                        # pull/merge request #42, as pr-42
+ddev tryout exec feature-x bin/console cache:clear      # the site's PHP and database
+```
+
+A new site's database starts as a copy of the primary's (`--db-from <site>`
+copies another's, `--db-empty` none); `delete <site>` resets it to a fresh
+copy. A pull or merge request of origin opens as a served worktree with
+`--pr <number>`: your git fetches `refs/pull/<n>/head` (GitHub) or
+`refs/merge-requests/<n>/head` (GitLab), no token needed; the terminal UI lists
+the open ones through `gh` or `glab` where installed. The app finds its own
+database the way its framework reads it — from
+the environment, or through a per-site copy of DDEV's settings file — and a
+worktree without `.env` gets the project's. What needs TYPO3 Core (`patch`,
+`cs`, `checkout`, `download`, `composer`, `reset`, `worktree use`) says so.
+
+`ddev tryout status` names the support for the project's type:
+
+| Type | Wired through | What |
+|---|---|---|
+| `asterios` | environment | DB_*, APP_URL |
+| `backdrop` | settings file | settings.ddev.php |
+| `cakephp` | environment | DATABASE_URL, APP_FULL_BASE_URL |
+| `codeigniter` | environment | database.default.*, app.baseURL |
+| `craftcms` | environment | CRAFT_DB_*, PRIMARY_SITE_URL |
+| `drupal` | settings file | settings.ddev.php |
+| `drupal6` | settings file | settings.ddev.php ($db_url) |
+| `drupal7` | settings file | settings.ddev.php |
+| `drupal8` | settings file | settings.ddev.php |
+| `drupal9` | settings file | settings.ddev.php |
+| `drupal10` | settings file | settings.ddev.php |
+| `drupal11` | settings file | settings.ddev.php |
+| `drupal12` | settings file | settings.ddev.php |
+| `generic` | environment | TRYOUT_DB_*, DATABASE_URL |
+| `joomla` | served only | configuration.php is the app's own |
+| `laravel` | environment | DB_*, APP_URL |
+| `magento` | served only | local.xml is the app's own |
+| `magento2` | served only | app/etc/env.php and the base URL in the database |
+| `maho` | served only | app/etc/local.xml is the app's own |
+| `modx` | served only | config.inc.php is the app's own |
+| `php` | environment | TRYOUT_DB_*, DATABASE_URL |
+| `shopware6` | environment | DATABASE_URL, APP_URL; storefront domain updated |
+| `silverstripe` | environment | SS_DATABASE_*, SS_BASE_URL |
+| `symfony` | environment | DATABASE_URL |
+| `typo3` | settings file | config/system/additional.php |
+| `wordpress` | settings file | wp-config-ddev.php (MariaDB/MySQL only) |
+| `wp-bedrock` | environment | DB_*, WP_HOME |
+
+A type not listed is served like `php`.
 
 ## Commands
 
@@ -1047,6 +1131,14 @@ box and the list.
 | a letter                                  |                               | from the list back to the search, typing it                                                  |
 | `Enter`                                   |                               | apply the ticked changes in the order you ticked them, or the selected one if none is ticked |
 | `Esc`                                     |                               | cancel                                                                                       |
+
+### Opening a pull request
+
+In a project of your own, the menu offers **Open a pull request…** instead: the
+same form, listing origin's open pull or merge requests (number, branch, title,
+author) through `gh` or `glab`, whichever fits origin and is installed. `Enter`
+opens the selected one as the served worktree `pr-<number>` — the same as
+`ddev tryout worktree add --pr <number>`, which needs neither tool.
 
 ### Activity and logs
 

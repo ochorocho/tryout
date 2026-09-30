@@ -180,6 +180,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn several_sites_run_one_version_and_the_root_takes_its_branch_back() {
+        use crate::core::ctx::{DdevEnv, tests::core_repo};
+        let d = core_repo();
+        let root = d.path();
+        let ctx = Ctx::new(root, DdevEnv::default());
+        let g = |dir: &Path, args: &[&str]| assert!(git::ok(dir, args), "{args:?}");
+        let (a, b) = (root.join("worktrees/a"), root.join("worktrees/b"));
+        g(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                &a.to_string_lossy(),
+                "origin/main",
+            ],
+        );
+        g(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                &b.to_string_lossy(),
+                "origin/main",
+            ],
+        );
+
+        // Both on 13.4 at once: neither takes the branch.
+        switch_to(&ctx, &a, "13.4").unwrap();
+        switch_to(&ctx, &b, "13.4").unwrap();
+        for w in [&a, &b] {
+            assert_eq!(
+                git::out(w, &["branch", "--show-current"]).as_deref(),
+                Some("")
+            );
+        }
+
+        // A worktree an earlier tryout attached to 13.4 lets go for the root.
+        g(&a, &["checkout", "-q", "-B", "13.4", "origin/13.4"]);
+        switch_to(&ctx, root, "13.4").unwrap();
+        assert_eq!(
+            git::out(root, &["branch", "--show-current"]).as_deref(),
+            Some("13.4")
+        );
+        assert_eq!(
+            git::out(&a, &["branch", "--show-current"]).as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
     fn a_project_worktree_starts_from_a_local_branch_when_there_is_no_origin() {
         let d = crate::core::ctx::tests::project_repo();
         assert_eq!(
@@ -848,8 +902,42 @@ pub fn reset_to_base(ctx: &Ctx, dir: &Path, branch: &str, site_name: &str) -> St
 /// Create worktrees/<name>, always DETACHED at origin/<branch>: no local
 /// branch, so nothing collides and nothing is left behind.
 pub fn add(ctx: &Ctx, name: &str, branch: &str) -> Step {
-    validate_name(name).map_err(|l| fail(&l))?;
     validate_branch(branch).map_err(|l| fail(&l))?;
+    let (dir, main) = prepare(ctx, name)?;
+    let base = match ctx.mode() {
+        Mode::Core => {
+            out::info("Fetching origin...");
+            if !proc::git(&main, &["fetch", "origin"]) {
+                return Err(fail(["Fetch failed"]));
+            }
+            let base = format!("origin/{branch}");
+            if !git::ok(&main, &["rev-parse", "--verify", "--quiet", &base]) {
+                return Err(fail(&[
+                    format!("Branch '{branch}' does not exist on origin"),
+                    "  → ddev tryout checkout   (lists available branches)".into(),
+                ]));
+            }
+            base
+        }
+        Mode::Project => project_base(&main, branch)?,
+    };
+    create(&main, &dir, name, &base)
+}
+
+/// A worktree detached at a ref fetched for it — a pull request's head
+/// (`review::local_ref`), which the host fetched with the user's credentials.
+pub fn add_at(ctx: &Ctx, name: &str, base: &str) -> Step {
+    let (dir, main) = prepare(ctx, name)?;
+    if !git::ok(&main, &["rev-parse", "--verify", "--quiet", base]) {
+        return Err(fail(&[format!("Nothing was fetched into {base}")]));
+    }
+    create(&main, &dir, name, base)
+}
+
+/// What every new worktree is checked for: a valid, unused name whose
+/// database no other worktree maps to, and a git that writes relative paths.
+fn prepare(ctx: &Ctx, name: &str) -> Result<(std::path::PathBuf, std::path::PathBuf), Failed> {
+    validate_name(name).map_err(|l| fail(&l))?;
     if let Some(other) = super::site::database_taken_by(ctx, name) {
         return Err(fail(&[
             format!("'{name}' would share a database with worktree '{other}'"),
@@ -874,32 +962,62 @@ pub fn add(ctx: &Ctx, name: &str, branch: &str) -> Step {
     }
     let main = main_dir(ctx).unwrap_or_else(|| ctx.root.clone());
     ensure_relative_paths(ctx);
-    let base = match ctx.mode() {
-        Mode::Core => {
-            out::info("Fetching origin...");
-            if !proc::git(&main, &["fetch", "origin"]) {
-                return Err(fail(["Fetch failed"]));
-            }
-            let base = format!("origin/{branch}");
-            if !git::ok(&main, &["rev-parse", "--verify", "--quiet", &base]) {
-                return Err(fail(&[
-                    format!("Branch '{branch}' does not exist on origin"),
-                    "  → ddev tryout checkout   (lists available branches)".into(),
-                ]));
-            }
-            base
-        }
-        Mode::Project => project_base(&main, branch)?,
-    };
+    Ok((dir, main))
+}
+
+fn create(main: &Path, dir: &Path, name: &str, base: &str) -> Step {
     out::info(format!("Creating worktree '{name}' at {base}..."));
     if !proc::git(
-        &main,
-        &["worktree", "add", "--detach", &dir.to_string_lossy(), &base],
+        main,
+        &["worktree", "add", "--detach", &dir.to_string_lossy(), base],
     ) {
         return Err(Failed);
     }
     out::success(format!("Worktree '{name}' created"));
     Ok(())
+}
+
+/// Put a checkout on `origin/<branch>`. A worktree goes detached, as every
+/// worktree is: it holds no branch, so any number of sites can run the same
+/// version. The root checkout takes the branch itself (its base is read from
+/// it); a worktree still holding that branch — attached by an earlier tryout —
+/// lets go of it first, detached at the same commit, so nothing is lost.
+pub fn switch_to(ctx: &Ctx, checkout: &Path, branch: &str) -> Step {
+    let remote = format!("origin/{branch}");
+    let same = |a: &Path, b: &Path| a.canonicalize().ok() == b.canonicalize().ok();
+    if !same(checkout, &ctx.root) {
+        return if proc::git(checkout, &["checkout", "-q", "--detach", &remote]) {
+            Ok(())
+        } else {
+            Err(Failed)
+        };
+    }
+    let mut dir = String::new();
+    for l in git::lines(checkout, &["worktree", "list", "--porcelain"]) {
+        if let Some(w) = l.strip_prefix("worktree ") {
+            dir = w.to_string();
+        } else if l == format!("branch refs/heads/{branch}") && !same(Path::new(&dir), checkout) {
+            let holder = Path::new(&dir);
+            let name = holder.file_name().map(|n| n.to_string_lossy().into_owned());
+            if !proc::git(holder, &["checkout", "-q", "--detach"]) {
+                return Err(fail(&[
+                    format!("Branch '{branch}' is checked out in {}", holder.display()),
+                    format!("  → git -C {} checkout --detach", holder.display()),
+                ]));
+            }
+            out::info(format!(
+                "Worktree '{}' let go of branch '{branch}' — same commit, detached",
+                name.unwrap_or_default()
+            ));
+        }
+    }
+    if proc::git_no_stderr(checkout, &["checkout", "-q", branch])
+        || proc::git(checkout, &["checkout", "-q", "-b", branch, &remote])
+    {
+        Ok(())
+    } else {
+        Err(Failed)
+    }
 }
 
 /// Where a project's worktree starts: origin's branch when there is one (a

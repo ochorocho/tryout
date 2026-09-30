@@ -529,7 +529,7 @@ fake_project() {
     'worktree list$' 'worktree list --plain' 'worktree list --json'
     'worktree branches --json'
     'worktree use' 'worktree serve [a-z0-9-]+ --php' 'worktree serve [a-z0-9-]+ --db' 'worktree serve .*--switch'
-    'worktree add .*--db' 'worktree add .*--db-from' 'worktree serve .*--db-empty'
+    'worktree add .*--db' 'worktree add .*--db-from' 'worktree serve .*--db-empty' 'worktree add .*--pr'
     'worktree unserve [a-z0-9-]+$'
     'worktree unserve .*--drop-db' 'worktree rename'
     'worktree remove [a-z0-9-]+$' 'worktree remove .*--yes'

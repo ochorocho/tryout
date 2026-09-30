@@ -103,6 +103,16 @@ pub fn load_patches(root: &Path, name: &str, search: &str, page: u32) -> Result<
     Ok((changes, found.more))
 }
 
+/// A project's open pull requests matching `search`, from `gh`/`glab` on the
+/// host — one page, all of them. Asks the forge, so off-thread.
+pub fn load_pull_requests(root: &Path, search: &str, page: u32) -> Result<PatchPage> {
+    if page > 0 {
+        return Ok((Vec::new(), false));
+    }
+    let found = crate::core::review::list_open(root, search).map_err(|e| anyhow::anyhow!(e))?;
+    Ok((found, false))
+}
+
 /// A page of open changes, and whether Gerrit has another.
 pub type PatchPage = (Vec<crate::tui::forms::Change>, bool);
 

@@ -31,24 +31,37 @@ sql() {
   ddev exec mysql -uroot -proot -N "$1" -e "$2"
 }
 
-# A framework's own app, created by its installer, committed as a user's would be.
-framework_project() {
-  local type="$1" package="$2"
-  run ddev config --project-type="${type}" --docroot=public
+# A started DDEV project of a type, empty.
+new_project() {
+  local type="$1" docroot="$2"
+  run ddev config --project-type="${type}" --docroot="${docroot}"
   assert_success
   run ddev start -y
   assert_success
-  run ddev composer create-project -n "${package}"
-  assert_success
-  git -c init.defaultBranch=main init -q
-  git add -A
-  git -c user.name=t -c user.email=t@t commit -qm "${type} app"
 }
 
-# What a site answers at its own hostname, from inside the web container.
+# Everything committed on main, as a user's repository would be.
+commit_all() {
+  git -c init.defaultBranch=main init -q
+  git add -A
+  git -c user.name=t -c user.email=t@t commit -qm "the app"
+}
+
+# A framework's own app, created by its installer, committed.
+framework_project() {
+  local type="$1" package="$2"
+  new_project "${type}" public
+  run ddev composer create-project -n "${package}"
+  assert_success
+  commit_all
+}
+
+# What a site answers at its own hostname (and path), from inside the web
+# container: `page one.x.ddev.site/wp-login.php`.
 page() {
-  local host="$1"
-  ddev exec curl -sk --max-time 20 -H "Host: ${host}" https://127.0.0.1/
+  local host="${1%%/*}" path="/"
+  [ "${host}" = "$1" ] || path="/${1#*/}"
+  ddev exec curl -sk --max-time 20 -H "Host: ${host}" "https://127.0.0.1${path}"
 }
 
 # bats test_tags=project
@@ -179,6 +192,35 @@ page() {
   assert_success
 }
 
+# bats test_tags=project
+@test "a pull request of origin opens as its own served worktree" {
+  set -eu -o pipefail
+  fixture_project
+  # A bare repository stands in for the forge: it publishes request 7 the way
+  # GitHub does, as refs/pull/7/head.
+  local remote="${TESTDIR}.origin.git"
+  git init -q --bare "${remote}"
+  git remote add origin "${remote}"
+  git push -q origin main "feature:refs/pull/7/head"
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev start -y
+  assert_success
+
+  run ddev tryout worktree add --pr 7
+  assert_success
+  assert_dir_exist "${TESTDIR}/worktrees/pr-7"
+  run page "pr-7.${PROJNAME}.ddev.site"
+  assert_output --partial "fixture site=pr-7 version=feature"
+
+  # One it does not publish fails before anything is made.
+  run ddev tryout worktree add --pr 8
+  assert_failure
+  assert_output --partial "no pull or merge request #8"
+  assert_dir_not_exist "${TESTDIR}/worktrees/pr-8"
+  rm -rf "${remote}"
+}
+
 # bats test_tags=project,db,laravel
 @test "a Laravel project's worktrees start from the primary's data and keep their own" {
   set -eu -o pipefail
@@ -228,4 +270,90 @@ page() {
   run ddev tryout exec feat bin/console dbal:run-sql "SELECT CONCAT(DATABASE(), ' ', v) AS x FROM seed"
   assert_success
   assert_output --partial "db_feat from-primary"
+}
+
+# bats test_tags=project,db,drupal
+@test "a Drupal site's worktrees get their own settings.ddev.php and database" {
+  set -eu -o pipefail
+  new_project drupal11 web
+  run ddev composer create-project -n drupal/recommended-project
+  assert_success
+  run ddev composer require -n drush/drush
+  assert_success
+  run ddev drush site:install -y --account-name=admin --account-pass=admin
+  assert_success
+  # As a Drupal project keeps it: settings and files are the site's own.
+  printf '%s\n' /vendor/ /web/core/ /web/modules/contrib/ /web/themes/contrib/ \
+    '/web/sites/*/files/' '/web/sites/*/settings*.php' > .gitignore
+  commit_all
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+
+  run ddev tryout worktree add feat main --serve
+  assert_success
+  assert_output --partial "sites/default/settings.ddev.php for 'feat'"
+  # vendor/bin/drush is a shell proxy; exec runs PHP, so Drush's own script.
+  run ddev tryout exec feat vendor/drush/drush/drush status --field=db-name
+  assert_success
+  assert_output "db_feat"
+  run ddev drush status --field=db-name
+  assert_output "db"
+  run page "feat.${PROJNAME}.ddev.site/user/login"
+  assert_output --partial 'name="name"'
+}
+
+# bats test_tags=project,db,wordpress
+@test "a WordPress site's worktrees get their own database and URL" {
+  set -eu -o pipefail
+  new_project wordpress ""
+  run ddev wp core download
+  assert_success
+  run ddev wp core install --url="https://${PROJNAME}.ddev.site" --title=tryout \
+    --admin_user=admin --admin_password=admin --admin_email=admin@example.com
+  assert_success
+  printf '%s\n' /wp-config.php /wp-config-ddev.php /wp-content/uploads/ > .gitignore
+  commit_all
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+
+  run ddev tryout worktree add feat main --serve
+  assert_success
+  run ddev tryout exec feat -r 'require "wp-load.php"; echo DB_NAME, " ", home_url(), "\n";'
+  assert_success
+  assert_output --partial "db_feat https://feat.${PROJNAME}.ddev.site"
+  run page "feat.${PROJNAME}.ddev.site/wp-login.php"
+  assert_output --partial 'name="log"'
+}
+
+# bats test_tags=project,db,typo3
+@test "a TYPO3 site project's worktrees get their own additional.php and database" {
+  set -eu -o pipefail
+  new_project typo3 public
+  run ddev composer create-project -n typo3/cms-base-distribution
+  assert_success
+  run ddev exec vendor/bin/typo3 setup -n --server-type=other --driver=mysqli \
+    --host=db --port=3306 --dbname=db --username=db --password=db \
+    --admin-username=admin --admin-user-password=Password.1! \
+    --admin-email=admin@example.com --project-name=tryout
+  assert_success
+  printf '%s\n' /vendor/ /var/ /public/_assets/ /public/typo3temp/ /public/fileadmin/ \
+    /config/system/additional.php > .gitignore
+  commit_all
+  run ddev add-on get "${DIR}"
+  assert_success
+  assert_output --partial "Not a TYPO3 Core checkout"
+  run ddev restart -y
+  assert_success
+
+  run ddev tryout worktree add feat main --serve
+  assert_success
+  run ddev tryout exec feat -r '$GLOBALS["TYPO3_CONF_VARS"]["DB"]["Connections"]["Default"] = []; include "config/system/additional.php"; echo $GLOBALS["TYPO3_CONF_VARS"]["DB"]["Connections"]["Default"]["dbname"], "\n";'
+  assert_success
+  assert_output "db_feat"
+  run page "feat.${PROJNAME}.ddev.site/typo3/"
+  assert_output --partial "TYPO3"
 }

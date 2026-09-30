@@ -18,7 +18,16 @@ pub fn body(ctx: &Ctx, patches: &str) -> Vec<String> {
     match ctx.mode() {
         Mode::Core => line(format!("  Mode:      {}", Mode::Core.label())),
         Mode::Project => {
-            line(format!("  Mode:      project ({})", project_type(ctx)));
+            let t = project_type(ctx);
+            line(format!("  Mode:      project ({t})"));
+            let (support, note) = super::types::support(&ctx.env.project_type);
+            let icon = if support == super::types::Support::ServeOnly {
+                &warn
+            } else {
+                &ok
+            };
+            line(format!("  Sites:     {icon} {}", support.label()));
+            line(format!("             {DIM}{note}"));
         }
     }
 
@@ -266,6 +275,10 @@ mod tests {
         };
         let lines = body(&Ctx::new(own.path(), env), "").join("\n");
         assert!(lines.contains("project (laravel)"), "{lines}");
+        assert!(
+            lines.contains("database and URL from the environment"),
+            "{lines}"
+        );
         assert!(lines.contains("Repo:"), "{lines}");
         assert!(lines.contains("only the project itself"), "{lines}");
         for core_only in ["not cloned", "Patches:", "Contrib:", "TYPO3:"] {

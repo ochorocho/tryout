@@ -283,9 +283,10 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
             "--detach" => {}
             "--serve" => serve_it = true,
             "--db-empty" => {}
-            "--php" | "--db" | "--db-from" => {
+            "--php" | "--db" | "--db-from" | "--pr" => {
                 it.next();
             }
+            a if a.starts_with("--pr=") => {}
             a if a.starts_with("--php=")
                 || a.starts_with("--db=")
                 || a.starts_with("--db-from=") => {}
@@ -301,12 +302,26 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
         serve_it = true;
     }
     let _ = std::fs::create_dir_all(ctx.worktrees_dir());
-    let branch = if branch.is_empty() {
-        ctx.branch().to_string()
+    // The host fetched the request into its own ref.
+    let pr = flag_value(args, "--pr");
+    if !pr.is_empty() {
+        let Some(number) = crate::core::review::parse_number(&pr) else {
+            return usage("ddev tryout worktree add <name> --pr <number>");
+        };
+        step(worktree::add_at(
+            ctx,
+            &name,
+            &crate::core::review::local_ref(number),
+        ))?;
+        serve_it = true;
     } else {
-        branch
-    };
-    step(worktree::add(ctx, &name, &branch))?;
+        let branch = if branch.is_empty() {
+            ctx.branch().to_string()
+        } else {
+            branch
+        };
+        step(worktree::add(ctx, &name, &branch))?;
+    }
     print("\n");
     if serve_it {
         return step(serve::serve(ctx, &name, &php, db, &seed));
@@ -443,8 +458,9 @@ fn checkout(ctx: &Ctx, args: &[String]) -> Res {
         print(&format!("\nAvailable branches:\n{list}"));
         return Err(Exit(1));
     }
-    let current =
-        git::out(&core, &["branch", "--show-current"]).unwrap_or_else(|| "detached".into());
+    let current = git::out(&core, &["branch", "--show-current"])
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| site::core_and_base(ctx, &target).1);
     if current == target_branch {
         out::info(format!(
             "Already on {target_branch}, resetting to latest origin/{target_branch}..."
@@ -452,47 +468,7 @@ fn checkout(ctx: &Ctx, args: &[String]) -> Res {
     } else {
         out::info(format!("Switching from {current} to {target_branch}..."));
     }
-    // git refuses a branch checked out in another worktree; say which instead.
-    if ctx.worktrees_dir().is_dir() {
-        let mut holder = None;
-        let mut current_wt = String::new();
-        for l in git::lines(&core, &["worktree", "list", "--porcelain"]) {
-            if let Some(w) = l.strip_prefix("worktree ") {
-                current_wt = w.to_string();
-            } else if l == format!("branch refs/heads/{target_branch}") {
-                holder = Some(current_wt.clone());
-                break;
-            }
-        }
-        if let Some(h) = holder {
-            let hp = std::path::PathBuf::from(&h);
-            if hp.canonicalize().ok() != core.canonicalize().ok() {
-                out::error(format!(
-                    "Branch '{target_branch}' is checked out in {}",
-                    basename(&hp)
-                ));
-                let prefix = format!("{}/", ctx.worktrees_dir().display());
-                out::error(format!(
-                    "  → ddev tryout worktree use {}",
-                    h.strip_prefix(&prefix).unwrap_or(&h)
-                ));
-                return Err(Exit(1));
-            }
-        }
-    }
-    if !proc::git_no_stderr(&core, &["checkout", &target_branch])
-        && !proc::git(
-            &core,
-            &[
-                "checkout",
-                "-b",
-                &target_branch,
-                &format!("origin/{target_branch}"),
-            ],
-        )
-    {
-        return Err(Exit(1));
-    }
+    step(worktree::switch_to(ctx, &core, &target_branch))?;
     if !proc::git(
         &core,
         &["reset", "--hard", &format!("origin/{target_branch}")],

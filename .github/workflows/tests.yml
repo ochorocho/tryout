@@ -85,6 +85,30 @@ jobs:
           addon_ref: ${{ env.GITHUB_REF }}
           test_command: bash tests/ci.sh lifecycle
 
+  # Project mode per framework: each installs a real app with its own tools
+  # (composer create-project, drush, wp-cli, typo3 setup) and serves worktrees
+  # of it. Minutes each and network-heavy, so gated like lifecycle.
+  frameworks:
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    strategy:
+      matrix:
+        framework: [laravel, symfony, drupal, wordpress, typo3]
+      fail-fast: false
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: ddev/github-action-add-on-test@v2
+        with:
+          ddev_version: stable
+          token: ${{ secrets.GITHUB_TOKEN }}
+          debug_enabled: ${{ github.event.inputs.debug_enabled }}
+          addon_repository: ${{ env.GITHUB_REPOSITORY }}
+          addon_ref: ${{ env.GITHUB_REF }}
+          test_command: bash tests/ci.sh project-${{ matrix.framework }}
+
   # Browser tests: does each served worktree URL really render a frontend and log
   # into its backend? A URL returning 200 does not prove either. Gated like
   # lifecycle — nightly, by hand, or with full-ci — because it clones Core, provisions a

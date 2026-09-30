@@ -63,6 +63,7 @@ pub fn worktree() -> String {
 \x20        --switch    (serve --db: move a served site, its old database kept)\n\
 \x20        --db-from x (add/serve, a project: copy the database of site x — default @primary)\n\
 \x20        --db-empty  (add/serve, a project: start with an empty database)\n\
+\x20        --pr 123    (add, a project: pull/merge request #123 of origin, served as pr-123)\n\
 \x20        --force     (remove: also drop an unmerged branch)\n\
 \x20        --yes       (remove: skip the confirmation)\n\
 \x20        --drop-db   (unserve: also drop the site's database)\n\

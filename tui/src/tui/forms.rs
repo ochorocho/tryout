@@ -25,6 +25,8 @@ pub enum FormKind {
     FreshInstall(String),
     Exec(String),
     Patch(String),
+    /// A project's open pull/merge requests, one opened as a served worktree.
+    PullRequest,
 }
 
 impl FormKind {
@@ -33,10 +35,12 @@ impl FormKind {
         matches!(self, FormKind::NewWorktree | FormKind::Checkout(_))
     }
 
-    /// Its list is the open Gerrit changes for this worktree's branch.
+    /// Its list is the open Gerrit changes for this worktree's branch — or,
+    /// with no worktree, a project's open pull requests.
     pub fn wants_patches(&self) -> Option<&str> {
         match self {
             FormKind::Patch(n) => Some(n),
+            FormKind::PullRequest => Some(""),
             _ => None,
         }
     }
@@ -220,6 +224,22 @@ impl Form {
                     label: "Command, run with the site's own PHP",
                     value: String::new(),
                     hint: "e.g. vendor/bin/typo3 cache:flush — quote as in a shell",
+                }],
+                vec![],
+            ),
+            FormKind::PullRequest => (
+                "Open a pull request as a served worktree".to_string(),
+                vec![Field::Choose {
+                    label: "Open pull requests of origin",
+                    options: None,
+                    filter: String::new(),
+                    selected: 0,
+                    chosen: Vec::new(),
+                    page: 0,
+                    more: false,
+                    pending: Some((Instant::now(), String::new(), 0)),
+                    asked: None,
+                    in_list: false,
                 }],
                 vec![],
             ),
@@ -616,6 +636,25 @@ impl Form {
                     run: Run::Job { reveal: true },
                 }
             }
+            FormKind::PullRequest => {
+                let field = &self.fields[0];
+                let Field::Choose {
+                    chosen, selected, ..
+                } = field
+                else {
+                    unreachable!()
+                };
+                // One worktree per request: the first ticked, else the one selected.
+                let number = chosen
+                    .first()
+                    .copied()
+                    .or_else(|| field.visible_changes().get(*selected).map(|c| c.number))
+                    .ok_or("pick a pull request")?;
+                job(
+                    format!("Open pull request #{number}"),
+                    format!("worktree add pr-{number} --pr {number}"),
+                )
+            }
             FormKind::Patch(n) => {
                 let field = &self.fields[0];
                 let Field::Choose {
@@ -895,6 +934,16 @@ mod tests {
         assert_eq!(split_args(r#"a\ b "c\"d""#).unwrap(), ["a b", "c\"d"]);
         assert_eq!(split_args("  ").unwrap(), Vec::<String>::new());
         assert!(split_args("'open").is_err());
+    }
+
+    #[test]
+    fn a_picked_pull_request_opens_as_its_own_served_worktree() {
+        let mut f = Form::new(FormKind::PullRequest, vec![], "main");
+        answer(&mut f, changes(), false);
+        assert_eq!(
+            args(key(&mut f, KeyCode::Enter)),
+            "worktree add pr-91001 --pr 91001"
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 #ddev-generated
+#ddev-silent-no-warn
 ## Provided by the tryout add-on: https://github.com/bmack/tryout
 ## Written to .ddev/config.tryout-core.yaml only on a TYPO3 Core checkout (core
 ## mode); a project of your own keeps its environment as it is.

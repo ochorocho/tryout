@@ -159,7 +159,20 @@ and tagged (`project,drupal` …): Drupal (`drupal/recommended-project` + `drush
 si`), WordPress (`wp core download` + `wp core install`), TYPO3 site. E2E: log
 into each served site's admin (Drupal `/user/login`, WordPress `/wp-login.php`,
 TYPO3 `/typo3/`).
-**Status**: Not Started
+**Status**: In Progress — implemented; Drupal/WordPress/TYPO3 journeys running
+**Done so far**: `core::types` — the support matrix for all 27 types of DDEV
+v1.25.4 (Env / Settings / ServeOnly; unknown types served like `php`), shown
+by `status` and the README (a test keeps both in step). Settings types get a
+per-site copy of DDEV's own file with a snippet reading `TRYOUT_DB_*` and
+`TRYOUT_URL` (appended for Drupal 6–12, Backdrop, TYPO3 site projects of every
+layout; prepended for WordPress, whose `defined() ||` guards let it win), plus
+the project's gitignored `settings.php`/`wp-config.php` where the worktree
+has none; a committed file is left alone and said so. Env types gained
+wp-bedrock, Silverstripe, CodeIgniter, Asterios, CakePHP names. Shopware's
+storefront domain moves to the site after a copy. ServeOnly, honestly: joomla
+(no DDEV settings), magento, magento2, maho, modx (XML/array files the app
+owns). DDEV's templates were read from its v1.25.4 source to get these right.
+Left: Playwright admin logins (bats checks each login page renders).
 
 ## Stage 5: Changes into worktrees, docs, CI
 **Goal**: Project mode's answer to `patch`: open a pull/merge request as a new
@@ -171,7 +184,21 @@ worktree in one step; documentation describes both modes; CI runs every type's
 lifecycle nightly.
 **Tests**: Unit: PR ref resolution (fixtures, like the Gerrit parser); bats with
 a local bare repository standing in for the remote; TUI snapshot of the picker.
-**Status**: Not Started
+**Status**: In Progress — implemented; journeys running
+**Done so far**: `core::review` — the forge from origin's URL, the head ref
+(`refs/pull/<n>/head`, `refs/merge-requests/<n>/head`, both for an unknown
+host), fetched by the HOST's git (the user's credentials) into
+`refs/tryout/pr/<n>`, from which the container starts a detached worktree
+(`worktree::add_at`); `worktree add [<name>] --pr <n>` names it `pr-<n>` and
+serves it; refused for TYPO3 Core (`ProjectKind::opens_pull_requests`). The
+list comes from `gh pr list`/`glab mr list` only for the TUI's picker
+(**Open a pull request…**, the Gerrit form with the branch in the votes'
+place); completion never goes online. README: both modes up front, project
+mode first, the PR picker. CI: `project` (the fixture, `--pr`) on every push,
+`project-<framework>` jobs (laravel, symfony, drupal, wordpress, typo3) gated
+like lifecycle. Tests: unit (forge, refs, gh/glab parsing, a fetch from a bare
+remote), a TUI snapshot of the picker, bats with a bare repository publishing
+`refs/pull/7/head`.
 
 ## Cross-cutting rules
 

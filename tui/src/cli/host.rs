@@ -7,7 +7,7 @@ use crate::core::db::Db;
 use crate::core::kind::Mode;
 use crate::core::out::{self, DIM, NC, RED, YELLOW, print};
 use crate::core::prompt::{self, explain_missing};
-use crate::core::{ddev, gerrit, serve, site, status, webserver, worktree};
+use crate::core::{ddev, gerrit, review, serve, site, status, webserver, worktree};
 
 use super::verbs::{self, Verb};
 use super::{Exit, Res, help, reject_args, require_core, require_served};
@@ -475,8 +475,9 @@ fn delete(ctx: &Ctx, args: &[String]) -> Res {
             _ => {}
         }
     }
-    // Bare with sites served: ask, "--all" being one of the answers.
-    if target.is_empty() && !site::served_names(ctx).is_empty() {
+    // Bare with sites served: ask, "--all" being one of the answers. `--yes`
+    // asks nothing — no target is the primary, as without served sites.
+    if target.is_empty() && !yes && !site::served_names(ctx).is_empty() {
         match prompt::ask_site(
             ctx,
             "Wipe which site?",
@@ -805,6 +806,7 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
     // The name is taken IN the loop: a flag in first position is never a name.
     let (mut name, mut branch, mut flags, mut no_restart) =
         (String::new(), String::new(), Vec::new(), false);
+    let mut pr = String::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -821,6 +823,8 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
             {
                 flags.push(a.to_string())
             }
+            "--pr" => pr = it.next().cloned().unwrap_or_default(),
+            a if a.starts_with("--pr=") => pr = a["--pr=".len()..].to_string(),
             a if a.starts_with('-') => {
                 out::error(format!("Unknown option: {a}"));
                 out::error("  → ddev tryout worktree help");
@@ -829,6 +833,41 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
             a if name.is_empty() => name = a.to_string(),
             a => branch = a.to_string(),
         }
+    }
+    // A pull request: fetched here, with the user's credentials, into a ref
+    // the container starts the worktree on. It names the worktree and its base.
+    if !pr.is_empty() {
+        let Some(number) = review::parse_number(&pr) else {
+            out::error(format!("'{pr}' is not a pull request number"));
+            out::error("  → ddev tryout worktree add --pr 123");
+            return Err(Exit(1));
+        };
+        if !ctx.kind().opens_pull_requests() {
+            out::error(format!(
+                "{} takes its changes from Gerrit, not pull requests",
+                ctx.kind().label()
+            ));
+            out::error(format!("  → ddev tryout patch {number}"));
+            return Err(Exit(1));
+        }
+        if !branch.is_empty() {
+            out::error("A pull request is its own base — leave out the branch");
+            return Err(Exit(1));
+        }
+        review::fetch(&ctx.root, number).map_err(|l| {
+            crate::core::fail(l);
+            Exit(1)
+        })?;
+        if name.is_empty() {
+            name = format!("pr-{number}");
+        }
+        flags.push(format!("--pr={number}"));
+        ensure_db_service(ctx, &flags, no_restart)?;
+        let before = webserver::restart_key(ctx);
+        let mut a = vec!["worktree", "add", name.as_str()];
+        a.extend(flags.iter().map(String::as_str));
+        delegate(ctx, &a)?;
+        return restart_if_hosts_changed(ctx, &before, no_restart);
     }
     if name.is_empty() {
         name = prompt::ask_text(

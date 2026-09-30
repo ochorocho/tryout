@@ -389,6 +389,13 @@ pub fn project() -> Vec<Entry> {
             "composer",
             JOB,
         )),
+        // A project's answer to Gerrit (dropped for TYPO3 Core by `for_kind`).
+        Entry::Action(Action::new(
+            "Open a pull request…",
+            "as a served worktree",
+            "worktree add --pr",
+            Run::Form(FormKind::PullRequest),
+        )),
     ]
 }
 
@@ -411,6 +418,8 @@ pub fn for_kind(entries: Vec<Entry>, kind: &dyn ProjectKind) -> Vec<Entry> {
             Entry::Action(a) if !supported(&a) => {}
             Entry::Action(a)
                 if !kind.seeds_databases() && a.args.iter().any(|x| x == "--db-empty") => {}
+            Entry::Action(a)
+                if !kind.opens_pull_requests() && a.args.iter().any(|x| x == "--pr") => {}
             Entry::Action(mut a) if kind.seeds_databases() && a.args[0] == "delete" => {
                 a.label = "Reset its database…".into();
                 a.hint = "a fresh copy of the primary's".into();

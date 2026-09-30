@@ -95,6 +95,12 @@ pub trait ProjectKind: Sync {
     fn seeds_databases(&self) -> bool {
         self.setup_command("").is_empty()
     }
+
+    /// Whether changes come as pull/merge requests of origin (`--pr`) —
+    /// rather than from the kind's own review system (TYPO3's Gerrit).
+    fn opens_pull_requests(&self) -> bool {
+        self.review_remote().is_none()
+    }
 }
 
 /// A project of the user's own, of any DDEV type: its own repository, never

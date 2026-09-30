@@ -358,7 +358,11 @@ pub fn ensure_site_database(ctx: &Ctx, name: &str) -> Step {
     let dbname = site::database(name);
     let db = site::db(ctx, name);
     if db.engine == Engine::Sqlite {
-        let _ = std::fs::create_dir_all(sqlite_dir(ctx, name));
+        // A project's app opens the file where it is told; TYPO3's setup makes
+        // its own directory — and one made here would block restoring a kept one.
+        if ctx.mode() == super::kind::Mode::Project {
+            let _ = std::fs::create_dir_all(sqlite_dir(ctx, name));
+        }
         return Ok(());
     }
     if dbname == "db" {
@@ -566,6 +570,24 @@ pub fn recreate(ctx: &Ctx, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typo3_sqlite_site_is_left_for_its_setup_to_make_and_a_kept_file_can_return() {
+        use crate::core::ctx::{DdevEnv, tests::core_repo};
+        let d = core_repo();
+        let c = Ctx::new(d.path(), DdevEnv::default());
+        site::write_marker(&c, "lite", "8.4", &Db::parse("sqlite").unwrap()).unwrap();
+        ensure_site_database(&c, "lite").unwrap();
+        // An empty directory here would stand where the kept database goes back.
+        assert!(!sqlite_dir(&c, "lite").exists());
+
+        let p = crate::core::ctx::tests::project_repo();
+        let c = Ctx::new(p.path(), DdevEnv::default());
+        site::write_marker(&c, "lite", "8.4", &Db::parse("sqlite").unwrap()).unwrap();
+        ensure_site_database(&c, "lite").unwrap();
+        // A project's app opens the file where it is told: the directory is there.
+        assert!(sqlite_dir(&c, "lite").is_dir());
+    }
 
     #[test]
     fn a_database_is_copied_by_its_own_servers_tools_and_only_within_a_family() {

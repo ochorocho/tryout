@@ -194,11 +194,13 @@ fn form_width(form: &crate::tui::forms::Form, screen: Rect) -> u16 {
 }
 
 /// One open change: tick, number, votes (Code-Review, Verified), subject, owner.
+/// `votes`: Gerrit's CR/V columns; without, a pull request's branch there.
 fn change_row(
     c: &crate::tui::forms::Change,
     ticked: bool,
     on: bool,
     width: usize,
+    votes: bool,
 ) -> Line<'static> {
     const OWNER: usize = 20;
     let base = if on { theme::selected() } else { theme::text() };
@@ -223,18 +225,31 @@ fn change_row(
     let tick = if ticked { "[x]" } else { "[ ]" };
     // Indent, tick, number and the two votes take 29 columns; the owner 20 more.
     let room = width.saturating_sub(4 + 29 + OWNER + 2);
-    Line::from(vec![
-        Span::styled(format!("   {tick} {:<7}", c.number), base),
-        vote("CR"),
-        Span::styled(" ", base),
-        vote("V"),
-        Span::styled("  ", base),
+    let middle = if votes {
+        vec![vote("CR"), Span::styled(" ", base), vote("V")]
+    } else {
+        vec![Span::styled(
+            format!("{:<11}", truncate(&c.scores, 11)),
+            if on { base } else { theme::dim() },
+        )]
+    };
+    Line::from_iter(
+        std::iter::once(Span::styled(format!("   {tick} {:<7}", c.number), base))
+            .chain(middle)
+            .chain([Span::styled("  ", base)])
+            .chain(tail(c, base, on, room)),
+    )
+}
+
+fn tail(c: &crate::tui::forms::Change, base: Style, on: bool, room: usize) -> Vec<Span<'static>> {
+    const OWNER: usize = 20;
+    vec![
         Span::styled(format!("{:<room$}", truncate(&c.subject, room)), base),
         Span::styled(
             format!("  {:<OWNER$}", truncate(&c.owner, OWNER)),
             if on { base } else { theme::dim() },
         ),
-    ])
+    ]
 }
 
 /// What a line of a form is, for a click on it.
@@ -388,7 +403,8 @@ fn form_lines<'a>(
                                 roles.push(FormLine::Other);
                             }
                             roles.push(FormLine::Change(j));
-                            lines.push(change_row(c, chosen.contains(&c.number), on, width));
+                            let votes = form.kind != crate::tui::forms::FormKind::PullRequest;
+                            lines.push(change_row(c, chosen.contains(&c.number), on, width, votes));
                         }
                     }
                 }
@@ -1519,6 +1535,29 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let hints: &[(&str, &str)] = match (app.menu.is_some(), app.focus) {
         _ if app.password.is_some() => &[("⏎", "send"), ("esc", "cancel the command")],
         _ if app.rename.is_some() => &[("⏎", "keep"), ("esc", "cancel")],
+        _ if app.form.as_ref().is_some_and(|f| {
+            f.kind == crate::tui::forms::FormKind::PullRequest && f.in_change_list()
+        }) =>
+        {
+            &[
+                ("↑↓", "choose"),
+                ("tab", "search"),
+                ("⏎", "open as a worktree"),
+                ("esc", "cancel"),
+            ]
+        }
+        _ if app
+            .form
+            .as_ref()
+            .is_some_and(|f| f.kind == crate::tui::forms::FormKind::PullRequest) =>
+        {
+            &[
+                ("type", "search pull requests"),
+                ("↓ tab", "to the list"),
+                ("⏎", "open as a worktree"),
+                ("esc", "cancel"),
+            ]
+        }
         _ if app
             .form
             .as_ref()
@@ -1720,6 +1759,34 @@ mod tests {
             text.contains("2 patches on top of 13.4: #91234 and 1 more"),
             "the details"
         );
+    }
+
+    #[test]
+    fn the_pull_request_picker_shows_title_author_and_branch() {
+        let mut a = loaded();
+        a.open_form(crate::tui::forms::FormKind::PullRequest);
+        assert_eq!(
+            a.tick(),
+            crate::tui::app::Effect::LoadPullRequests(String::new(), 0)
+        );
+        let c = |n, subject: &str, owner: &str, branch: &str| crate::tui::forms::Change {
+            number: n,
+            subject: subject.into(),
+            owner: owner.into(),
+            scores: branch.into(),
+        };
+        a.set_patches(
+            "",
+            0,
+            Ok((
+                vec![
+                    c(42, "Add a wishlist to the shop", "ada", "feat/wishlist"),
+                    c(41, "Draft Faster checkout", "ben", "perf/checkout"),
+                ],
+                false,
+            )),
+        );
+        insta::assert_snapshot!(render(&a, 120, 24).backend());
     }
 
     #[test]

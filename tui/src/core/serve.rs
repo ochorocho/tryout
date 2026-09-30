@@ -305,6 +305,8 @@ pub fn setup_typo3(ctx: &Ctx, name: &str) -> Step {
     if kept.is_dir() {
         let dir = db::sqlite_dir(ctx, name);
         let _ = std::fs::create_dir_all(dir.parent().expect("has a directory"));
+        // An empty one is no database to keep: the kept one takes its place.
+        let _ = std::fs::remove_dir(&dir);
         if dir.exists() || std::fs::rename(&kept, &dir).is_err() {
             out::warn(format!("Could not restore {}", kept.display()));
         }
@@ -535,6 +537,9 @@ pub fn serve_since(
 fn build_project_site(ctx: &Ctx, name: &str, php: &str, dir: &Path, seed: &Seed) -> Step {
     // Kept by an earlier unserve: it stays as it is.
     let fresh = !db::has_tables(ctx, name);
+    // A copied database still names the primary's URL where the app keeps it
+    // there; its fix runs the app, so after composer.
+    let mut after_copy = None;
     db::ensure_site_database(ctx, name)?;
     if fresh {
         let from = match seed {
@@ -542,11 +547,15 @@ fn build_project_site(ctx: &Ctx, name: &str, php: &str, dir: &Path, seed: &Seed)
             Seed::Default => Some((Db::of_project(ctx), site::database(PRIMARY_SITE))),
             Seed::Copy { db, name } => Some((db.clone(), name.clone())),
         };
-        if let Some((db, from_name)) = from {
-            db::copy_into(ctx, &db, &from_name, name);
+        if let Some((db, from_name)) = from
+            && db::copy_into(ctx, &db, &from_name, name)
+        {
+            after_copy =
+                super::types::after_copy(&ctx.env.project_type, &site::hostname(ctx, name));
         }
     }
     copy_local_config(ctx, dir);
+    super::types::write_settings(ctx, name, dir);
     if dir.join("composer.json").is_file() {
         out::info(format!(
             "Installing dependencies for {name} on PHP {php} (this takes a moment)..."
@@ -561,6 +570,17 @@ fn build_project_site(ctx: &Ctx, name: &str, php: &str, dir: &Path, seed: &Seed)
         ) {
             out::error(format!("composer install failed for {name}"));
             return Err(Failed);
+        }
+    }
+    if let Some(args) = after_copy {
+        out::info(format!(
+            "Moving the copied URL to '{name}': {}",
+            args.join(" ")
+        ));
+        if exec(ctx, name, &args, &[], false) != 0 {
+            out::warn(format!(
+                "That failed — '{name}' may still link to the primary's URL"
+            ));
         }
     }
     if let Err(e) = webserver::write_vhost(ctx, name, php) {
