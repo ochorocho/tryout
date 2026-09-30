@@ -61,7 +61,10 @@ framework_project() {
 page() {
   local host="${1%%/*}" path="/"
   [ "${host}" = "$1" ] || path="/${1#*/}"
-  ddev exec curl -sk --max-time 20 -H "Host: ${host}" "https://127.0.0.1${path}"
+  # X-Forwarded-Proto as DDEV's router sends it: without it an app that insists
+  # on HTTPS (WordPress) redirects to where the request already is.
+  ddev exec curl -sk --max-time 20 -H "Host: ${host}" -H "X-Forwarded-Proto: https" \
+    "https://127.0.0.1${path}"
 }
 
 # bats test_tags=project
