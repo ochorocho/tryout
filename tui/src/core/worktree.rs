@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::ctx::Ctx;
+use super::kind::ProjectKind;
 use super::out::{self, DIM, NC};
 use super::{Failed, Step, fail, git, proc, vsort};
 
@@ -70,11 +71,12 @@ pub fn validate_branch(branch: &str) -> Result<(), Vec<String>> {
     }
 }
 
-/// For a detached HEAD, the branch it was based on: the newest release branch
-/// on origin containing it, else main. Applied patches sit on top of that base
-/// and are on no branch, so it walks back from HEAD to the first commit a branch
-/// contains — the base is where the patches start.
-pub fn detect_detached_base_branch(dir: &Path) -> String {
+/// For a detached HEAD, the branch it was based on: the newest of the kind's
+/// base branches on origin containing it (for TYPO3 Core the newest release
+/// branch), else the kind's default branch. Applied patches sit on top of that
+/// base and are on no branch, so it walks back from HEAD to the first commit a
+/// branch contains — the base is where the patches start.
+pub fn detect_detached_base_branch(dir: &Path, kind: &dyn ProjectKind) -> String {
     for k in 0..=MAX_PATCHES_ON_TOP {
         let rev = if k == 0 {
             "HEAD".to_string()
@@ -96,16 +98,17 @@ pub fn detect_detached_base_branch(dir: &Path) -> String {
         )
         .into_iter()
         .map(|r| r.strip_prefix("origin/").map(String::from).unwrap_or(r))
-        .filter(|r| r == "main" || is_release(r))
+        .filter(|r| kind.is_base_branch(r))
         .collect();
         if refs.is_empty() {
             continue;
         }
-        let mut releases: Vec<String> = refs.iter().filter(|r| is_release(r)).cloned().collect();
-        vsort::sort(&mut releases);
-        return releases.pop().unwrap_or_else(|| "main".into());
+        let default = kind.default_branch();
+        let mut others: Vec<String> = refs.iter().filter(|r| *r != default).cloned().collect();
+        vsort::sort(&mut others);
+        return others.pop().unwrap_or_else(|| default.into());
     }
-    "main".into()
+    kind.default_branch().into()
 }
 
 /// How far back the base is looked for: more patches than this on one checkout
@@ -222,7 +225,10 @@ mod tests {
     #[test]
     fn a_detached_head_answers_with_the_newest_release_containing_it() {
         let d = core_repo();
-        assert_eq!(detect_detached_base_branch(d.path()), "13.4");
+        assert_eq!(
+            detect_detached_base_branch(d.path(), &super::super::kind::TYPO3_CORE),
+            "13.4"
+        );
         let g = |a: &[&str]| {
             assert!(
                 Command::new("git")
@@ -236,9 +242,15 @@ mod tests {
         };
         g(&["update-ref", "-d", "refs/remotes/origin/13.4"]);
         g(&["update-ref", "-d", "refs/remotes/origin/12.4"]);
-        assert_eq!(detect_detached_base_branch(d.path()), "main");
+        assert_eq!(
+            detect_detached_base_branch(d.path(), &super::super::kind::TYPO3_CORE),
+            "main"
+        );
         let none = tempfile::tempdir().unwrap();
-        assert_eq!(detect_detached_base_branch(none.path()), "main");
+        assert_eq!(
+            detect_detached_base_branch(none.path(), &super::super::kind::TYPO3_CORE),
+            "main"
+        );
     }
 
     #[test]
@@ -262,8 +274,14 @@ mod tests {
         g(&["checkout", "-q", "--detach", "origin/13.4"]);
         g(&["commit", "-q", "--allow-empty", "-m", "patch one"]);
         g(&["commit", "-q", "--allow-empty", "-m", "patch two"]);
-        assert_eq!(detect_detached_base_branch(d.path()), "13.4");
-        assert_eq!(base_info(d.path(), "(detached)"), ("13.4".to_string(), 2));
+        assert_eq!(
+            detect_detached_base_branch(d.path(), &super::super::kind::TYPO3_CORE),
+            "13.4"
+        );
+        assert_eq!(
+            base_info(d.path(), "(detached)", &super::super::kind::TYPO3_CORE),
+            ("13.4".to_string(), 2)
+        );
     }
 
     #[test]
@@ -416,14 +434,14 @@ pub fn worktree_names(ctx: &Ctx) -> Vec<String> {
 /// What a checkout is based on, and how many commits sit on top of it — the
 /// applied patches. Detached checkouts answer from the remote branches that
 /// contain HEAD, attached ones from their upstream.
-pub fn base_info(dir: &Path, branch: &str) -> (String, u32) {
-    let (base, count, _) = base_and_upstream(dir, branch);
+pub fn base_info(dir: &Path, branch: &str, kind: &dyn ProjectKind) -> (String, u32) {
+    let (base, count, _) = base_and_upstream(dir, branch, kind);
     (base, count)
 }
 
 /// The Gerrit changes among a checkout's patches on top, for one checkout.
 pub fn changes_on_top(ctx: &Ctx, dir: &Path, branch: &str) -> Vec<u64> {
-    let (_, count, upstream) = base_and_upstream(dir, branch);
+    let (_, count, upstream) = base_and_upstream(dir, branch, ctx.kind());
     if count == 0 {
         return Vec::new();
     }
@@ -451,9 +469,9 @@ fn applied_changes(dir: &Path, upstream: &str, known: &HashMap<String, u64>) -> 
 }
 
 /// `base_info`, plus the upstream ref the count was taken against.
-fn base_and_upstream(dir: &Path, branch: &str) -> (String, u32, String) {
+fn base_and_upstream(dir: &Path, branch: &str, kind: &dyn ProjectKind) -> (String, u32, String) {
     let (base, upstream) = if branch == "(detached)" {
-        let base = detect_detached_base_branch(dir);
+        let base = detect_detached_base_branch(dir, kind);
         let up = format!("origin/{base}");
         (base, up)
     } else {
@@ -563,7 +581,7 @@ fn info(ctx: &Ctx, r: Row, available: &[String], known: &HashMap<String, u64>) -
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(_) => dir.to_string_lossy().into_owned(),
     };
-    let (base, patches, upstream) = base_and_upstream(&dir, &r.branch);
+    let (base, patches, upstream) = base_and_upstream(&dir, &r.branch, ctx.kind());
     let changes = if patches > 0 {
         applied_changes(&dir, &upstream, known)
     } else {
@@ -575,7 +593,7 @@ fn info(ctx: &Ctx, r: Row, available: &[String], known: &HashMap<String, u64>) -
     let subject = git::out(&dir, &["log", "-1", "--format=%s"])
         .map(|s| super::out::printable(&s))
         .unwrap_or_default();
-    let constraint = super::php::core_constraint(&dir.join("composer.json")).unwrap_or_default();
+    let constraint = ctx.kind().php_constraint(&dir).unwrap_or_default();
     Info {
         name: r.name,
         dir: rel,
@@ -714,7 +732,7 @@ pub fn ensure_excludes(ctx: &Ctx) {
     let f = ctx.core_git_dir().join("info/exclude");
     let _ = std::fs::create_dir_all(f.parent().expect("has a directory"));
     let mut text = std::fs::read_to_string(&f).unwrap_or_default();
-    for e in ["/.ddev/", "/worktrees/", "/TYPO3-Instances/", "/packages/"] {
+    for &e in ctx.kind().git_excludes() {
         if !text.lines().any(|l| l == e) {
             if !text.is_empty() && !text.ends_with('\n') {
                 text.push('\n');
@@ -752,20 +770,26 @@ pub fn ensure_relative_paths(ctx: &Ctx) {
 /// .ddev/): init, fetch the one branch, check it out — what `git clone` would
 /// do, without its emptiness rule.
 pub fn clone_into_root(ctx: &Ctx, branch: &str) -> Step {
-    use super::ctx::{CORE_REPO, GERRIT_REMOTE};
     let root = &ctx.root;
-    out::info(format!("Fetching TYPO3 Core ({branch})..."));
+    let kind = ctx.kind();
+    let Some(url) = kind.clone_url() else {
+        return Err(fail(&[format!(
+            "{} is not cloned by tryout — the project root is its own checkout",
+            kind.label()
+        )]));
+    };
+    out::info(format!("Fetching {} ({branch})...", kind.label()));
     if !git::ok(root, &["init", "-q"]) {
         return Err(fail(&[format!("git init failed in {}", root.display())]));
     }
-    if !git::ok(root, &["remote", "add", "origin", CORE_REPO]) {
-        git::ok(root, &["remote", "set-url", "origin", CORE_REPO]);
+    if !git::ok(root, &["remote", "add", "origin", url]) {
+        git::ok(root, &["remote", "set-url", "origin", url]);
     }
-    git::ok(root, &["remote", "add", "gerrit", GERRIT_REMOTE]);
+    if let Some((name, remote)) = kind.review_remote() {
+        git::ok(root, &["remote", "add", name, remote]);
+    }
     if !proc::git(root, &["fetch", "--depth", "1", "origin", branch]) {
-        return Err(fail(&[format!(
-            "Failed to fetch {branch} from {CORE_REPO}"
-        )]));
+        return Err(fail(&[format!("Failed to fetch {branch} from {url}")]));
     }
     if !proc::git(root, &["checkout", "-f", "-B", branch, "FETCH_HEAD"]) {
         return Err(fail(&[format!("Failed to check out {branch}")]));

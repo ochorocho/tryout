@@ -61,7 +61,7 @@ pub fn best_php(ctx: &Ctx, name: &str) -> String {
     } else {
         ctx.env.php_version.clone()
     };
-    let Some(c) = php::core_constraint(&ctx.core_worktree_dir(name).join("composer.json")) else {
+    let Some(c) = ctx.kind().php_constraint(&ctx.core_worktree_dir(name)) else {
         return fallback;
     };
     php::matching(&c, &php::available_versions())
@@ -71,11 +71,11 @@ pub fn best_php(ctx: &Ctx, name: &str) -> String {
 
 /// Refuse early when a site's PHP cannot run the Core it is built on — Composer
 /// reports it too, but as a resolver trace pointing the wrong way.
-pub fn check_php_for_core(dir: &Path, php_version: &str, site_name: &str) -> Step {
+pub fn check_php_for_core(ctx: &Ctx, dir: &Path, php_version: &str, site_name: &str) -> Step {
     if php_version.is_empty() {
         return Ok(());
     }
-    let Some(constraint) = php::core_constraint(&dir.join("composer.json")) else {
+    let Some(constraint) = ctx.kind().php_constraint(dir) else {
         return Ok(());
     };
     if php::satisfies(&constraint, php_version) {
@@ -148,23 +148,19 @@ pub fn sync_composer(instance: &Path, core: &Path) -> bool {
 /// PHP, composer root and database.
 pub fn rebuild(ctx: &Ctx, name: &str) -> Step {
     if site::is_primary(name) {
-        check_php_for_core(&ctx.active_core_dir(), &ctx.env.php_version, "")?;
+        check_php_for_core(ctx, &ctx.active_core_dir(), &ctx.env.php_version, "")?;
         let instance = ctx.instance_dir();
         out::info("Running composer install...");
         if !proc::run("composer", &["install"], Some(&instance)) {
             out::error("Composer install failed");
             return Err(Failed);
         }
-        out::info("Running extension:setup...");
-        typo3(&instance, &["extension:setup"]);
-        out::info("Flushing caches...");
-        proc::clear_dir(&instance.join("var/cache"));
-        typo3(&instance, &["cache:flush"]);
+        run_rebuild_commands(ctx, name);
         out::success("Rebuild complete");
         return Ok(());
     }
     let php = site::php_version(ctx, name);
-    check_php_for_core(&site::core_dir(ctx, name), &php, name)?;
+    check_php_for_core(ctx, &site::core_dir(ctx, name), &php, name)?;
     out::info(format!(
         "Running composer install for '{name}' on PHP {php}..."
     ));
@@ -183,26 +179,49 @@ pub fn rebuild(ctx: &Ctx, name: &str) -> Step {
         out::error(format!("Composer install failed for {name}"));
         return Err(Failed);
     }
-    out::info(format!("Running extension:setup for '{name}'..."));
-    exec_ok(ctx, name, &["vendor/bin/typo3", "extension:setup"], true);
-    out::info(format!("Flushing caches for '{name}'..."));
-    proc::clear_dir(&dir.join("var/cache"));
-    exec_ok(ctx, name, &["vendor/bin/typo3", "cache:flush"], true);
+    run_rebuild_commands(ctx, name);
     out::success(format!("Rebuild complete for '{name}'"));
     Ok(())
 }
 
 /// The primary's console, run directly from its instance; stdout shown, stderr
 /// dropped. True on success — callers that only warn may ignore it.
-pub fn typo3(instance: &Path, args: &[&str]) -> bool {
+pub fn console(instance: &Path, cmd: &[&str]) -> bool {
+    let Some((program, args)) = cmd.split_first() else {
+        return true;
+    };
     let _ = std::io::Write::flush(&mut std::io::stdout());
-    Command::new(instance.join("vendor/bin/typo3"))
+    Command::new(instance.join(program))
         .args(args)
         .current_dir(instance)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
+}
+
+/// What runs after every install or rebuild (for TYPO3 extension:setup and a
+/// cache flush), with the site's var/cache emptied first. Each is said and
+/// run; one that fails is a warning, not a failed rebuild. False when any did.
+pub fn run_rebuild_commands(ctx: &Ctx, name: &str) -> bool {
+    let dir = site::dir(ctx, name);
+    proc::clear_dir(&dir.join("var/cache"));
+    let mut all = true;
+    for cmd in ctx.kind().rebuild_commands() {
+        let what = cmd[1..].join(" ");
+        out::info(format!("Running {what}..."));
+        // The primary runs on the project's own PHP, straight from its instance.
+        let ok = if site::is_primary(name) {
+            console(&dir, cmd)
+        } else {
+            exec_ok(ctx, name, cmd, true)
+        };
+        if !ok {
+            out::warn(format!("{what} had warnings"));
+            all = false;
+        }
+    }
+    all
 }
 
 /// Where a site's settings.php waits while the site is gone — beside the site
@@ -234,21 +253,9 @@ fn saved_sqlite(ctx: &Ctx, name: &str) -> std::path::PathBuf {
 /// TYPO3_DB_PORT=3306 for the whole container (it cannot know the type, nor
 /// that a site runs on another server), so all three are passed here.
 fn setup_args(ctx: &Ctx, name: &str) -> (Vec<String>, Vec<(&'static str, String)>) {
-    let server_type =
-        if ctx.env.webserver_type.starts_with("apache") || ctx.env.webserver_type.is_empty() {
-            "apache"
-        } else {
-            "other"
-        };
     let db = site::db(ctx, name);
     (
-        vec![
-            "vendor/bin/typo3".into(),
-            "setup".into(),
-            "--no-interaction".into(),
-            "--force".into(),
-            format!("--server-type={server_type}"),
-        ],
+        ctx.kind().setup_command(&ctx.env.webserver_type),
         vec![
             ("TYPO3_DB_DRIVER", db.engine.setup_driver().to_string()),
             ("TYPO3_DB_HOST", db.host(ctx)),
@@ -431,7 +438,7 @@ pub fn serve_since(
     } else {
         php_version.to_string()
     };
-    check_php_for_core(&core, &php, name)?;
+    check_php_for_core(ctx, &core, &php, name)?;
     let dir = site::dir(ctx, name);
     let _ = std::fs::create_dir_all(dir.join("config/system"));
     let _ = std::fs::create_dir_all(dir.join("var"));
@@ -670,12 +677,7 @@ pub fn delete_site(ctx: &Ctx, name: &str) -> Step {
         out::error(format!("TYPO3 setup failed for {name}"));
         return Err(Failed);
     }
-    if !exec_ok(ctx, name, &["vendor/bin/typo3", "extension:setup"], true) {
-        out::warn("extension:setup had warnings");
-    }
-    if !exec_ok(ctx, name, &["vendor/bin/typo3", "cache:flush"], true) {
-        out::warn("cache:flush had warnings");
-    }
+    run_rebuild_commands(ctx, name);
     out::success("Setup complete");
     Ok(())
 }

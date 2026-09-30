@@ -63,7 +63,7 @@ pub fn core_and_base(ctx: &Ctx, name: &str) -> (PathBuf, String) {
     let branch = super::git::out(&core, &["rev-parse", "--abbrev-ref", "@{upstream}"])
         .map(|u| u.strip_prefix("origin/").unwrap_or(&u).to_string())
         .filter(|b| !b.is_empty())
-        .unwrap_or_else(|| super::worktree::detect_detached_base_branch(&core));
+        .unwrap_or_else(|| super::worktree::detect_detached_base_branch(&core, ctx.kind()));
     (core, branch)
 }
 

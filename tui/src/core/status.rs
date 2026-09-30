@@ -1,6 +1,7 @@
 //! `ddev tryout status`: the project at a glance.
 
 use super::ctx::Ctx;
+use super::kind::Mode;
 use super::out::{BOLD, CYAN, DIM, GREEN, NC, RED, TEXT, YELLOW};
 use super::{contrib, git, worktree};
 
@@ -12,6 +13,21 @@ pub fn body(ctx: &Ctx, patches: &str) -> Vec<String> {
     let mut l = Vec::new();
     let mut line = |s: String| l.push(format!("{TEXT}{s}{NC}"));
     let core = &ctx.root;
+
+    // Which of the two tryout works in. Project mode is recognised, not yet
+    // served differently — say so rather than pretend.
+    match ctx.mode() {
+        Mode::Core => line(format!("  Mode:      {}", Mode::Core.label())),
+        Mode::Project => {
+            line(format!(
+                "  Mode:      {warn} project ({})",
+                project_type(ctx)
+            ));
+            line(format!(
+                "             {DIM}tryout serves TYPO3 Core checkouts only so far"
+            ));
+        }
+    }
 
     if !ctx.has_core() {
         line(format!("  Core:      {fail} not cloned"));
@@ -187,4 +203,59 @@ pub fn addon_is_stale(ctx: &Ctx, current: &str) -> bool {
     let installed = std::fs::read_to_string(ctx.tryout_dir().join(".version")).unwrap_or_default();
     let installed: String = installed.chars().filter(|c| !c.is_whitespace()).collect();
     !installed.is_empty() && installed != current
+}
+
+/// The project's DDEV type, as far as it is known here.
+fn project_type(ctx: &Ctx) -> &str {
+    if ctx.env.project_type.is_empty() {
+        "type unknown"
+    } else {
+        &ctx.env.project_type
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::ctx::DdevEnv;
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+
+    #[test]
+    fn status_says_which_mode_it_works_in() {
+        // Nothing cloned yet: core mode, and the way to clone it.
+        let empty = tempfile::tempdir().unwrap();
+        let lines = body(&Ctx::new(empty.path(), DdevEnv::default()), "").join("\n");
+        assert!(lines.contains("Mode:      TYPO3 Core"), "{lines}");
+        assert!(lines.contains("not cloned"), "{lines}");
+
+        // A repository of the user's own: project mode, said as not served yet.
+        let own = tempfile::tempdir().unwrap();
+        git(own.path(), &["init", "-q"]);
+        git(
+            own.path(),
+            &["remote", "add", "origin", "git@github.com:acme/shop.git"],
+        );
+        let env = DdevEnv {
+            project_type: "laravel".into(),
+            ..DdevEnv::default()
+        };
+        let lines = body(&Ctx::new(own.path(), env), "").join("\n");
+        assert!(lines.contains("project (laravel)"), "{lines}");
+        assert!(
+            lines.contains("TYPO3 Core checkouts only so far"),
+            "{lines}"
+        );
+    }
 }

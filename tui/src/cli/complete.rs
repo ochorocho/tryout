@@ -413,8 +413,7 @@ fn php_versions(ctx: &Ctx, worktree: &str, o: &mut Out) {
         .collect();
     let mut ok = all.clone();
     if !worktree.is_empty()
-        && let Some(c) =
-            php::core_constraint(&ctx.core_worktree_dir(worktree).join("composer.json"))
+        && let Some(c) = ctx.kind().php_constraint(&ctx.core_worktree_dir(worktree))
     {
         ok = php::matching(&c, &all);
     }

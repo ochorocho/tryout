@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use super::kind::{self, Mode, ProjectKind};
 use super::{git, vsort, worktree};
 
 pub const CORE_REPO: &str = "https://github.com/typo3/typo3.git";
@@ -16,7 +17,6 @@ pub const GERRIT_PROJECT: &str = "Packages/TYPO3.CMS";
 /// The instance served at the project URL, and its sentinel in site arguments.
 pub const PRIMARY_INSTANCE: &str = "primary";
 pub const PRIMARY_SITE: &str = "@primary";
-pub const DEFAULT_CORE_WORKTREE: &str = "main";
 /// Where the container sees the project.
 pub const CONTAINER_ROOT: &str = "/var/www/html";
 
@@ -30,6 +30,10 @@ pub struct DdevEnv {
     pub webserver_type: String,
     pub database: String,
     pub mutagen_enabled: bool,
+    /// The project's `type:` (typo3, drupal, laravel, php …).
+    pub project_type: String,
+    /// The project's docroot, relative to its root.
+    pub docroot: String,
 }
 
 impl DdevEnv {
@@ -42,6 +46,8 @@ impl DdevEnv {
             webserver_type: v("DDEV_WEBSERVER_TYPE"),
             database: v("DDEV_DATABASE"),
             mutagen_enabled: v("DDEV_MUTAGEN_ENABLED") == "true",
+            project_type: v("DDEV_PROJECT_TYPE"),
+            docroot: v("DDEV_DOCROOT"),
         }
     }
 
@@ -61,6 +67,7 @@ pub struct Ctx {
     /// TRYOUT_BRANCH, when the caller set one.
     pub branch_override: Option<String>,
     branch: OnceLock<String>,
+    mode: OnceLock<Mode>,
 }
 
 impl Ctx {
@@ -71,6 +78,7 @@ impl Ctx {
             in_container: false,
             branch_override: None,
             branch: OnceLock::new(),
+            mode: OnceLock::new(),
         }
     }
 
@@ -83,6 +91,17 @@ impl Ctx {
             .ok()
             .filter(|b| !b.is_empty());
         c
+    }
+
+    /// Core or project mode, from what the root holds; asked once.
+    pub fn mode(&self) -> Mode {
+        *self.mode.get_or_init(|| kind::detect_mode(&self.root))
+    }
+
+    /// What differs for this kind of project. Only TYPO3 Core so far: project
+    /// mode is recognised, not yet served differently.
+    pub fn kind(&self) -> &'static dyn ProjectKind {
+        &kind::TYPO3_CORE
     }
 
     pub fn core_dir(&self) -> &Path {
@@ -147,11 +166,11 @@ impl Ctx {
                 return b.clone();
             }
             if !self.has_core() {
-                return DEFAULT_CORE_WORKTREE.into();
+                return self.kind().default_branch().into();
             }
             match git::out(&self.root, &["branch", "--show-current"]) {
                 Some(b) if !b.is_empty() => b,
-                _ => worktree::detect_detached_base_branch(&self.root),
+                _ => worktree::detect_detached_base_branch(&self.root, self.kind()),
             }
         })
     }
@@ -161,7 +180,7 @@ impl Ctx {
     pub fn plain_core_name(&self) -> String {
         match git::out(&self.root, &["branch", "--show-current"]) {
             Some(b) if !b.is_empty() && worktree::validate_name(&b).is_ok() => b,
-            _ => DEFAULT_CORE_WORKTREE.into(),
+            _ => self.kind().default_branch().into(),
         }
     }
 

@@ -9,6 +9,7 @@ pub mod ddev;
 pub mod fpm;
 pub mod gerrit;
 pub mod git;
+pub mod kind;
 pub mod out;
 pub mod patch;
 pub mod php;

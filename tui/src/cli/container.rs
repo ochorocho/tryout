@@ -710,7 +710,7 @@ fn card(ctx: &Ctx, r: &worktree::Row) -> String {
     } else {
         format!("{TEXT}○{NC} {BOLD}{TEXT}{}{NC}\n", r.name)
     };
-    let (base, count) = worktree::base_info(&dir, &r.branch);
+    let (base, count) = worktree::base_info(&dir, &r.branch, ctx.kind());
     let branch = if r.branch == "(detached)" {
         format!("detached from {base}")
     } else {

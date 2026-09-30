@@ -68,7 +68,7 @@ pub fn run(ctx: &Ctx) -> Step {
         out::error("  → Try: ddev tryout download --reset && ddev restart");
         return Err(Failed);
     }
-    serve::check_php_for_core(&ctx.active_core_dir(), &ctx.env.php_version, "")?;
+    serve::check_php_for_core(ctx, &ctx.active_core_dir(), &ctx.env.php_version, "")?;
     out::info("[3/5] Running composer install...");
     if !proc::run("composer", &["install"], Some(&ctx.instance_dir())) {
         out::error("Composer install failed");
@@ -85,13 +85,7 @@ pub fn run(ctx: &Ctx) -> Step {
     }
 
     out::info("[5/5] Setting up extensions and flushing caches...");
-    let instance = ctx.instance_dir();
-    if !serve::typo3(&instance, &["extension:setup"]) {
-        out::warn("extension:setup had warnings");
-    }
-    if !serve::typo3(&instance, &["cache:flush"]) {
-        out::warn("cache:flush had warnings");
-    }
+    serve::run_rebuild_commands(ctx, PRIMARY_SITE);
     out::success("Extensions ready, caches flushed");
 
     out::print("\n═══════════════════════════════════════\n");

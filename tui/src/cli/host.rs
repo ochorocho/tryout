@@ -21,6 +21,17 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
         print(&help::main());
         return Err(Exit(1));
     };
+    // Some verbs only mean something for some kinds of project (`patch` needs
+    // a review system, `cs` TYPO3 Core's).
+    if !ctx.kind().supports(spec.name) {
+        out::error(format!(
+            "`{}` is not available for {}",
+            spec.name,
+            ctx.kind().label()
+        ));
+        out::error("  → ddev tryout help   lists what is");
+        return Err(Exit(1));
+    }
     match spec.verb {
         Verb::Status => status(ctx, rest),
         Verb::Help => {
@@ -158,7 +169,12 @@ fn launch(ctx: &Ctx, args: &[String]) -> Res {
         format!("https://{}", site::hostname(ctx, &target))
     };
     if backend {
-        url = format!("{}/typo3/", url.trim_end_matches('/'));
+        let Some(path) = ctx.kind().backend_path() else {
+            out::error(format!("{} has no backend to open", ctx.kind().label()));
+            out::error("  → ddev tryout launch   opens the site");
+            return Err(Exit(1));
+        };
+        url = format!("{}{path}", url.trim_end_matches('/'));
     }
     ddev::open_url(ctx, &url);
     Ok(())
