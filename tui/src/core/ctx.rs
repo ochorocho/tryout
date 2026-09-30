@@ -127,14 +127,33 @@ impl Ctx {
         self.root.join(".git").exists()
     }
 
-    /// Instances live under TYPO3-Instances/, never the root (Core's source) or
-    /// Build/ (Core's own build tooling).
+    /// Where served sites keep what tryout knows about them — the marker, saved
+    /// settings, a kept SQLite file. In core mode that is each instance itself,
+    /// under TYPO3-Instances/ (never the root, Core's source, or Build/, Core's
+    /// own build tooling). A project's sites are its worktrees, so their state
+    /// waits in .ddev/tryout-sites/ instead of in the user's own tree.
     pub fn instances_dir(&self) -> PathBuf {
-        self.root.join("TYPO3-Instances")
+        match self.mode() {
+            Mode::Core => self.root.join("TYPO3-Instances"),
+            Mode::Project => self.root.join(".ddev/tryout-sites"),
+        }
     }
 
+    /// The primary's app: its own instance in core mode, the project itself
+    /// in project mode.
     pub fn instance_dir(&self) -> PathBuf {
-        self.instances_dir().join(PRIMARY_INSTANCE)
+        match self.mode() {
+            Mode::Core => self.instances_dir().join(PRIMARY_INSTANCE),
+            Mode::Project => self.root.clone(),
+        }
+    }
+
+    /// Where the container sees a path of the project.
+    pub fn in_container(&self, path: &Path) -> PathBuf {
+        match path.strip_prefix(&self.root) {
+            Ok(rel) => Path::new(CONTAINER_ROOT).join(rel),
+            Err(_) => path.to_path_buf(),
+        }
     }
 
     pub fn worktrees_dir(&self) -> PathBuf {
@@ -282,6 +301,13 @@ pub mod tests {
         };
         g(&["init", "-q"]);
         std::fs::write(root.join("composer.json"), r#"{"require":{"php":"^8.2"}}"#).unwrap();
+        // What makes it Core to `kind::detect_mode`: Core's own sysext.
+        std::fs::create_dir_all(root.join("typo3/sysext/core")).unwrap();
+        std::fs::write(
+            root.join("typo3/sysext/core/composer.json"),
+            r#"{"name":"typo3/cms-core"}"#,
+        )
+        .unwrap();
         g(&["add", "-A"]);
         g(&["commit", "-qm", "init"]);
         for b in ["main", "13.4", "12.4"] {

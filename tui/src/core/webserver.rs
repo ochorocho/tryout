@@ -42,7 +42,10 @@ pub fn fpm_socket(ctx: &Ctx, php: &str) -> String {
 /// learns the request was TLS and TYPO3's secure session cookie never comes
 /// back ("Please activate Cookies").
 pub fn vhost(ctx: &Ctx, name: &str, php: &str) -> String {
-    let docroot = format!("/var/www/html/TYPO3-Instances/{name}/public");
+    let docroot = ctx
+        .in_container(&site::docroot(ctx, name))
+        .display()
+        .to_string();
     let host = site::hostname(ctx, name);
     let db = site::database(name);
     let sock = fpm_socket(ctx, php);

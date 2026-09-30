@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use super::ctx::{Ctx, PRIMARY_INSTANCE, PRIMARY_SITE};
 use super::db::Db;
+use super::kind::Mode;
 
 pub fn is_primary(name: &str) -> bool {
     name.is_empty() || name == PRIMARY_SITE
@@ -24,17 +25,39 @@ pub fn for_name(ctx: &Ctx, name: &str) -> String {
     }
 }
 
-/// The site's instance root (its composer root).
+/// The site's app: where its composer.json, vendor/ and docroot live. In core
+/// mode an instance under TYPO3-Instances/; in project mode the worktree
+/// itself (the project root for the primary).
 pub fn dir(ctx: &Ctx, name: &str) -> PathBuf {
-    if is_primary(name) {
-        ctx.instance_dir()
-    } else {
-        ctx.instances_dir().join(name)
+    match (ctx.mode(), is_primary(name)) {
+        (_, true) => ctx.instance_dir(),
+        (Mode::Core, false) => ctx.instances_dir().join(name),
+        (Mode::Project, false) => ctx.core_worktree_dir(name),
     }
 }
 
+/// Where tryout keeps what it knows about a site: its marker, and what unserve
+/// saves. The instance itself in core mode; beside the others in
+/// .ddev/tryout-sites/ in project mode, out of the user's worktree.
+pub fn state_dir(ctx: &Ctx, name: &str) -> PathBuf {
+    match ctx.mode() {
+        Mode::Core => dir(ctx, name),
+        Mode::Project if is_primary(name) => ctx.instances_dir().join(PRIMARY_INSTANCE),
+        Mode::Project => ctx.instances_dir().join(name),
+    }
+}
+
+/// The directory the webserver serves: `public/` of an instance in core mode;
+/// in project mode the worktree's copy of the project's own docroot.
 pub fn docroot(ctx: &Ctx, name: &str) -> PathBuf {
-    dir(ctx, name).join("public")
+    match ctx.mode() {
+        Mode::Core => dir(ctx, name).join("public"),
+        Mode::Project => {
+            let d = dir(ctx, name);
+            let rel = ctx.env.docroot.trim_matches('/');
+            if rel.is_empty() { d } else { d.join(rel) }
+        }
+    }
 }
 
 pub fn vendor(ctx: &Ctx, name: &str) -> PathBuf {
@@ -115,7 +138,7 @@ pub fn is_served(ctx: &Ctx, name: &str) -> bool {
 }
 
 pub fn marker(ctx: &Ctx, name: &str) -> PathBuf {
-    dir(ctx, name).join(".tryout-site")
+    state_dir(ctx, name).join(".tryout-site")
 }
 
 /// The PHP a site runs, from its marker's `php=` line; the project's otherwise.
@@ -226,6 +249,49 @@ mod tests {
             vendor(&c, "x"),
             PathBuf::from("/p/TYPO3-Instances/x/vendor")
         );
+    }
+
+    #[test]
+    fn a_projects_sites_are_its_worktrees_and_their_state_waits_in_ddev() {
+        // A repository of the user's own: project mode.
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let c = Ctx::new(
+            root,
+            DdevEnv {
+                docroot: "web".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(c.mode(), Mode::Project);
+        // The primary is the project itself, served from its own docroot.
+        assert_eq!(dir(&c, "@primary"), root);
+        assert_eq!(docroot(&c, "@primary"), root.join("web"));
+        // A site is its worktree, with the same docroot inside it.
+        assert_eq!(dir(&c, "feature"), root.join("worktrees/feature"));
+        assert_eq!(docroot(&c, "feature"), root.join("worktrees/feature/web"));
+        // What tryout knows about it stays out of the worktree.
+        assert_eq!(
+            marker(&c, "feature"),
+            root.join(".ddev/tryout-sites/feature/.tryout-site")
+        );
+        assert_eq!(c.instances_dir(), root.join(".ddev/tryout-sites"));
+        // The container sees it under /var/www/html.
+        assert_eq!(
+            c.in_container(&docroot(&c, "feature")),
+            PathBuf::from("/var/www/html/worktrees/feature/web")
+        );
+        // A docroot at the project root: the worktree itself.
+        let flat = Ctx::new(root, DdevEnv::default());
+        assert_eq!(docroot(&flat, "feature"), root.join("worktrees/feature"));
     }
 
     #[test]

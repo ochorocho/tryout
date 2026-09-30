@@ -2262,7 +2262,12 @@ mod tests {
             None,
             "a success has none"
         );
-        insta::assert_snapshot!(render(&a, 80, 24).backend());
+        // How long the fake job took is the machine's business, not the layout's.
+        let mut shot = render(&a, 80, 24).backend().to_string();
+        for n in 1..10 {
+            shot = shot.replace(&format!(" · {n}s "), " · 0s ");
+        }
+        insta::assert_snapshot!(shot);
         // And the log it opens.
         a.open_log(first);
         let t = render(&a, 80, 24);
