@@ -294,7 +294,7 @@ JSON
   run ddev tryout nonsense
   assert_failure
   assert_output --partial "Unknown command: nonsense"
-  assert_output --partial "TYPO3 development toolkit"
+  assert_output --partial "TYPO3 Core development toolkit"
 }
 
 @test "tryout cs is available as a subcommand and diagnoses an unset instance" {
