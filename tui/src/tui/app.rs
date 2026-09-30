@@ -577,12 +577,18 @@ impl App {
     }
 
     /// `a`: the selected worktree's menu, and the project's commands below it.
+    /// The menu for a worktree — the same from the keyboard and a right-click:
+    /// its own commands, then the project-wide ones.
+    fn menu_items(&self, w: &Worktree) -> Vec<Entry> {
+        actions::join([
+            actions::for_worktree(w, self.project_engine()),
+            actions::project(),
+        ])
+    }
+
     fn open_menu(&mut self) {
         if let Some(w) = self.selected() {
-            let items = actions::join([
-                actions::for_worktree(w, self.project_engine()),
-                actions::project(),
-            ]);
+            let items = self.menu_items(w);
             self.menu = Some(Menu::new(&w.name.clone(), items, None));
         }
     }
@@ -1240,7 +1246,7 @@ impl App {
         self.menu = None;
         self.click_worktree(index);
         if let Some(w) = self.worktrees.get(index) {
-            let items = actions::for_worktree(w, self.project_engine());
+            let items = self.menu_items(w);
             if !items.is_empty() {
                 self.menu = Some(Menu::new(&w.name.clone(), items, Some(at)));
             }
@@ -1546,20 +1552,44 @@ pub mod tests {
     #[test]
     fn the_selection_steps_over_separators() {
         let mut a = app();
-        // Serve, Serve on database ▸, Make primary, —, Rename…, Remove…
+        // Serve, Serve on database ▸, Make primary, —, Rename…, Remove…, —,
+        // Status, Regenerate the overlay
         a.context_menu(2, (1, 1));
         for _ in 0..3 {
             press(&mut a, KeyCode::Down);
         }
         assert_eq!(a.menu.as_ref().unwrap().selected, 4, "the rule is skipped");
-        for _ in 0..5 {
+        for _ in 0..9 {
             press(&mut a, KeyCode::Down);
         }
         assert_eq!(
             a.menu.as_ref().unwrap().selected,
-            5,
+            8,
             "and it stops at the end"
         );
+    }
+
+    #[test]
+    fn the_keyboard_and_the_right_click_menu_offer_the_same_entries() {
+        let labels = |a: &App| -> Vec<String> {
+            a.menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .map(|e| e.label().to_string())
+                .collect()
+        };
+        for i in 0..fixture().len() {
+            let mut a = app();
+            a.selected = i;
+            press(&mut a, KeyCode::Char('a'));
+            let keyboard = labels(&a);
+            a.menu = None;
+            a.context_menu(i, (1, 1));
+            assert_eq!(keyboard, labels(&a), "worktree {i}");
+            assert!(keyboard.iter().any(|l| l == "Status"), "worktree {i}");
+        }
     }
 
     #[test]

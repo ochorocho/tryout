@@ -2134,13 +2134,15 @@ mod tests {
         let mut a = loaded();
         a.context_menu(1, (5, 4));
         let r = menu_rect(screen, &a).unwrap();
-        assert_eq!((r.x, r.y), (5, 4));
+        // At the pointer — or as near it as a menu this tall still fits.
+        assert_eq!(r.x, 5);
+        assert!(r.y <= 4 && r.bottom() <= 24, "{r:?}");
         assert_eq!(
-            menu_at(screen, &a, 7, 5),
+            menu_at(screen, &a, 7, r.y + 1),
             Some(MenuHit::Top(0)),
             "first item"
         );
-        assert_eq!(menu_at(screen, &a, 7, 4), None, "its border");
+        assert_eq!(menu_at(screen, &a, 7, r.y), None, "its border");
         // Near the bottom-right corner it is pulled back inside the screen.
         a.context_menu(1, (78, 23));
         let r = menu_rect(screen, &a).unwrap();

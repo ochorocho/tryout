@@ -973,7 +973,7 @@ and Activity. Once you are in a shell, every key goes to that shell except
 
 | Keyboard       | Mouse                          | Does                                                                                               |
 |----------------|--------------------------------|----------------------------------------------------------------------------------------------------|
-| `a` or `Space` | right-click a worktree         | the commands for that worktree (the right-click menu leaves out Status and Regenerate the overlay) |
+| `a` or `Space` | right-click a worktree         | the commands for that worktree, then the project-wide ones — the same menu both ways |
 | `+`            | click **+ new** above the list | create a worktree: asks its name, the branch, and whether to serve it now                          |
 |                | click the URL in the title     | open that site in the browser                                                                      |
 
@@ -986,7 +986,8 @@ Inside the menu:
 | `←`, `Esc` or `h`   | out of a submenu                                            |
 | `Esc` or `q`        | close the menu                                              |
 
-The menu offers what fits the worktree: Serve, Serve on PHP ▸, Open site, Open
+The menu offers what fits the worktree: Serve, Serve on PHP ▸, Serve on
+database ▸ (or, once served, PHP ▸ and Database ▸ to switch), Open site, Open
 backend, Make primary, Unserve (with or without its database), Update from its
 base branch, Switch TYPO3 version…, Apply Gerrit patch…, Reset Core + rebuild,
 Run command…, Fresh install…, Rename…, Remove…, Status and Regenerate the overlay.

@@ -347,7 +347,7 @@ pub fn for_worktree(w: &Worktree, project: Engine) -> Vec<Entry> {
 }
 
 /// The project-wide commands: not about any one worktree, so `a` adds them
-/// below the worktree's own and a right-click leaves them out.
+/// below the worktree's own, in both the keyboard and the right-click menu.
 pub fn project() -> Vec<Entry> {
     vec![
         Entry::Action(Action::new(

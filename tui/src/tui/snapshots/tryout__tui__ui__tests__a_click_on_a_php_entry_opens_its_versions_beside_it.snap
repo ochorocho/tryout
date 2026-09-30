@@ -1,6 +1,6 @@
 ---
 source: src/tui/ui.rs
-assertion_line: 2154
+assertion_line: 2175
 expression: "render(&a, 100, 30).backend()"
 ---
 " tryout  demo                                                                           3 worktrees "
@@ -26,10 +26,10 @@ expression: "render(&a, 100, 30).backend()"
 "│    │──────────────────────────────────────────────────────────│                                  │"
 "│    │ Rename…                        branch untouched          │                                  │"
 "│    │ Remove…                        deletes the checkout      │                                  │"
+"│    │──────────────────────────────────────────────────────────│                                  │"
+"│    │ Status                         project overview          │                                  │"
+"│    │ Regenerate the overlay         composer.tryout.json      │                                  │"
 "│    ╰──────────────────────────────────────────────────────────╯                                  │"
-"│                                ││                                                                │"
-"│                                ││                                                                │"
-"│                                ││                                                                │"
 "│                                ││                                                                │"
 "╰────────────────────────────────╯╰────────────────────────────────────────────────────────────────╯"
 " ↑↓ select   ⏎ run   esc cancel                                                                     "
