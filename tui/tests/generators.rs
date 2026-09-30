@@ -192,7 +192,7 @@ fn use_core_moves_only_the_sysext_repository() {
 }
 
 #[test]
-fn a_site_on_the_other_engine_gets_its_database_service_and_the_last_takes_it_away() {
+fn a_site_on_another_server_gets_its_database_service_and_the_last_takes_it_away() {
     let (d, ctx) = project("nginx-fpm"); // a MariaDB project
     let site = |name: &str, marker: &str| {
         let dir = d.path().join("TYPO3-Instances").join(name);
@@ -200,10 +200,11 @@ fn a_site_on_the_other_engine_gets_its_database_service_and_the_last_takes_it_aw
         std::fs::write(dir.join(".tryout-site"), marker).unwrap();
     };
     std::fs::create_dir_all(d.path().join(".ddev")).unwrap();
-    site("pg", "php=8.4\ndb=postgres\n");
-    site("maria", "php=8.4\ndb=mariadb\n"); // the project's own: no service
-    site("pg2", "php=8.4\ndb=postgres\n");
-    site("my", "php=8.4\ndb=mysql\n");
+    site("pg", "php=8.4\ndb=postgres:16\n");
+    site("maria", "php=8.4\ndb=mariadb:11.8\n"); // the project's own: no service
+    site("old", "php=8.4\ndb=mariadb:10.11\n"); // its type, another version: a server
+    site("pg2", "php=8.4\ndb=postgres:16\n");
+    site("my", "php=8.4\ndb=mysql:8.0\n");
     site("lite", "php=8.4\ndb=sqlite\n"); // a file: no server
     webserver::write_worktree_config(&ctx).unwrap();
     assert_eq!(
@@ -211,11 +212,11 @@ fn a_site_on_the_other_engine_gets_its_database_service_and_the_last_takes_it_aw
         golden("docker-compose.tryout-db.yaml")
     );
     // Declaring it takes a restart, as a new hostname does.
-    assert!(webserver::restart_key(&ctx).contains(&"service tryout-postgres".to_string()));
+    assert!(webserver::restart_key(&ctx).contains(&"service tryout-postgres-16".to_string()));
 
     // The last sites needing a server go — but a database `unserve` kept keeps
     // its server: `ddev delete` removes only the volumes of servers it runs.
-    for name in ["pg", "pg2", "my"] {
+    for name in ["pg", "pg2", "my", "old"] {
         std::fs::remove_file(
             d.path()
                 .join("TYPO3-Instances")
@@ -224,11 +225,13 @@ fn a_site_on_the_other_engine_gets_its_database_service_and_the_last_takes_it_aw
         )
         .unwrap();
     }
-    let kept = d.path().join("TYPO3-Instances/.pg.postgres.settings.php");
+    let kept = d
+        .path()
+        .join("TYPO3-Instances/.pg.postgres-16.settings.php");
     std::fs::write(&kept, "<?php return [];").unwrap();
     webserver::write_worktree_config(&ctx).unwrap();
     let left = read(ctx.db_services_file());
-    assert!(left.contains("container_name: ddev-${DDEV_SITENAME}-tryout-postgres"));
+    assert!(left.contains("container_name: ddev-${DDEV_SITENAME}-tryout-postgres-16"));
     assert!(!left.contains("tryout-mysql"), "{left}");
 
     // Its database dropped too: nothing is left to declare.
@@ -239,5 +242,27 @@ fn a_site_on_the_other_engine_gets_its_database_service_and_the_last_takes_it_aw
         !webserver::restart_key(&ctx)
             .iter()
             .any(|k| k.starts_with("service "))
+    );
+}
+
+#[test]
+fn newer_versions_get_what_they_need_to_start_and_be_reached() {
+    use tryout::core::db::Db;
+    let dbs = [
+        Db::parse("mysql:8.4").unwrap(),
+        Db::parse("postgres:18").unwrap(),
+    ];
+    let c = webserver::db_services_compose(&dbs).unwrap();
+    // MySQL 8.4 turns native passwords on differently from 8.0.
+    assert!(
+        c.contains(
+            "command: --mysql-native-password=ON --authentication-policy=mysql_native_password\n"
+        ),
+        "{c}"
+    );
+    // Postgres 18 keeps its data a level up.
+    assert!(
+        c.contains("- tryout-postgres-18:/var/lib/postgresql\n"),
+        "{c}"
     );
 }

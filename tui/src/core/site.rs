@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use super::ctx::{Ctx, PRIMARY_INSTANCE, PRIMARY_SITE};
-use super::db::Engine;
+use super::db::Db;
 
 pub fn is_primary(name: &str) -> bool {
     name.is_empty() || name == PRIMARY_SITE
@@ -129,48 +129,51 @@ pub fn php_version(ctx: &Ctx, name: &str) -> String {
     ctx.env.php_version.clone()
 }
 
-/// The database engine a site runs on, from its marker's `db=` line; the
+/// The database server a site runs on, from its marker's `db=` line; the
 /// project's otherwise (every site served before there was a choice).
-pub fn db_engine(ctx: &Ctx, name: &str) -> Engine {
+pub fn db(ctx: &Ctx, name: &str) -> Db {
     if !is_primary(name)
         && let Ok(m) = std::fs::read_to_string(marker(ctx, name))
-        && let Some(e) = m
+        && let Some(d) = m
             .lines()
             .find_map(|l| l.strip_prefix("db="))
-            .and_then(|v| Engine::parse(v.trim()))
+            .and_then(|v| Db::parse_recorded(v.trim()))
     {
-        return e;
+        return d;
     }
-    Engine::of_project(ctx)
+    Db::of_project(ctx)
 }
 
-/// Mark a site served, on this PHP and database engine.
-pub fn write_marker(ctx: &Ctx, name: &str, php: &str, engine: Engine) -> std::io::Result<()> {
-    std::fs::write(
-        marker(ctx, name),
-        format!("php={php}\ndb={}\n", engine.name()),
-    )
+/// Mark a site served, on this PHP and database server.
+pub fn write_marker(ctx: &Ctx, name: &str, php: &str, db: &Db) -> std::io::Result<()> {
+    std::fs::write(marker(ctx, name), format!("php={php}\ndb={}\n", db.name()))
 }
 
 /// The database servers needed besides the project's own: one extra service
-/// each for the types served sites run on, and for those still holding a
-/// database `unserve` kept (its saved settings name the type:
-/// `.<name>.<type>.settings.php`). SQLite needs none. Sorted, once each.
-pub fn extra_engines(ctx: &Ctx) -> Vec<Engine> {
-    let kept = std::fs::read_dir(ctx.instances_dir())
+/// each for the servers served sites run on, and for those still holding a
+/// database `unserve` kept (its saved settings name the server:
+/// `.<name>.<type>-<version>.settings.php`). SQLite needs none. Sorted, once
+/// each.
+pub fn extra_dbs(ctx: &Ctx) -> Vec<Db> {
+    let files: Vec<String> = std::fs::read_dir(ctx.instances_dir())
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|e| {
-            let f = e.file_name().to_string_lossy().into_owned();
-            let rest = f.strip_prefix('.')?.strip_suffix(".settings.php")?;
-            Engine::parse(rest.rsplit_once('.')?.1)
-        });
-    let mut v: Vec<Engine> = served_names(ctx)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    // Matched against the servers there are, not parsed: a worktree name may
+    // hold dots and dashes itself.
+    let kept = Db::choices().into_iter().filter(|d| {
+        let suffix = format!(".{}.settings.php", d.slug());
+        files
+            .iter()
+            .any(|f| f.starts_with('.') && f.ends_with(&suffix))
+    });
+    let mut v: Vec<Db> = served_names(ctx)
         .iter()
-        .map(|n| db_engine(ctx, n))
+        .map(|n| db(ctx, n))
         .chain(kept)
-        .filter(|e| e.needs_service(ctx))
+        .filter(|d| d.needs_service(ctx))
         .collect();
     v.sort();
     v.dedup();
@@ -242,26 +245,45 @@ mod tests {
     }
 
     #[test]
-    fn a_site_keeps_its_engine_and_the_other_engine_is_listed_as_extra() {
+    fn a_site_keeps_its_server_and_every_other_server_is_listed_as_extra() {
         let d = tempfile::tempdir().unwrap();
-        let c = ctx(d.path()); // no DDEV_DATABASE: a MariaDB project
-        for (n, e) in [
-            ("pg", Engine::Postgres),
-            ("maria", Engine::Mariadb),
-            ("pg2", Engine::Postgres),
+        let c = ctx(d.path()); // no DDEV_DATABASE: a MariaDB 11.8 project
+        let db = |s: &str| Db::parse(s).unwrap();
+        for (n, s) in [
+            ("pg", "postgres:16"),
+            ("maria", "mariadb:11.8"),      // the project's own
+            ("old-maria", "mariadb:10.11"), // same type, another version
+            ("pg2", "postgres:16"),
+            ("lite", "sqlite"),
         ] {
             std::fs::create_dir_all(dir(&c, n)).unwrap();
-            write_marker(&c, n, "8.4", e).unwrap();
+            write_marker(&c, n, "8.4", &db(s)).unwrap();
         }
-        // A site served before there was a choice has no db= line.
+        // A site served before there was a choice has no db= line; one from
+        // before versions says only the type.
         std::fs::create_dir_all(dir(&c, "old")).unwrap();
         std::fs::write(marker(&c, "old"), "php=8.4\n").unwrap();
+        std::fs::create_dir_all(dir(&c, "typed")).unwrap();
+        std::fs::write(marker(&c, "typed"), "php=8.4\ndb=postgres\n").unwrap();
 
-        assert_eq!(db_engine(&c, "pg"), Engine::Postgres);
-        assert_eq!(db_engine(&c, "old"), Engine::Mariadb);
-        assert_eq!(db_engine(&c, "@primary"), Engine::Mariadb);
+        assert_eq!(super::db(&c, "pg"), db("postgres:16"));
+        assert_eq!(super::db(&c, "old"), db("mariadb:11.8"));
+        assert_eq!(super::db(&c, "typed"), db("postgres:18"));
+        assert_eq!(super::db(&c, "@primary"), db("mariadb:11.8"));
         assert_eq!(php_version(&c, "pg"), "8.4");
-        assert_eq!(extra_engines(&c), [Engine::Postgres]);
+        let extra: Vec<String> = extra_dbs(&c).iter().map(Db::name).collect();
+        assert_eq!(extra, ["mariadb:10.11", "postgres:16", "postgres:18"]);
+
+        // A database `unserve` kept keeps its server, found by the saved file.
+        std::fs::remove_file(marker(&c, "pg")).unwrap();
+        std::fs::remove_file(marker(&c, "pg2")).unwrap();
+        std::fs::write(
+            c.instances_dir().join(".pg.postgres-16.settings.php"),
+            "<?php return [];",
+        )
+        .unwrap();
+        let extra: Vec<String> = extra_dbs(&c).iter().map(Db::name).collect();
+        assert_eq!(extra, ["mariadb:10.11", "postgres:16", "postgres:18"]);
     }
 
     #[test]

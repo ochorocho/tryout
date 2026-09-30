@@ -1,18 +1,18 @@
 ---
 source: src/tui/ui.rs
-assertion_line: 1858
+assertion_line: 1877
 expression: "render(&loaded(), 200, 50).backend()"
 ---
 " tryout  demo                                                                                                                                                                               3 worktrees "
 "╭ Worktrees ────────────── + new ╮╭ main https://demo.ddev.site ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
 "│ ● main                         ││ +                                                                                                                                                                  │"
 "│   main · 32d1f51               ││                                                                                                                                                                    │"
-"│   PHP 8.4 · MariaDB            ││  where    main                                                                                                                                                     │"
+"│   PHP 8.4 · MariaDB 11.8       ││  where    main                                                                                                                                                     │"
 "│ ◆ v13                         ±││  head     32d1f51 [TASK] Raise phpstan to 2.1.17                                                                                                                   │"
 "│   13.4 #91234 +1 · 32d1f51     ││  changes  clean                                                                                                                                                    │"
-"│   PHP 8.4 · MariaDB            ││  dir      project root                                                                                                                                             │"
+"│   PHP 8.4 · MariaDB 11.8       ││  dir      project root                                                                                                                                             │"
 "│ ○ bugfix                       ││  site     https://demo.ddev.site                                                                                                                                   │"
-"│   main · 32d1f51               ││  runtime  PHP 8.4 · db_main (MariaDB)                                                                                                                              │"
+"│   main · 32d1f51               ││  runtime  PHP 8.4 · db_main (MariaDB 11.8)                                                                                                                         │"
 "│   not served                   ││                                                                                                                                                                    │"
 "│                                ││  Enter  open a shell in this worktree                                                                                                                              │"
 "│                                ││                                                                                                                                                                    │"

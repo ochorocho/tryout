@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use super::ctx::Ctx;
-use super::db::Engine;
+use super::db::Db;
 use super::out::{self, BOLD, DIM, NC, YELLOW};
 use super::{Failed, Step, composer, db, fpm, git, php, proc, site, webserver, worktree};
 
@@ -208,38 +208,39 @@ pub fn typo3(instance: &Path, args: &[&str]) -> bool {
 /// Where a site's settings.php waits while the site is gone — beside the site
 /// directory, which unserve removes.
 ///
-/// One per database type: a site switched from MySQL to Postgres and back must
-/// get the MySQL settings back, not the Postgres ones. The project's own type
-/// keeps the plain name every earlier version wrote. Read while the site's
-/// marker exists — it says the type.
+/// One per database server: a site switched from MySQL to Postgres and back
+/// must get the MySQL settings back, not the Postgres ones
+/// (`.<name>.<type>-<version>.settings.php`). The project's own server keeps
+/// the plain name every earlier version wrote. Read while the site's marker
+/// exists — it says the server.
 pub fn saved_settings(ctx: &Ctx, name: &str) -> std::path::PathBuf {
-    let engine = site::db_engine(ctx, name);
-    let file = if engine == Engine::of_project(ctx) {
+    let db = site::db(ctx, name);
+    let file = if db == Db::of_project(ctx) {
         format!(".{name}.settings.php")
     } else {
-        format!(".{name}.{}.settings.php", engine.name())
+        format!(".{name}.{}.settings.php", db.slug())
     };
     ctx.instances_dir().join(file)
 }
 
-/// `typo3 setup` and the database settings it reads from the environment, for
-/// the site's own engine. config.tryout.yaml sets TYPO3_DB_HOST=db and
-/// TYPO3_DB_PORT=3306 for the whole container (it cannot know the engine, nor
-/// that a site runs on another server), so all three are passed here.
 /// Where `unserve` keeps a SQLite site's database: beside the saved
 /// settings.php, outside the site directory it deletes.
 fn saved_sqlite(ctx: &Ctx, name: &str) -> std::path::PathBuf {
     ctx.instances_dir().join(format!(".{name}.sqlite"))
 }
 
-fn setup_args(ctx: &Ctx, name: &str) -> (Vec<String>, [(&'static str, &'static str); 3]) {
+/// `typo3 setup` and the database settings it reads from the environment, for
+/// the site's own server. config.tryout.yaml sets TYPO3_DB_HOST=db and
+/// TYPO3_DB_PORT=3306 for the whole container (it cannot know the type, nor
+/// that a site runs on another server), so all three are passed here.
+fn setup_args(ctx: &Ctx, name: &str) -> (Vec<String>, Vec<(&'static str, String)>) {
     let server_type =
         if ctx.env.webserver_type.starts_with("apache") || ctx.env.webserver_type.is_empty() {
             "apache"
         } else {
             "other"
         };
-    let engine = site::db_engine(ctx, name);
+    let db = site::db(ctx, name);
     (
         vec![
             "vendor/bin/typo3".into(),
@@ -248,10 +249,10 @@ fn setup_args(ctx: &Ctx, name: &str) -> (Vec<String>, [(&'static str, &'static s
             "--force".into(),
             format!("--server-type={server_type}"),
         ],
-        [
-            ("TYPO3_DB_DRIVER", engine.setup_driver()),
-            ("TYPO3_DB_HOST", engine.host(ctx)),
-            ("TYPO3_DB_PORT", engine.port()),
+        vec![
+            ("TYPO3_DB_DRIVER", db.engine.setup_driver().to_string()),
+            ("TYPO3_DB_HOST", db.host(ctx)),
+            ("TYPO3_DB_PORT", db.engine.port().to_string()),
         ],
     )
 }
@@ -299,6 +300,7 @@ pub fn setup_typo3(ctx: &Ctx, name: &str) -> Step {
         return Err(Failed);
     }
     let (args, db_env) = setup_args(ctx, name);
+    let db_env: Vec<(&str, &str)> = db_env.iter().map(|(k, v)| (*k, v.as_str())).collect();
     out::info(format!(
         "Running TYPO3 setup for '{name}' (db {db_name}, PHP {php})..."
     ));
@@ -368,7 +370,7 @@ pub fn setup_frontend(ctx: &Ctx, name: &str) {
 /// Make a worktree a live site: its own tree, overlay, database, vhost and FPM.
 /// `db`: the engine to run on; None keeps the one it has (the project's for a
 /// site served the first time).
-pub fn serve(ctx: &Ctx, name: &str, php_version: &str, db: Option<Engine>) -> Step {
+pub fn serve(ctx: &Ctx, name: &str, php_version: &str, db: Option<Db>) -> Step {
     serve_since(ctx, name, php_version, db, None)
 }
 
@@ -381,7 +383,7 @@ pub fn serve_since(
     ctx: &Ctx,
     name: &str,
     php_version: &str,
-    db: Option<Engine>,
+    db: Option<Db>,
     before: Option<Vec<String>>,
 ) -> Step {
     worktree::validate_name(name).map_err(super::fail)?;
@@ -434,27 +436,27 @@ pub fn serve_since(
     let _ = std::fs::create_dir_all(dir.join("config/system"));
     let _ = std::fs::create_dir_all(dir.join("var"));
 
-    let current = site::db_engine(ctx, name);
-    let engine = db.unwrap_or(current);
+    let current = site::db(ctx, name);
+    let server = db.unwrap_or_else(|| current.clone());
     // Its settings.php names the old server: switching goes through a fresh site.
-    if site::is_served(ctx, name) && engine != current {
+    if site::is_served(ctx, name) && server != current {
         out::error(format!(
             "'{name}' runs on {} — its settings point there",
-            current.name()
+            current.label()
         ));
         out::error(format!(
             "  → ddev tryout worktree serve {name} --db {} --switch   (keeps the old database)",
-            engine.name()
+            server.name()
         ));
         return Err(Failed);
     }
-    if engine != Engine::of_project(ctx) && ctx.in_container {
-        db::wait_until_ready(ctx, engine)?;
+    if server.needs_service(ctx) && ctx.in_container {
+        db::wait_until_ready(ctx, &server)?;
     }
 
     // The marker IS "served"; it only stands if we get to the end.
     let marker = site::marker(ctx, name);
-    let _ = site::write_marker(ctx, name, &php, engine);
+    let _ = site::write_marker(ctx, name, &php, &server);
     let result = build_site(ctx, name, &php, &core, &dir);
     if result.is_err() {
         let _ = std::fs::remove_file(&marker);
@@ -464,7 +466,7 @@ pub fn serve_since(
     out::success(format!(
         "Site '{name}' prepared — PHP {php}, db {} ({})",
         site::database(name),
-        engine.name()
+        server.label()
     ));
     // Before the reload, which would route to a socket nobody listens on.
     if ctx.in_container {
@@ -662,6 +664,7 @@ pub fn delete_site(ctx: &Ctx, name: &str) -> Step {
     let _ = std::fs::remove_file(site::dir(ctx, name).join("config/system/settings.php"));
     out::success("Configuration removed");
     let (args, db_env) = setup_args(ctx, name);
+    let db_env: Vec<(&str, &str)> = db_env.iter().map(|(k, v)| (*k, v.as_str())).collect();
     out::info("[4/4] Running TYPO3 setup + extension:setup...");
     if exec(ctx, name, &args, &db_env, false) != 0 {
         out::error(format!("TYPO3 setup failed for {name}"));
@@ -695,33 +698,26 @@ mod tests {
             )
         };
         // The container's TYPO3_DB_PORT says 3306 whatever the database is.
-        assert_eq!(
-            setup_args(&ctx("postgres:16"), "@primary").1,
-            [
-                ("TYPO3_DB_DRIVER", "postgres"),
-                ("TYPO3_DB_HOST", "db"),
-                ("TYPO3_DB_PORT", "5432")
+        let env = |c: &Ctx, site: &str| -> Vec<(&'static str, String)> { setup_args(c, site).1 };
+        let e = |d: &str, h: &str, p: &str| {
+            vec![
+                ("TYPO3_DB_DRIVER", d.to_string()),
+                ("TYPO3_DB_HOST", h.to_string()),
+                ("TYPO3_DB_PORT", p.to_string()),
             ]
+        };
+        assert_eq!(
+            env(&ctx("postgres:16"), "@primary"),
+            e("postgres", "db", "5432")
         );
         let maria = ctx("mariadb:10.11");
-        assert_eq!(
-            setup_args(&maria, "@primary").1,
-            [
-                ("TYPO3_DB_DRIVER", "mysqli"),
-                ("TYPO3_DB_HOST", "db"),
-                ("TYPO3_DB_PORT", "3306")
-            ]
-        );
-        // A site on the other engine is set up against the extra service.
+        assert_eq!(env(&maria, "@primary"), e("mysqli", "db", "3306"));
+        // A site on another server is set up against that server.
         std::fs::create_dir_all(site::dir(&maria, "pg")).unwrap();
-        site::write_marker(&maria, "pg", "8.4", db::Engine::Postgres).unwrap();
+        site::write_marker(&maria, "pg", "8.4", &Db::parse("postgres:16").unwrap()).unwrap();
         assert_eq!(
-            setup_args(&maria, "pg").1,
-            [
-                ("TYPO3_DB_DRIVER", "postgres"),
-                ("TYPO3_DB_HOST", "tryout-postgres"),
-                ("TYPO3_DB_PORT", "5432")
-            ]
+            env(&maria, "pg"),
+            e("postgres", "tryout-postgres-16", "5432")
         );
     }
 }

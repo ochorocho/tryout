@@ -1,16 +1,16 @@
 ---
 source: src/tui/ui.rs
-assertion_line: 2066
+assertion_line: 2085
 expression: "render(&a, 80, 12).backend()"
 ---
 " tryout  demo                                                       3 worktrees "
 "╭ Worktrees ────────────── + new ╮╭ main https://demo.ddev.site ───────────────╮"
 "│ ● main                       ▶2││ 1 tests   2 shell   +                      │"
 "│   main · 32d1f51               ││ ╭ Rename tab ──────────────────────────────╮"
-"│   PHP 8.4 · MariaDB            ││ │ shell▏                                   │"
+"│   PHP 8.4 · MariaDB 11.8       ││ │ shell▏                                   │"
 "│ ◆ v13                         ±││ │                                          │"
 "│   13.4 #91234 +1 · 32d1f51     ││ │ empty: its program's own title           │"
-"│   PHP 8.4 · MariaDB            ││ ╰──────────────────────────────────────────╯"
+"│   PHP 8.4 · MariaDB 11.8       ││ ╰──────────────────────────────────────────╯"
 "│                                ││                                            │"
 "│                                ││                                            │"
 "╰────────────────────────────────╯╰────────────────────────────────────────────╯"

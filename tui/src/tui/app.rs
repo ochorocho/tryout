@@ -581,7 +581,7 @@ impl App {
     /// its own commands, then the project-wide ones.
     fn menu_items(&self, w: &Worktree) -> Vec<Entry> {
         actions::join([
-            actions::for_worktree(w, self.project_engine()),
+            actions::for_worktree(w, &self.project_db()),
             actions::project(),
         ])
     }
@@ -1204,7 +1204,7 @@ impl App {
             return Effect::None;
         };
         let want = ["launch".to_string(), w.name.clone()];
-        actions::for_worktree(w, self.project_engine())
+        actions::for_worktree(w, &self.project_db())
             .into_iter()
             .find_map(|e| match e {
                 Entry::Action(a) if a.args == want => Some(a),
@@ -1221,14 +1221,15 @@ impl App {
         self.open_form(FormKind::NewWorktree)
     }
 
-    /// The project's own database type: the primary's, as the list reports it.
-    pub fn project_engine(&self) -> crate::core::db::Engine {
+    /// The project's own database server: the primary's, as the list reports it.
+    pub fn project_db(&self) -> crate::core::db::Db {
+        use crate::core::db::Db;
         self.worktrees
             .iter()
             .find(|w| w.primary)
             .and_then(|w| w.db_engine.as_deref())
-            .and_then(crate::core::db::Engine::parse)
-            .unwrap_or(crate::core::db::Engine::Mariadb)
+            .and_then(Db::parse_recorded)
+            .unwrap_or_else(|| Db::parse_recorded("mariadb:11.8").expect("a known type"))
     }
 
     /// A popup that waits for keys (password, tab name, closing the session)

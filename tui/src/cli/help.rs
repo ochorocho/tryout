@@ -59,12 +59,12 @@ pub fn worktree() -> String {
     s.push_str(
         "\n  Flags: --serve     (add: serve it immediately)\n\
 \x20        --php 8.2   (add/serve: run this site on another PHP version)\n\
-\x20        --db postgres (add/serve: mariadb, mysql, postgres or sqlite)\n\
+\x20        --db postgres:16 (add/serve: type[:version] — mariadb, mysql, postgres, sqlite)\n\
 \x20        --switch    (serve --db: move a served site, its old database kept)\n\
 \x20        --force     (remove: also drop an unmerged branch)\n\
 \x20        --yes       (remove: skip the confirmation)\n\
 \x20        --drop-db   (unserve: also drop the site's database)\n\
-\x20        --no-restart (add --serve/serve/unserve/rename: skip the restart)\n\
+\x20        --no-restart (add --serve/serve/unserve/rename/remove: skip the restart)\n\
 \n  Two ways to run several Cores:\n\
 \x20   use    — one site at the project URL, switch which Core it serves\n\
 \x20   serve  — every worktree live at once on <name>.<project>.ddev.site\n\
@@ -73,10 +73,11 @@ pub fn worktree() -> String {
 \x20 Re-serving one that already exists (a --php change, say) applies\n\
 \x20 right away with no restart. --no-restart skips it — useful when\n\
 \x20 serving several worktrees, then restarting once at the end.\n\
-\n  --db puts a site on another database type than the project's. MariaDB,\n\
-\x20 MySQL and Postgres get a server of their own, started for it (the first\n\
-\x20 time with a restart) and stopped when no served site uses it; its data\n\
-\x20 is kept. SQLite is a file in the site, with no server at all.\n\
+\n  --db puts a site on another database server than the project's: a type,\n\
+\x20 or a type at a version (postgres:16; a bare type is its newest). MariaDB,\n\
+\x20 MySQL and Postgres get a server of their own per version, started for it\n\
+\x20 (the first time with a restart) and stopped when no site or kept\n\
+\x20 database needs it. SQLite is a file in the site, with no server at all.\n\
 \n  All worktrees share one git object store, so ddev tryout cs hooks and\n\
 \x20 Gerrit config are set up once and apply to every one of them.\n\n",
     );

@@ -1225,7 +1225,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 if let Some(e) = w
                     .db_engine
                     .as_deref()
-                    .and_then(crate::core::db::Engine::parse)
+                    .and_then(crate::core::db::Db::parse_recorded)
                 {
                     c.push_str(&format!(" · {}", e.label()));
                 }
@@ -1499,7 +1499,7 @@ fn placeholder<'a>(w: &'a crate::tui::worktrees::Worktree, width: u16) -> Paragr
                     w.db.as_deref().unwrap_or("-"),
                     w.db_engine
                         .as_deref()
-                        .and_then(crate::core::db::Engine::parse)
+                        .and_then(crate::core::db::Db::parse_recorded)
                         .map(|e| format!(" ({})", e.label()))
                         .unwrap_or_default()
                 ),

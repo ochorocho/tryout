@@ -1,18 +1,18 @@
 ---
 source: src/tui/ui.rs
-assertion_line: 2276
+assertion_line: 2297
 expression: "render(&a, 80, 24).backend()"
 ---
 " tryout  demo                                                       3 worktrees "
 "╭ Worktrees ────────────── + new ╮╭ main https://demo.ddev.site ───────────────╮"
 "│ ● main                         ││ +                                          │"
 "│   main · 32d1f51               ││                                            │"
-"│   PHP 8.4 · MariaDB            ││  where    main                             │"
+"│   PHP 8.4 · MariaDB 11.8       ││  where    main                             │"
 "│ ◆ v13 ╭ Remove v13? ─────────────────────────────────────────────────╮an t…  │"
 "│   13.4│ Deletes the checkout worktrees/v13 and everything in it,     │       │"
 "│   PHP │ including vendor/, var/ and uncommitted work.                │       │"
 "│ ○ bugf│ A served site goes too; its database is kept.                │       │"
-"│   main│                                                              │)      │"
+"│   main│                                                              │ 11.8  │"
 "│   not │ y go ahead   any other key cancel                            │       │"
 "│       ╰──────────────────────────────────────────────────────────────╯e      │"
 "│                                ││                                            │"

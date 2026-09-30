@@ -1,16 +1,16 @@
 ---
 source: src/tui/ui.rs
-assertion_line: 1869
+assertion_line: 1888
 expression: "render(&a, 100, 26).backend()"
 ---
 " tryout  demo                                                                           3 worktrees "
 "╭ Worktrees ────────────── + new ╮╭ v13 https://v13.demo.ddev.site ────────────────────────────────╮"
 "│ ● main                         ││ ╭ v13 ─────────────────────────────────────────────────────╮   │"
-"│   main · 32d1f51               ││ │ Database: MariaDB              switch the type        ▸  │   │"
-"│   PHP 8.4 · MariaDB            ││ │ Open site                      in the browser            │   │"
+"│   main · 32d1f51               ││ │ Database: MariaDB 11.8         switch type or version ▸  │   │"
+"│   PHP 8.4 · MariaDB 11.8       ││ │ Open site                      in the browser            │   │"
 "│ ◆ v13                         ±││ │ Open backend                   /typo3/ in the browser    │   │"
 "│   13.4 #91234 +1 · 32d1f51     ││ │ Make primary                   at the project URL        │   │"
-"│   PHP 8.4 · MariaDB            ││ │ Unserve                        keeps its database        │   │"
+"│   PHP 8.4 · MariaDB 11.8       ││ │ Unserve                        keeps its database        │   │"
 "│ ○ bugfix                       ││ │ Unserve and drop its database                            │   │"
 "│   main · 32d1f51               ││ │──────────────────────────────────────────────────────────│   │"
 "│   not served                   ││ │ Update from its base branch                              │   │"

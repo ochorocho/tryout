@@ -9,6 +9,13 @@
 setup() { load setup.sh; }
 teardown() { load teardown.sh; }
 
+# A URL check that cannot run here (the name does not resolve) is noted and
+# passed over — never `skip`, which would end the whole test and silently drop
+# every step after it.
+not_checked() {
+  echo "# not checked: $*" >&3
+}
+
 # A backend that ANSWERS is not a backend that WORKS: a misconfigured instance
 # returns 200 with a broken page, and a HEAD request cannot tell the difference.
 # The login page's <title> is the cheap proof that TYPO3 booted, resolved its site
@@ -21,7 +28,7 @@ assert_backend_loads() {
   # failure; CI and any host with a wildcard resolver still run the assertion.
   curl -sfI --max-time 10 "${url}" >/dev/null 2>&1 || {
     case "$?" in
-      6) skip "${url} does not resolve — no /etc/hosts entry (needs sudo)" ;;
+      6) not_checked "${url} does not resolve — no /etc/hosts entry (needs sudo)"; return 0 ;;
     esac
   }
 
@@ -46,12 +53,12 @@ assert_frontend_renders() {
   local cfg base=""
   cfg="$(grep -lR 'typo3/styleguide' "${instdir}/config/sites" 2>/dev/null | head -1)"
   [ -n "${cfg}" ] && base="$(sed -n 's/^base: *//p' "${cfg}" | head -1)"
-  [ -n "${base}" ] || skip "no styleguide frontend on this TYPO3 version (backend only)"
+  [ -n "${base}" ] || { not_checked "no styleguide frontend on this TYPO3 version (backend only)"; return 0; }
   case "${base}" in */) ;; *) base="${base}/" ;; esac
 
   local url="https://${host}${base}"
   curl -sfI --max-time 10 "${url}" >/dev/null 2>&1 || {
-    case "$?" in 6) skip "${url} does not resolve — no /etc/hosts entry (needs sudo)" ;; esac
+    case "$?" in 6) not_checked "${url} does not resolve — no /etc/hosts entry (needs sudo)"; return 0 ;; esac
   }
   run curl -sf --max-time 30 "${url}"
   assert_success
@@ -65,7 +72,7 @@ assert_backend_gone() {
   # Only meaningful where the hostname could resolve in the first place.
   curl -sfI --max-time 10 "https://${PROJNAME}.ddev.site/typo3/" >/dev/null 2>&1 || {
     case "$?" in
-      6) skip "ddev.site does not resolve here — no /etc/hosts entry (needs sudo)" ;;
+      6) not_checked "ddev.site does not resolve here — no /etc/hosts entry (needs sudo)"; return 0 ;;
     esac
   }
 
@@ -668,7 +675,7 @@ pg() {
 }
 
 # The same, against another server: the extra database service a site on the
-# other engine gets (`worktree serve <name> --db postgres`).
+# other engine gets (`worktree serve <name> --db postgres:16`).
 pg_on() { # <host> <database> <sql>
   ddev exec env PGPASSWORD=db psql -h "$1" -U db -d "$2" -tAc "$3"
 }
@@ -681,14 +688,14 @@ pg_on() { # <host> <database> <sql>
   run ddev tryout worktree add side 13.4
   assert_success
   # The host declares the Postgres service and restarts DDEV before the setup.
-  run ddev tryout worktree serve side --db postgres
+  run ddev tryout worktree serve side --db postgres:16
   assert_success
   assert_file_exist "${TESTDIR}/.ddev/docker-compose.tryout-db.yaml"
   run docker ps --format '{{.Names}}'
-  assert_output --partial "ddev-${PROJNAME}-tryout-postgres"
+  assert_output --partial "ddev-${PROJNAME}-tryout-postgres-16"
 
   # Its database is on the Postgres server, and not on the project's MariaDB.
-  run pg_on tryout-postgres db_side \
+  run pg_on tryout-postgres-16 db_side \
     "SELECT count(*) > 0 FROM information_schema.tables WHERE table_schema='public'"
   assert_success
   assert_output "t"
@@ -702,9 +709,27 @@ pg_on() { # <host> <database> <sql>
   assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
 
   run ddev tryout worktree list --json
-  assert_output --partial '"db_engine":"postgres"'
+  assert_output --partial '"db_engine":"postgres:16"'
   run ddev tryout status
-  assert_output --partial "tryout-postgres: side"
+  assert_output --partial "tryout-postgres-16: side"
+
+  # Another version of the same type is another server, beside it: its own
+  # database there, none on the first.
+  run ddev tryout worktree add next 13.4 --db postgres:17
+  assert_success
+  run pg_on tryout-postgres-17 postgres "SELECT count(*) FROM pg_database WHERE datname='db_next'"
+  assert_output "1"
+  run pg_on tryout-postgres-16 postgres "SELECT count(*) FROM pg_database WHERE datname='db_next'"
+  assert_output "0"
+  run docker ps --format '{{.Names}}'
+  assert_output --partial "ddev-${PROJNAME}-tryout-postgres-16"
+  assert_output --partial "ddev-${PROJNAME}-tryout-postgres-17"
+  # Removing it drops its database; nothing left needs Postgres 17, so its
+  # server goes, volume and all.
+  run ddev tryout worktree remove next --yes
+  assert_success
+  run docker volume ls --format '{{.Name}}'
+  refute_output --partial "ddev-${PROJNAME}-tryout-postgres-17"
 
   # Switching a served site's type needs saying so: its settings name the server.
   run ddev tryout worktree serve side --db mariadb
@@ -716,9 +741,9 @@ pg_on() { # <host> <database> <sql>
   run ddev tryout worktree unserve side
   assert_success
   run docker ps --format '{{.Names}}'
-  assert_output --partial "ddev-${PROJNAME}-tryout-postgres"
-  # Back on Postgres, the kept database is found and the site restored.
-  run ddev tryout worktree serve side --db postgres
+  assert_output --partial "ddev-${PROJNAME}-tryout-postgres-16"
+  # Back on Postgres 16, the kept database is found and the site restored.
+  run ddev tryout worktree serve side --db postgres:16
   assert_success
   assert_output --partial "restored — existing database kept"
   assert_backend_loads "https://side.${PROJNAME}.ddev.site/typo3/"
@@ -728,11 +753,11 @@ pg_on() { # <host> <database> <sql>
   assert_success
   assert_file_not_exist "${TESTDIR}/.ddev/docker-compose.tryout-db.yaml"
   run docker ps --format '{{.Names}}'
-  refute_output --partial "ddev-${PROJNAME}-tryout-postgres"
+  refute_output --partial "ddev-${PROJNAME}-tryout-postgres-16"
   run docker volume ls --format '{{.Name}}'
-  refute_output --partial "ddev-${PROJNAME}-tryout-postgres"
+  refute_output --partial "ddev-${PROJNAME}-tryout-postgres-16"
   # Serving it again starts from nothing.
-  run ddev tryout worktree serve side --db postgres
+  run ddev tryout worktree serve side --db postgres:16
   assert_success
   refute_output --partial "restored"
 }
@@ -761,20 +786,22 @@ pg_on() { # <host> <database> <sql>
   assert_success
   assert_output --partial "restored — existing database kept"
 
-  # MySQL: a server of its own, from `worktree add --db`.
+  # MySQL: a server of its own, from `worktree add --db`. A bare type is its
+  # newest version — 8.4, which takes native passwords differently from 8.0.
   run ddev tryout worktree add my 13.4 --db mysql
   assert_success
-  run ddev exec mysql -h tryout-mysql -uroot -proot -N -e "SHOW DATABASES LIKE 'db_my';"
+  run ddev exec mysql -h tryout-mysql-8-4 -uroot -proot -N -e "SHOW DATABASES LIKE 'db_my';"
   assert_success
   assert_output "db_my"
   assert_backend_loads "https://my.${PROJNAME}.ddev.site/typo3/"
   run ddev tryout exec my vendor/bin/typo3 cache:flush
   assert_success
   run ddev tryout status
-  assert_output --partial "tryout-mysql: my"
+  assert_output --partial "tryout-mysql-8-4: my"
   assert_output --partial "sqlite"
 
   # A served site moves to another type in one step; its old database stays.
+  # Postgres 18 keeps its data a level up from earlier versions.
   run ddev tryout worktree serve my --db postgres --switch
   assert_success
   # And the webserver took the site back: a switch unserves it on the way, so
@@ -783,16 +810,16 @@ pg_on() { # <host> <database> <sql>
   run ddev exec bash -c "grep -rl 'my.${PROJNAME}' /etc/nginx/sites-enabled /etc/apache2/sites-enabled 2>/dev/null"
   assert_success
   run ddev tryout worktree list --json
-  assert_output --partial '"db_engine":"postgres"'
+  assert_output --partial '"db_engine":"postgres:18"'
   assert_backend_loads "https://my.${PROJNAME}.ddev.site/typo3/"
   run ddev tryout exec my vendor/bin/typo3 cache:flush
   assert_success
   # Both servers run: Postgres for the site, MySQL for the database the switch
   # kept (its settings saved per type, so switching back restores it).
-  assert_file_exist "${TESTDIR}/TYPO3-Instances/.my.mysql.settings.php"
-  run grep -c "container_name: ddev-\${DDEV_SITENAME}-tryout-mysql" "${TESTDIR}/.ddev/docker-compose.tryout-db.yaml"
+  assert_file_exist "${TESTDIR}/TYPO3-Instances/.my.mysql-8.4.settings.php"
+  run grep -c "container_name: ddev-\${DDEV_SITENAME}-tryout-mysql-8-4" "${TESTDIR}/.ddev/docker-compose.tryout-db.yaml"
   assert_output "1"
-  run grep -c "container_name: ddev-\${DDEV_SITENAME}-tryout-postgres" "${TESTDIR}/.ddev/docker-compose.tryout-db.yaml"
+  run grep -c "container_name: ddev-\${DDEV_SITENAME}-tryout-postgres-18" "${TESTDIR}/.ddev/docker-compose.tryout-db.yaml"
   assert_output "1"
 
   # Deleting the project takes every tryout volume with it, or the next project
@@ -816,8 +843,16 @@ pg_on() { # <host> <database> <sql>
   assert_success
   addon_start
 
-  run ddev tryout worktree add hosts 13.4 --serve
+  # DDEV leaves /etc/hosts alone under DDEV_NONINTERACTIVE=true ("Not trying to
+  # add hostnames to hosts file"), which the suite sets everywhere — so this one
+  # command, whose restart must write the hostname, runs without it. With
+  # passwordless sudo nothing is asked.
+  run env -u DDEV_NONINTERACTIVE ddev tryout worktree add hosts 13.4 --serve
   assert_success
+  # What DDEV registered and wrote, for when the check below fails: bats shows
+  # only the failing command's own output.
+  echo "# additional_hostnames: $(grep -A5 additional_hostnames "${TESTDIR}/.ddev/config.worktrees.yaml" 2>/dev/null | tr '\n' ' ')" >&3
+  echo "# /etc/hosts ddev.site lines: $(grep ddev.site /etc/hosts | tr '\n' ' ')" >&3
   run grep -F "hosts.${PROJNAME}.ddev.site" /etc/hosts
   assert_success
   assert_backend_loads "https://hosts.${PROJNAME}.ddev.site/typo3/"

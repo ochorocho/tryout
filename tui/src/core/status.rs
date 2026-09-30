@@ -146,29 +146,25 @@ pub fn body(ctx: &Ctx, patches: &str) -> Vec<String> {
     l
 }
 
-/// The project's database engine, and the extra servers served sites run on.
+/// The project's database server, and the extra ones served sites run on.
 fn database_line(ctx: &Ctx) -> String {
-    let own = if ctx.env.database.is_empty() {
-        super::db::Engine::of_project(ctx).name().to_string()
-    } else {
-        ctx.env.database.clone()
-    };
-    let mut s = format!("{own} {DIM}(db){NC}");
-    let on = |e| -> Vec<String> {
+    use super::db::{Db, Engine};
+    let mut s = format!("{} {DIM}(db){NC}", Db::of_project(ctx).name());
+    let on = |pick: &dyn Fn(&Db) -> bool| -> Vec<String> {
         super::site::served_names(ctx)
             .into_iter()
-            .filter(|n| super::site::db_engine(ctx, n) == e)
+            .filter(|n| pick(&super::site::db(ctx, n)))
             .collect()
     };
-    for e in super::site::extra_engines(ctx) {
+    for d in super::site::extra_dbs(ctx) {
         s.push_str(&format!(
             " · {} {DIM}({}: {}){NC}",
-            e.image().unwrap_or_default(),
-            e.host(ctx),
-            on(e).join(", ")
+            d.name(),
+            d.host(ctx),
+            on(&|x| *x == d).join(", ")
         ));
     }
-    let lite = on(super::db::Engine::Sqlite);
+    let lite = on(&|x| x.engine == Engine::Sqlite);
     if !lite.is_empty() {
         s.push_str(&format!(" · sqlite {DIM}({}){NC}", lite.join(", ")));
     }

@@ -2,7 +2,7 @@
 //! that cannot work there, and every command names its own worktree — a bare verb acts
 //! on whichever Core is primary at the moment it runs, not the one you selected.
 
-use crate::core::db::Engine;
+use crate::core::db::{Db, Engine};
 use crate::tui::forms::FormKind;
 use crate::tui::worktrees::Worktree;
 
@@ -165,31 +165,45 @@ fn php_items(w: &Worktree) -> Vec<Action> {
         .collect()
 }
 
-/// The database types to serve a site on, `current` ticked. For a served site
-/// the others move it (`--switch`), keeping its old database.
-fn db_items(w: &Worktree, project: Engine, current: Option<Engine>) -> Vec<Action> {
-    Engine::ALL
-        .iter()
-        .map(|&e| {
-            let ticked = current == Some(e);
-            let hint = if ticked {
-                "running now"
-            } else if e == project {
-                "the project's own server"
-            } else if e == Engine::Sqlite {
-                "a file in the site, no server"
+/// The database servers to serve a site on — every type at every version,
+/// grouped by type — with `current` ticked. The project's own server and the
+/// current one are there even when their version is not one offered. For a
+/// served site the others move it (`--switch`), keeping its old database.
+fn db_items(w: &Worktree, project: &Db, current: Option<&Db>) -> Vec<Action> {
+    let mut list = Db::choices();
+    for extra in [Some(project), current].into_iter().flatten() {
+        if !list.contains(extra) {
+            let at = list
+                .iter()
+                .position(|d| d.engine == extra.engine)
+                .unwrap_or(list.len());
+            list.insert(at, extra.clone());
+        }
+    }
+    list.iter()
+        .map(|d| {
+            let ticked = current == Some(d);
+            let mut hint = if ticked {
+                "running now".to_string()
+            } else if d == project {
+                "the project's own server".to_string()
+            } else if d.engine == Engine::Sqlite {
+                "a file in the site, no server".to_string()
             } else {
-                "its own server, started for it"
+                "its own server".to_string()
             };
+            if d.typo3_note().is_some() {
+                hint.push_str(" · TYPO3 lists ≤ 10.x");
+            }
             let switch = if current.is_some() && !ticked {
                 " --switch"
             } else {
                 ""
             };
             Action::new(
-                format!("{} {}", if ticked { "✓" } else { " " }, e.label()),
+                format!("{} {}", if ticked { "✓" } else { " " }, d.label()),
                 hint,
-                &format!("worktree serve {} --db {}{switch}", w.name, e.name()),
+                &format!("worktree serve {} --db {}{switch}", w.name, d.name()),
                 JOB,
             )
         })
@@ -200,7 +214,7 @@ fn db_items(w: &Worktree, project: Engine, current: Option<Engine>) -> Vec<Actio
 /// its data, the checkout itself. What a group cannot do in this worktree's
 /// state is not offered at all.
 /// `project` is the project's own database type.
-pub fn for_worktree(w: &Worktree, project: Engine) -> Vec<Entry> {
+pub fn for_worktree(w: &Worktree, project: &Db) -> Vec<Entry> {
     let n = &w.name;
     let served = w.served();
     // The origin clone owns the object store every worktree branches from;
@@ -241,11 +255,15 @@ pub fn for_worktree(w: &Worktree, project: Engine) -> Vec<Entry> {
     }
     // Its database type, the same way; the primary's is the project's.
     if served && !w.primary {
-        let current = w.db_engine.as_deref().and_then(Engine::parse);
+        let current = w
+            .db_engine
+            .as_deref()
+            .and_then(Db::parse_recorded)
+            .unwrap_or_else(|| project.clone());
         site.push(Entry::Sub {
-            label: format!("Database: {}", current.unwrap_or(project).label()),
-            hint: "switch the type".into(),
-            items: db_items(w, project, Some(current.unwrap_or(project))),
+            label: format!("Database: {}", current.label()),
+            hint: "switch type or version".into(),
+            items: db_items(w, project, Some(&current)),
         });
     }
     if served {
@@ -382,6 +400,11 @@ mod tests {
     use super::*;
     use crate::tui::app::tests::fixture;
 
+    /// The fixture's project server.
+    fn maria() -> Db {
+        Db::parse("mariadb:11.8").unwrap()
+    }
+
     fn claim(line: &str) -> Claim {
         Claim::of(
             &line
@@ -433,7 +456,7 @@ mod tests {
     fn every_menu_command_has_a_claim_that_matches_its_kind() {
         // A menu entry's claim: the site ones name their own worktree.
         for w in fixture() {
-            for e in for_worktree(&w, Engine::Mariadb) {
+            for e in for_worktree(&w, &maria()) {
                 let Entry::Action(a) = e else { continue };
                 match Claim::of(&a.args) {
                     Claim::Site(n) => assert_eq!(n, w.name, "{}", a.args.join(" ")),
@@ -456,48 +479,71 @@ mod tests {
     }
 
     #[test]
-    fn a_served_site_shows_its_database_type_and_switches_to_another() {
+    fn a_served_site_shows_its_database_server_and_switches_to_another() {
         let mut v13 = fixture()[1].clone();
-        v13.db_engine = Some("postgres".into());
-        let entries = for_worktree(&v13, Engine::Mariadb);
+        v13.db_engine = Some("postgres:16".into());
+        let entries = for_worktree(&v13, &maria());
         let Some(Entry::Sub { label, items, .. }) =
             entries.iter().find(|e| e.label().starts_with("Database"))
         else {
             panic!("no database entry")
         };
-        assert_eq!(label, "Database: PostgreSQL");
-        let rows: Vec<(String, String, String)> = items
-            .iter()
-            .map(|a| (a.label.clone(), a.hint.clone(), a.args.join(" ")))
-            .collect();
+        assert_eq!(label, "Database: PostgreSQL 16");
+        let row = |label: &str| -> (String, String) {
+            let a = items
+                .iter()
+                .find(|a| a.label == label)
+                .unwrap_or_else(|| panic!("no row {label}"));
+            (a.hint.clone(), a.args.join(" "))
+        };
+        // Every type at every version, one row each.
+        assert_eq!(items.len(), Db::choices().len());
         assert_eq!(
-            rows,
-            [
-                (
-                    "  MariaDB".into(),
-                    "the project's own server".into(),
-                    "worktree serve v13 --db mariadb --switch".into()
-                ),
-                (
-                    "  MySQL".into(),
-                    "its own server, started for it".into(),
-                    "worktree serve v13 --db mysql --switch".into()
-                ),
-                (
-                    "✓ PostgreSQL".into(),
-                    "running now".into(),
-                    "worktree serve v13 --db postgres".into()
-                ),
-                (
-                    "  SQLite".into(),
-                    "a file in the site, no server".into(),
-                    "worktree serve v13 --db sqlite --switch".into()
-                ),
-            ]
+            row("✓ PostgreSQL 16"),
+            (
+                "running now".into(),
+                "worktree serve v13 --db postgres:16".into()
+            )
         );
-        // The primary's type is the project's: nothing to pick there.
+        assert_eq!(
+            row("  PostgreSQL 18"),
+            (
+                "its own server".into(),
+                "worktree serve v13 --db postgres:18 --switch".into()
+            )
+        );
+        assert_eq!(
+            row("  MariaDB 11.8"),
+            (
+                "the project's own server · TYPO3 lists ≤ 10.x".into(),
+                "worktree serve v13 --db mariadb:11.8 --switch".into()
+            )
+        );
+        assert_eq!(row("  MariaDB 10.11").0, "its own server");
+        assert_eq!(
+            row("  SQLite"),
+            (
+                "a file in the site, no server".into(),
+                "worktree serve v13 --db sqlite --switch".into()
+            )
+        );
+        // A project on a version not offered still has its row, among its type.
+        let old = Db::parse_recorded("mariadb:10.4").unwrap();
+        let entries = for_worktree(&v13, &old);
+        let Some(Entry::Sub { items, .. }) =
+            entries.iter().find(|e| e.label().starts_with("Database"))
+        else {
+            panic!("no database entry")
+        };
+        let labels: Vec<&str> = items.iter().map(|a| a.label.as_str()).collect();
+        let at = labels
+            .iter()
+            .position(|l| *l == "  MariaDB 10.4")
+            .expect("its row");
+        assert!(labels[at + 1].contains("MariaDB"), "{labels:?}");
+        // The primary's server is the project's: nothing to pick there.
         assert!(
-            !for_worktree(&fixture()[0], Engine::Mariadb)
+            !for_worktree(&fixture()[0], &maria())
                 .iter()
                 .any(|e| e.label().starts_with("Database"))
         );
@@ -505,10 +551,14 @@ mod tests {
 
     /// Each entry as "label → command", submenus as "label ▸ [commands]".
     fn menu(w: &Worktree) -> Vec<String> {
-        for_worktree(w, Engine::Mariadb)
+        for_worktree(w, &maria())
             .iter()
             .map(|e| match e {
                 Entry::Action(a) => format!("{} → {}", a.label, a.args.join(" ")),
+                // Its own test spells the database list out; here, its size.
+                Entry::Sub { label, items, .. } if label.contains("atabase") => {
+                    format!("{label} ▸ [{} servers]", items.len())
+                }
                 Entry::Sub { label, items, .. } => format!(
                     "{label} ▸ [{}]",
                     items
@@ -553,7 +603,7 @@ mod tests {
             m[..7],
             [
                 "PHP 8.4 ▸ [worktree serve v13 --php 8.2, worktree serve v13 --php 8.3, worktree serve v13 --php 8.4]",
-                "Database: MariaDB ▸ [worktree serve v13 --db mariadb, worktree serve v13 --db mysql --switch, worktree serve v13 --db postgres --switch, worktree serve v13 --db sqlite --switch]",
+                "Database: MariaDB 11.8 ▸ [12 servers]",
                 "Open site → launch v13",
                 "Open backend → launch v13 --backend",
                 "Make primary → worktree use v13",
@@ -577,7 +627,7 @@ mod tests {
             [
                 "Serve → worktree serve bugfix",
                 "Serve on PHP ▸ [worktree serve bugfix --php 8.2, worktree serve bugfix --php 8.3, worktree serve bugfix --php 8.4]",
-                "Serve on database ▸ [worktree serve bugfix --db mariadb, worktree serve bugfix --db mysql, worktree serve bugfix --db postgres, worktree serve bugfix --db sqlite]",
+                "Serve on database ▸ [12 servers]",
                 "Make primary → worktree use bugfix",
                 "—",
                 "Rename… → worktree rename bugfix",
@@ -589,8 +639,7 @@ mod tests {
     #[test]
     fn the_running_php_is_ticked_and_without_versions_there_is_no_submenu() {
         let w = with_php(fixture()[1].clone()); // runs 8.4
-        let Some(Entry::Sub { items, .. }) = for_worktree(&w, Engine::Mariadb).into_iter().next()
-        else {
+        let Some(Entry::Sub { items, .. }) = for_worktree(&w, &maria()).into_iter().next() else {
             panic!("no PHP submenu")
         };
         let labels: Vec<_> = items.iter().map(|a| a.label.as_str()).collect();
@@ -602,7 +651,7 @@ mod tests {
     #[test]
     fn every_command_names_its_own_worktree_never_the_sentinel() {
         for w in fixture().into_iter().map(with_php) {
-            for e in for_worktree(&w, Engine::Mariadb) {
+            for e in for_worktree(&w, &maria()) {
                 let actions = match e {
                     Entry::Action(a) => vec![a],
                     Entry::Sub { items, .. } => items,
@@ -627,7 +676,7 @@ mod tests {
 
     #[test]
     fn only_opening_the_site_runs_outside_the_queue() {
-        let bg: Vec<_> = for_worktree(&fixture()[1], Engine::Mariadb)
+        let bg: Vec<_> = for_worktree(&fixture()[1], &maria())
             .into_iter()
             .filter_map(|e| match e {
                 Entry::Action(a) if a.run == Run::Background => Some(a.label),

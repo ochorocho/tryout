@@ -523,13 +523,13 @@ pub struct Info {
     pub db_engine: Option<String>,
 }
 
-/// The engine a checkout's site runs on: its own for a served site, the
-/// project's for the active one, None when nothing is served from it.
-pub fn site_engine(ctx: &Ctx, name: &str, active: bool) -> Option<super::db::Engine> {
+/// The database server a checkout's site runs on: its own for a served site,
+/// the project's for the active one, None when nothing is served from it.
+pub fn site_db(ctx: &Ctx, name: &str, active: bool) -> Option<super::db::Db> {
     if super::site::is_served(ctx, name) {
-        Some(super::site::db_engine(ctx, name))
+        Some(super::site::db(ctx, name))
     } else if active {
-        Some(super::db::Engine::of_project(ctx))
+        Some(super::db::Db::of_project(ctx))
     } else {
         None
     }
@@ -571,7 +571,7 @@ fn info(ctx: &Ctx, r: Row, available: &[String], known: &HashMap<String, u64>) -
     };
     let (modified, untracked) = change_counts(&dir);
     let (url, php, db) = site_info(ctx, &r.name, r.active);
-    let db_engine = site_engine(ctx, &r.name, r.active).map(|e| e.name().to_string());
+    let db_engine = site_db(ctx, &r.name, r.active).map(|d| d.name());
     let subject = git::out(&dir, &["log", "-1", "--format=%s"])
         .map(|s| super::out::printable(&s))
         .unwrap_or_default();
@@ -1018,7 +1018,7 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
     } else {
         String::new()
     };
-    let engine = super::site::db_engine(ctx, old);
+    let engine = super::site::db(ctx, old);
     if served {
         out::info(format!(
             "Unserving '{old}' so it can be re-served as '{new}'..."
@@ -1040,7 +1040,7 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
         ],
     ) {
         // Put the site back as it was, rather than leave it unserved.
-        let restored = served && super::serve::serve(ctx, old, &php, Some(engine)).is_ok();
+        let restored = served && super::serve::serve(ctx, old, &php, Some(engine.clone())).is_ok();
         let mut lines = vec![format!(
             "Could not move {} (it may be locked: git worktree unlock)",
             old_dir.display()
@@ -1058,7 +1058,7 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
     out::success(format!("Renamed worktree '{old}' to '{new}'"));
     if served {
         out::info(format!("Re-serving as '{new}' on PHP {php}..."));
-        if super::serve::serve(ctx, new, &php, Some(engine)).is_err() {
+        if super::serve::serve(ctx, new, &php, Some(engine.clone())).is_err() {
             return Err(fail(&[
                 "The worktree was renamed, but re-serving failed".into(),
                 format!("  → ddev tryout worktree serve {new}"),

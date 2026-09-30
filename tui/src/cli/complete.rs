@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::ctx::{Ctx, DdevEnv, PRIMARY_SITE};
-use crate::core::db::Engine;
+use crate::core::db::Db;
 use crate::core::{php, site, vsort};
 
 use super::verbs::VERBS;
@@ -231,6 +231,11 @@ fn worktree(ctx: &Ctx, l: &Line, o: &mut Out) {
             }
             o.flag(l, "--force", "also drop an unmerged branch");
             o.flag(l, "--yes", "skip the confirmation");
+            o.flag(
+                l,
+                "--no-restart",
+                "skip the DDEV restart that releases its hostname",
+            );
         }
         "serve" => {
             if l.prev == "--php" {
@@ -391,10 +396,11 @@ fn branches(ctx: &Ctx, o: &mut Out) {
     }
 }
 
-/// The database types a site can run on, each with what choosing it means.
+/// The database servers a site can run on — each type at each version — with
+/// what choosing it means. A bare type (`postgres`, its newest) works too.
 fn engines(ctx: &Ctx, o: &mut Out) {
-    for e in Engine::ALL {
-        o.c(e.name(), &e.what(ctx));
+    for d in Db::choices() {
+        o.c(&d.name(), &d.what(ctx));
     }
 }
 
@@ -576,13 +582,25 @@ mod tests {
     #[test]
     fn database_engines_complete_after_db() {
         let (_d, ctx) = project();
-        assert_eq!(
-            names(&ctx, "worktree serve old --db ''"),
-            ["mariadb", "mysql", "postgres", "sqlite"]
-        );
+        let offered = names(&ctx, "worktree serve old --db ''");
+        assert_eq!(offered.first().map(String::as_str), Some("mariadb:11.8"));
+        for d in ["mariadb:10.11", "mysql:8.0", "postgres:16", "sqlite"] {
+            assert!(offered.iter().any(|o| o == d), "{d}: {offered:?}");
+        }
         let out = complete(&ctx, "worktree add x --db ''");
+        // The fixture's project is MariaDB 11.8: its own server.
         assert!(
-            out.contains("postgres\tits own postgres:17 server"),
+            out.contains("mariadb:11.8\tthe project's own server"),
+            "{out}"
+        );
+        assert!(
+            out.contains("postgres:16\tits own server, started for it"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "mariadb:11.4\tits own server, started for it · TYPO3 lists MariaDB up to 10.x"
+            ),
             "{out}"
         );
         assert!(

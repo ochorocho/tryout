@@ -3,7 +3,7 @@
 //! error with the usage line. Nothing in here runs `ddev`.
 
 use crate::core::ctx::{Ctx, PRIMARY_SITE};
-use crate::core::db::Engine;
+use crate::core::db::{Db, Engine};
 use crate::core::out::{self, BOLD, CYAN, DIM, GREEN, NC, TEXT, YELLOW};
 use crate::core::{
     Step, git, patch, php, proc, prompt, serve, site, status, vsort, webserver, worktree,
@@ -144,13 +144,13 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
                 return usage("ddev tryout worktree serve <name> [--php 8.2] [--db postgres]");
             }
             let db = engine_flag(flags)?;
-            // --switch: a served site moves to another database type — unserved
+            // --switch: a served site moves to another database server — unserved
             // first (its old database kept), then served on the new one, on the
             // PHP it had.
             let mut php = php;
             if flags.iter().any(|f| f == "--switch")
                 && site::is_served(ctx, name)
-                && db.is_some_and(|e| e != site::db_engine(ctx, name))
+                && db.as_ref().is_some_and(|d| *d != site::db(ctx, name))
             {
                 if php.is_empty() {
                     php = site::php_version(ctx, name);
@@ -215,17 +215,23 @@ fn flag_value(args: &[String], flag: &str) -> String {
     value
 }
 
-/// `--db <engine>`: None when not given, an error naming the choices when it is
-/// not one.
-fn engine_flag(args: &[String]) -> Result<Option<Engine>, Exit> {
+/// `--db <type>[:<version>]`: None when not given, an error naming the
+/// choices when it is not one.
+fn engine_flag(args: &[String]) -> Result<Option<Db>, Exit> {
     let v = flag_value(args, "--db");
     if v.is_empty() {
         return Ok(None);
     }
-    Engine::parse(&v).map(Some).ok_or_else(|| {
-        let choices: Vec<&str> = Engine::ALL.iter().map(|e| e.name()).collect();
+    Db::parse(&v).map(Some).ok_or_else(|| {
         out::error(format!("Unknown database '{v}'"));
-        out::error(format!("  → --db {}", choices.join(" | ")));
+        for e in Engine::ALL {
+            let versions = e.versions().join(" ");
+            if versions.is_empty() {
+                out::error(format!("  → --db {}", e.name()));
+            } else {
+                out::error(format!("  → --db {}[:version]   {versions}", e.name()));
+            }
+        }
         Exit(1)
     })
 }
@@ -763,10 +769,10 @@ fn card(ctx: &Ctx, r: &worktree::Row) -> String {
             s.push_str(&format!("  {CYAN}{url}{NC}\n"));
         }
         let php = if php.is_empty() { "-".to_string() } else { php };
-        // The engine only where it is not the project's own.
-        let engine = worktree::site_engine(ctx, &r.name, r.active)
-            .filter(|e| *e != Engine::of_project(ctx))
-            .map(|e| format!(" ({})", e.name()))
+        // The server only where it is not the project's own.
+        let engine = worktree::site_db(ctx, &r.name, r.active)
+            .filter(|d| *d != Db::of_project(ctx))
+            .map(|d| format!(" ({})", d.label()))
             .unwrap_or_default();
         s.push_str(&format!("  {DIM}{TEXT}PHP {php} · {db}{engine}{NC}\n"));
     } else {

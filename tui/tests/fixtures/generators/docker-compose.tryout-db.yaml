@@ -3,8 +3,25 @@
 # The database servers served sites run on besides the project's own.
 
 services:
-  tryout-mysql:
-    container_name: ddev-${DDEV_SITENAME}-tryout-mysql
+  tryout-mariadb-10-11:
+    container_name: ddev-${DDEV_SITENAME}-tryout-mariadb-10-11
+    image: mariadb:10.11
+    labels:
+      com.ddev.site-name: ${DDEV_SITENAME}
+      com.ddev.approot: ${DDEV_APPROOT}
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_USER: db
+      MARIADB_PASSWORD: db
+      MARIADB_DATABASE: db
+    volumes:
+      - tryout-mariadb-10-11:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      retries: 60
+  tryout-mysql-8-0:
+    container_name: ddev-${DDEV_SITENAME}-tryout-mysql-8-0
     image: mysql:8.0
     command: --default-authentication-plugin=mysql_native_password
     labels:
@@ -16,14 +33,14 @@ services:
       MYSQL_PASSWORD: db
       MYSQL_DATABASE: db
     volumes:
-      - tryout-mysql:/var/lib/mysql
+      - tryout-mysql-8-0:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-uroot", "-proot"]
       interval: 2s
       retries: 60
-  tryout-postgres:
-    container_name: ddev-${DDEV_SITENAME}-tryout-postgres
-    image: postgres:17
+  tryout-postgres-16:
+    container_name: ddev-${DDEV_SITENAME}-tryout-postgres-16
+    image: postgres:16
     labels:
       com.ddev.site-name: ${DDEV_SITENAME}
       com.ddev.approot: ${DDEV_APPROOT}
@@ -32,14 +49,16 @@ services:
       POSTGRES_PASSWORD: db
       POSTGRES_DB: db
     volumes:
-      - tryout-postgres:/var/lib/postgresql/data
+      - tryout-postgres-16:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U db"]
       interval: 2s
       retries: 60
 
 volumes:
-  tryout-mysql:
-    name: ddev-${DDEV_SITENAME}-tryout-mysql
-  tryout-postgres:
-    name: ddev-${DDEV_SITENAME}-tryout-postgres
+  tryout-mariadb-10-11:
+    name: ddev-${DDEV_SITENAME}-tryout-mariadb-10-11
+  tryout-mysql-8-0:
+    name: ddev-${DDEV_SITENAME}-tryout-mysql-8-0
+  tryout-postgres-16:
+    name: ddev-${DDEV_SITENAME}-tryout-postgres-16

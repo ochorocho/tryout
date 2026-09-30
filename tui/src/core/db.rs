@@ -1,8 +1,8 @@
 //! The databases, from inside the web container. The project's own server is
 //! DDEV's `db` service (MariaDB or MySQL with root/root, or Postgres with db/db,
-//! a superuser there). A served site may run on another type instead: a server
-//! tryout adds while a site uses it, with the same credentials — or SQLite, a
-//! file in the site's own var/, with no server at all.
+//! a superuser there). A served site may run on another type or version: a
+//! server tryout adds while a site uses it, with the same credentials — or
+//! SQLite, a file in the site's own var/, with no server at all.
 
 use std::path::PathBuf;
 use std::process::Output;
@@ -11,7 +11,7 @@ use super::ctx::Ctx;
 use super::out;
 use super::{Failed, Step, proc, site};
 
-/// A database type a site can run on, each at one version.
+/// A database type: what decides the driver, the port and the SQL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Engine {
     Mariadb,
@@ -52,47 +52,17 @@ impl Engine {
         }
     }
 
-    /// The type of DDEV's `db` service.
-    pub fn of_project(ctx: &Ctx) -> Self {
-        if ctx.env.is_postgres() {
-            Engine::Postgres
-        } else if ctx.env.database.starts_with("mysql") {
-            Engine::Mysql
-        } else {
-            Engine::Mariadb
-        }
-    }
-
-    /// Whether it talks MySQL's protocol and SQL — the same client and
-    /// statements serve both.
-    fn is_mysql_family(self) -> bool {
-        matches!(self, Engine::Mariadb | Engine::Mysql)
-    }
-
-    /// The image of the extra server that provides it; SQLite needs none.
-    pub fn image(self) -> Option<&'static str> {
+    /// The versions a site can pick, newest first; the first is the default.
+    /// A curated part of what DDEV supports: versions a TYPO3 of today runs on
+    /// and the web image's clients can talk to — MySQL 9 is out, its server no
+    /// longer lets the MariaDB client log in. SQLite is what PHP brings.
+    pub fn versions(self) -> &'static [&'static str] {
         match self {
-            Engine::Mariadb => Some("mariadb:11.8"),
-            Engine::Mysql => Some("mysql:8.0"),
-            Engine::Postgres => Some("postgres:17"),
-            Engine::Sqlite => None,
+            Engine::Mariadb => &["11.8", "11.4", "10.11", "10.6"],
+            Engine::Mysql => &["8.4", "8.0"],
+            Engine::Postgres => &["18", "17", "16", "15", "14"],
+            Engine::Sqlite => &[""],
         }
-    }
-
-    /// The extra server's service name, which is also its hostname.
-    pub fn service(self) -> Option<&'static str> {
-        match self {
-            Engine::Mariadb => Some("tryout-mariadb"),
-            Engine::Mysql => Some("tryout-mysql"),
-            Engine::Postgres => Some("tryout-postgres"),
-            Engine::Sqlite => None,
-        }
-    }
-
-    /// Whether a site on it needs a server besides the project's: an extra
-    /// service, and the restart that starts it.
-    pub fn needs_service(self, ctx: &Ctx) -> bool {
-        self.service().is_some() && self != Engine::of_project(ctx)
     }
 
     pub fn port(self) -> &'static str {
@@ -110,23 +80,162 @@ impl Engine {
             Engine::Sqlite => "sqlite",
         }
     }
+}
 
-    /// What choosing it means, in a few words — for completion and the TUI.
-    pub fn what(self, ctx: &Ctx) -> String {
-        match self.image() {
-            _ if self == Engine::of_project(ctx) => "the project's own server".into(),
-            None => "a file in the site, no server".into(),
-            Some(image) => format!("its own {image} server, started for it"),
+/// A database server: a type at a version (SQLite has none), written the way
+/// DDEV's own `--database` takes it — `postgres:16`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Db {
+    pub engine: Engine,
+    pub version: String,
+}
+
+impl Db {
+    fn new(engine: Engine, version: &str) -> Self {
+        Self {
+            engine,
+            version: if engine == Engine::Sqlite {
+                String::new()
+            } else {
+                version.to_string()
+            },
         }
     }
 
-    /// Where its server answers: DDEV's `db` for the project's type, the extra
-    /// service otherwise ("" for SQLite, which has none).
-    pub fn host(self, ctx: &Ctx) -> &'static str {
-        if self == Engine::of_project(ctx) {
-            "db"
+    /// Every type and version a site can pick, in picker order.
+    pub fn choices() -> Vec<Db> {
+        Engine::ALL
+            .into_iter()
+            .flat_map(|e| e.versions().iter().map(move |v| Db::new(e, v)))
+            .collect()
+    }
+
+    /// `postgres:16`, or a bare `postgres` for its default (newest) version.
+    /// Only what `choices` offers.
+    pub fn parse(s: &str) -> Option<Self> {
+        let (name, version) = s.split_once(':').unwrap_or((s, ""));
+        let engine = Engine::parse(name)?;
+        let version = if version.is_empty() {
+            engine.versions()[0]
         } else {
-            self.service().unwrap_or("")
+            version
+        };
+        engine
+            .versions()
+            .contains(&version)
+            .then(|| Db::new(engine, version))
+    }
+
+    /// What a marker recorded: any `type:version`, offered or not — a site on
+    /// the project's own server carries the project's version, whatever it is;
+    /// a bare type (an earlier marker) is its default version.
+    pub fn parse_recorded(s: &str) -> Option<Self> {
+        let (name, version) = s.split_once(':').unwrap_or((s, ""));
+        let engine = Engine::parse(name)?;
+        let version = if version.is_empty() {
+            engine.versions()[0]
+        } else {
+            version
+        };
+        Some(Db::new(engine, version))
+    }
+
+    /// DDEV's `db` service, as `DDEV_DATABASE` says (`mariadb:11.8`) — any
+    /// version DDEV runs, not only the ones offered for a site.
+    pub fn of_project(ctx: &Ctx) -> Self {
+        let (name, version) = ctx
+            .env
+            .database
+            .split_once(':')
+            .unwrap_or((ctx.env.database.as_str(), ""));
+        match Engine::parse(name) {
+            Some(e) if e != Engine::Sqlite => Db::new(e, version),
+            // Not said (DDEV's default) or not a type tryout knows.
+            _ => Db::new(Engine::Mariadb, "11.8"),
+        }
+    }
+
+    /// As `--db` takes it and the marker records it: `postgres:16`, `sqlite`.
+    pub fn name(&self) -> String {
+        if self.version.is_empty() {
+            self.engine.name().to_string()
+        } else {
+            format!("{}:{}", self.engine.name(), self.version)
+        }
+    }
+
+    /// As people call it: `PostgreSQL 16`, `SQLite`.
+    pub fn label(&self) -> String {
+        if self.version.is_empty() {
+            self.engine.label().to_string()
+        } else {
+            format!("{} {}", self.engine.label(), self.version)
+        }
+    }
+
+    /// For file names: `postgres-16`, `mariadb-10.11`, `sqlite`.
+    pub fn slug(&self) -> String {
+        self.name().replace(':', "-")
+    }
+
+    /// The image of the extra server that provides it; SQLite needs none.
+    pub fn image(&self) -> Option<String> {
+        (self.engine != Engine::Sqlite).then(|| self.name())
+    }
+
+    /// The extra server's service name, which is also its hostname:
+    /// `tryout-postgres-16`, `tryout-mariadb-10-11` (no dots in a hostname).
+    pub fn service(&self) -> Option<String> {
+        (self.engine != Engine::Sqlite).then(|| format!("tryout-{}", self.slug().replace('.', "-")))
+    }
+
+    /// Whether a site on it needs a server besides the project's: an extra
+    /// service, and the restart that starts it.
+    pub fn needs_service(&self, ctx: &Ctx) -> bool {
+        self.engine != Engine::Sqlite && *self != Db::of_project(ctx)
+    }
+
+    /// Where its server answers: DDEV's `db` for the project's own, the extra
+    /// service otherwise ("" for SQLite, which has none).
+    pub fn host(&self, ctx: &Ctx) -> String {
+        if *self == Db::of_project(ctx) {
+            "db".into()
+        } else {
+            self.service().unwrap_or_default()
+        }
+    }
+
+    /// Where the image keeps its data: Postgres 18 moved it up a level.
+    pub fn data_dir(&self) -> &'static str {
+        match self.engine {
+            Engine::Postgres if self.version.parse::<u32>().is_ok_and(|v| v >= 18) => {
+                "/var/lib/postgresql"
+            }
+            Engine::Postgres => "/var/lib/postgresql/data",
+            _ => "/var/lib/mysql",
+        }
+    }
+
+    /// What TYPO3 itself says about it, where that is less than "supported".
+    /// get.typo3.org lists MariaDB up to 10.x for 12.4 to 14.3 — yet 11.x is
+    /// DDEV's default and runs them, so this is a note, never a refusal.
+    pub fn typo3_note(&self) -> Option<&'static str> {
+        let major: u32 = self.version.split('.').next()?.parse().ok()?;
+        (self.engine == Engine::Mariadb && major >= 11).then_some("TYPO3 lists MariaDB up to 10.x")
+    }
+
+    /// What choosing it means, in a few words — for completion and the TUI.
+    pub fn what(&self, ctx: &Ctx) -> String {
+        let what = if *self == Db::of_project(ctx) {
+            "the project's own server".to_string()
+        } else if self.engine == Engine::Sqlite {
+            "a file in the site, no server".to_string()
+        } else {
+            "its own server, started for it".to_string()
+        };
+        match self.typo3_note() {
+            Some(note) => format!("{what} · {note}"),
+            None => what,
         }
     }
 }
@@ -152,41 +261,41 @@ fn sqlite_file(ctx: &Ctx, name: &str) -> Option<PathBuf> {
 /// One statement as the superuser of the site's server, against its default
 /// database — right for CREATE DATABASE, wrong for a site's own tables.
 pub fn root_sql(ctx: &Ctx, site_name: &str, sql: &str) -> Option<Output> {
-    server_sql(ctx, site::db_engine(ctx, site_name), sql)
+    server_sql(ctx, &site::db(ctx, site_name), sql)
 }
 
-/// One statement as the superuser of a type's server. None for SQLite.
-fn server_sql(ctx: &Ctx, engine: Engine, sql: &str) -> Option<Output> {
-    let host = engine.host(ctx);
-    match engine {
-        Engine::Postgres => psql(host, "postgres", sql),
+/// One statement as the superuser of a server. None for SQLite.
+fn server_sql(ctx: &Ctx, db: &Db, sql: &str) -> Option<Output> {
+    let host = db.host(ctx);
+    match db.engine {
+        Engine::Postgres => psql(&host, "postgres", sql),
         Engine::Mariadb | Engine::Mysql => {
-            proc::capture("mysql", &["-h", host, "-uroot", "-proot", "-e", sql], None)
+            proc::capture("mysql", &["-h", &host, "-uroot", "-proot", "-e", sql], None)
         }
         Engine::Sqlite => None,
     }
 }
 
-/// Wait for a type's server to answer: an extra service starts with DDEV but
-/// needs a moment (a first start initialises its data directory).
-pub fn wait_until_ready(ctx: &Ctx, engine: Engine) -> Step {
-    if engine == Engine::Sqlite {
+/// Wait for a server to answer: an extra service starts with DDEV but needs a
+/// moment (a first start initialises its data directory).
+pub fn wait_until_ready(ctx: &Ctx, db: &Db) -> Step {
+    if db.engine == Engine::Sqlite {
         return Ok(());
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
     loop {
-        if ok(server_sql(ctx, engine, "SELECT 1")) {
+        if ok(server_sql(ctx, db, "SELECT 1")) {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
             out::error(format!(
                 "The {} server ({}) does not answer",
-                engine.label(),
-                engine.host(ctx)
+                db.label(),
+                db.host(ctx)
             ));
             out::error(format!(
                 "  → ddev tryout worktree serve <name> --db {}   adds it and restarts DDEV",
-                engine.name()
+                db.name()
             ));
             return Err(Failed);
         }
@@ -197,13 +306,13 @@ pub fn wait_until_ready(ctx: &Ctx, engine: Engine) -> Step {
 /// One statement against the site's own database. For SQLite through the
 /// `sqlite3` CLI, None where the image has none.
 pub fn site_sql(ctx: &Ctx, site_name: &str, sql: &str) -> Option<Output> {
-    let engine = site::db_engine(ctx, site_name);
-    let (host, db) = (engine.host(ctx), site::database(site_name));
-    match engine {
-        Engine::Postgres => psql(host, &db, sql),
+    let db = site::db(ctx, site_name);
+    let (host, name) = (db.host(ctx), site::database(site_name));
+    match db.engine {
+        Engine::Postgres => psql(&host, &name, sql),
         Engine::Mariadb | Engine::Mysql => proc::capture(
             "mysql",
-            &["-h", host, "-uroot", "-proot", "-D", &db, "-e", sql],
+            &["-h", &host, "-uroot", "-proot", "-D", &name, "-e", sql],
             None,
         ),
         Engine::Sqlite => {
@@ -241,35 +350,42 @@ fn ok(o: Option<Output>) -> bool {
 /// Create a served site's database and grant the DDEV user access to it. A
 /// SQLite one is created by TYPO3's setup itself.
 pub fn ensure_site_database(ctx: &Ctx, name: &str) -> Step {
-    let db = site::database(name);
-    let engine = site::db_engine(ctx, name);
-    if db == "db" || engine == Engine::Sqlite {
+    let dbname = site::database(name);
+    let db = site::db(ctx, name);
+    if dbname == "db" || db.engine == Engine::Sqlite {
         return Ok(());
     }
-    out::info(format!("Ensuring database {db} ({})...", engine.label()));
-    let created = if engine == Engine::Postgres {
+    out::info(format!("Ensuring database {dbname} ({})...", db.label()));
+    let created = if db.engine == Engine::Postgres {
         let exists = root_sql(
             ctx,
             name,
-            &format!("SELECT 1 FROM pg_database WHERE datname='{db}'"),
+            &format!("SELECT 1 FROM pg_database WHERE datname='{dbname}'"),
         )
         .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains('1'));
-        exists || ok(root_sql(ctx, name, &format!("CREATE DATABASE \"{db}\"")))
+        exists
+            || ok(root_sql(
+                ctx,
+                name,
+                &format!("CREATE DATABASE \"{dbname}\""),
+            ))
     } else {
         shown(root_sql(
             ctx,
             name,
-            &format!("CREATE DATABASE IF NOT EXISTS `{db}`; GRANT ALL ON `{db}`.* TO 'db'@'%';"),
+            &format!(
+                "CREATE DATABASE IF NOT EXISTS `{dbname}`; GRANT ALL ON `{dbname}`.* TO 'db'@'%';"
+            ),
         ))
     };
     if created {
         Ok(())
     } else {
-        out::error(format!("Failed to create database {db}"));
-        if engine.needs_service(ctx) {
+        out::error(format!("Failed to create database {dbname}"));
+        if db.needs_service(ctx) {
             out::error(format!(
                 "  → is the {} server running? ddev restart",
-                engine.host(ctx)
+                db.host(ctx)
             ));
         }
         Err(Failed)
@@ -278,11 +394,10 @@ pub fn ensure_site_database(ctx: &Ctx, name: &str) -> Step {
 
 /// Does the site's database already hold a TYPO3 install?
 pub fn has_tables(ctx: &Ctx, name: &str) -> bool {
-    let db = site::database(name);
-    let engine = site::db_engine(ctx, name);
+    let dbname = site::database(name);
     // Postgres answers per database, so ask the site's own; MySQL answers for
     // every schema from anywhere; SQLite is a file that is there or is not.
-    let answer = match engine {
+    let answer = match site::db(ctx, name).engine {
         Engine::Sqlite => return sqlite_file(ctx, name).is_some(),
         Engine::Postgres => site_sql(
             ctx,
@@ -292,7 +407,9 @@ pub fn has_tables(ctx: &Ctx, name: &str) -> bool {
         Engine::Mariadb | Engine::Mysql => root_sql(
             ctx,
             name,
-            &format!("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='{db}';"),
+            &format!(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='{dbname}';"
+            ),
         ),
     };
     let count: String = answer
@@ -309,8 +426,8 @@ pub fn has_tables(ctx: &Ctx, name: &str) -> bool {
 /// Drop a site's database; false when the server refused.
 #[must_use]
 pub fn drop(ctx: &Ctx, name: &str) -> bool {
-    let db = site::database(name);
-    match site::db_engine(ctx, name) {
+    let dbname = site::database(name);
+    match site::db(ctx, name).engine {
         Engine::Sqlite => {
             let dir = sqlite_dir(ctx, name);
             !dir.exists() || std::fs::remove_dir_all(dir).is_ok()
@@ -318,37 +435,37 @@ pub fn drop(ctx: &Ctx, name: &str) -> bool {
         Engine::Postgres => shown(root_sql(
             ctx,
             name,
-            &format!("DROP DATABASE IF EXISTS \"{db}\""),
+            &format!("DROP DATABASE IF EXISTS \"{dbname}\""),
         )),
         Engine::Mariadb | Engine::Mysql => shown(root_sql(
             ctx,
             name,
-            &format!("DROP DATABASE IF EXISTS `{db}`;"),
+            &format!("DROP DATABASE IF EXISTS `{dbname}`;"),
         )),
     }
 }
 
 /// Drop and recreate a site's database, re-granting what DROP took with it.
 pub fn recreate(ctx: &Ctx, name: &str) -> bool {
-    let db = site::database(name);
-    let engine = site::db_engine(ctx, name);
-    match engine {
+    let dbname = site::database(name);
+    match site::db(ctx, name).engine {
         // The setup that follows creates a new file.
         Engine::Sqlite => drop(ctx, name),
         Engine::Postgres => {
-            let _ = root_sql(ctx, name, &format!("DROP DATABASE IF EXISTS \"{db}\""));
-            ok(root_sql(ctx, name, &format!("CREATE DATABASE \"{db}\"")))
-        }
-        _ => {
-            debug_assert!(engine.is_mysql_family());
-            shown(root_sql(
+            let _ = root_sql(ctx, name, &format!("DROP DATABASE IF EXISTS \"{dbname}\""));
+            ok(root_sql(
                 ctx,
                 name,
-                &format!(
-                    "DROP DATABASE IF EXISTS `{db}`; CREATE DATABASE `{db}`; GRANT ALL ON `{db}`.* TO 'db'@'%';"
-                ),
+                &format!("CREATE DATABASE \"{dbname}\""),
             ))
         }
+        Engine::Mariadb | Engine::Mysql => shown(root_sql(
+            ctx,
+            name,
+            &format!(
+                "DROP DATABASE IF EXISTS `{dbname}`; CREATE DATABASE `{dbname}`; GRANT ALL ON `{dbname}`.* TO 'db'@'%';"
+            ),
+        )),
     }
 }
 
@@ -367,43 +484,82 @@ mod tests {
         )
     }
 
+    fn db(s: &str) -> Db {
+        Db::parse(s).unwrap_or_else(|| panic!("{s} does not parse"))
+    }
+
     #[test]
-    fn the_projects_type_is_on_db_and_every_other_server_on_its_own_service() {
+    fn the_projects_own_server_is_db_and_every_other_its_own_service() {
         let maria = ctx("mariadb:11.8");
-        assert_eq!(Engine::of_project(&maria), Engine::Mariadb);
-        assert_eq!(Engine::Mariadb.host(&maria), "db");
-        assert_eq!(Engine::Mysql.host(&maria), "tryout-mysql");
-        assert_eq!(Engine::Postgres.host(&maria), "tryout-postgres");
+        assert_eq!(Db::of_project(&maria), db("mariadb:11.8"));
+        assert_eq!(db("mariadb:11.8").host(&maria), "db");
+        // The same type at another version is another server.
+        assert_eq!(db("mariadb:10.11").host(&maria), "tryout-mariadb-10-11");
+        assert_eq!(db("mysql:8.0").host(&maria), "tryout-mysql-8-0");
+        assert_eq!(db("postgres:16").host(&maria), "tryout-postgres-16");
         let pg = ctx("postgres:16");
-        assert_eq!(Engine::Postgres.host(&pg), "db");
-        assert_eq!(Engine::Mariadb.host(&pg), "tryout-mariadb");
-        let my = ctx("mysql:8.0");
-        assert_eq!(Engine::of_project(&my), Engine::Mysql);
-        assert_eq!(Engine::Mysql.host(&my), "db");
-        assert!(Engine::Mariadb.needs_service(&my));
-        assert!(!Engine::Mysql.needs_service(&my));
+        assert_eq!(db("postgres:16").host(&pg), "db");
+        assert_eq!(db("postgres:17").host(&pg), "tryout-postgres-17");
+        // DDEV's own version need not be one offered for a site.
+        let old = ctx("mariadb:10.4");
+        assert_eq!(Db::of_project(&old).name(), "mariadb:10.4");
+        assert!(db("mariadb:10.11").needs_service(&old));
+        // Not said at all: DDEV's default.
+        assert_eq!(Db::of_project(&ctx("")).name(), "mariadb:11.8");
     }
 
     #[test]
-    fn sqlite_is_a_file_with_no_server() {
-        let maria = ctx("mariadb:11.8");
-        assert_eq!(Engine::Sqlite.service(), None);
-        assert_eq!(Engine::Sqlite.image(), None);
-        assert!(!Engine::Sqlite.needs_service(&maria));
-        assert_eq!(Engine::Sqlite.setup_driver(), "sqlite");
-        assert_eq!(
-            sqlite_dir(&maria, "lite"),
-            PathBuf::from("/p/TYPO3-Instances/lite/var/sqlite")
-        );
-    }
-
-    #[test]
-    fn every_type_parses_by_its_name_and_nothing_else_does() {
-        for e in Engine::ALL {
-            assert_eq!(Engine::parse(e.name()), Some(e));
+    fn a_type_alone_means_its_newest_version_and_only_offered_ones_parse() {
+        assert_eq!(db("postgres").name(), "postgres:18");
+        assert_eq!(db("mariadb").name(), "mariadb:11.8");
+        assert_eq!(db("sqlite").name(), "sqlite");
+        for bad in [
+            "postgres:9",
+            "mysql:9.7",
+            "mariadb:12.3",
+            "oracle",
+            "",
+            "sqlite:3",
+        ] {
+            assert_eq!(Db::parse(bad), None, "{bad}");
         }
-        assert_eq!(Engine::parse("MySQL"), None);
-        assert_eq!(Engine::parse("oracle"), None);
-        assert_eq!(Engine::parse(""), None);
+        for c in Db::choices() {
+            assert_eq!(Db::parse(&c.name()), Some(c.clone()), "{}", c.name());
+        }
+    }
+
+    #[test]
+    fn names_labels_and_data_dirs() {
+        let d = db("mariadb:10.11");
+        assert_eq!(
+            (d.label(), d.slug(), d.service(), d.image()),
+            (
+                "MariaDB 10.11".to_string(),
+                "mariadb-10.11".to_string(),
+                Some("tryout-mariadb-10-11".to_string()),
+                Some("mariadb:10.11".to_string())
+            )
+        );
+        assert_eq!(db("postgres:18").data_dir(), "/var/lib/postgresql");
+        assert_eq!(db("postgres:17").data_dir(), "/var/lib/postgresql/data");
+        assert_eq!(db("mysql:8.4").data_dir(), "/var/lib/mysql");
+        let lite = db("sqlite");
+        assert_eq!(
+            (lite.service(), lite.image(), lite.label()),
+            (None, None, "SQLite".into())
+        );
+        assert!(!lite.needs_service(&ctx("mariadb:11.8")));
+    }
+
+    #[test]
+    fn typo3s_own_word_is_a_note_not_a_refusal() {
+        assert!(db("mariadb:11.8").typo3_note().is_some());
+        assert!(db("mariadb:10.11").typo3_note().is_none());
+        assert!(db("postgres:18").typo3_note().is_none());
+        let what = db("mariadb:11.4").what(&ctx("postgres:16"));
+        assert!(
+            what.contains("its own server") && what.contains("up to 10.x"),
+            "{what}"
+        );
     }
 }

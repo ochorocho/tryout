@@ -800,34 +800,52 @@ container rebuild:
 ddev tryout worktree serve v13 --php 8.3   # applied without a restart
 ```
 
-#### On another database type
+#### On another database server
 
 A DDEV project has one database server, set by `ddev config --database=…`, and
-every site gets its own database on it. `--db` puts a site on another type —
-`mariadb`, `mysql`, `postgres` or `sqlite` — to try a change against each:
+every site gets its own database on it. `--db` puts a site on another one — a
+type, or a type at a version, written the way DDEV writes it — to try a change
+against each:
 
 ```bash
-ddev tryout worktree serve v13 --db postgres
-ddev tryout worktree add lite main --db sqlite     # --db implies --serve
-ddev tryout worktree serve v13 --db mysql --switch # move a served site
+ddev tryout worktree serve v13 --db postgres:16
+ddev tryout worktree serve v12 --db mariadb:10.11  # the project's type, older
+ddev tryout worktree add lite main --db sqlite       # --db implies --serve
+ddev tryout worktree serve v13 --db mysql --switch   # move a served site
 ```
 
-MariaDB, MySQL and Postgres run as a server of their own (`tryout-mariadb`,
-`tryout-mysql`, `tryout-postgres`, declared in
-`.ddev/docker-compose.tryout-db.yaml`), one version each. The first site on one
-costs a DDEV restart to start it; later ones do not. It keeps running while a
-site runs on it or holds a database `unserve` kept there, so an `unserve`d site
-comes back with its database; once neither is left (`--drop-db`, `worktree
-remove`), it is stopped and its volume removed. `ddev delete` removes the
-volumes of the servers still running with the project. SQLite needs no server: the
-database is a file in the site's `var/sqlite/`, kept aside on `unserve` just the
-same.
+A bare type is its newest version. What can be picked:
 
-A served site keeps its type unless you say `--switch`, which unserves it —
-keeping the old database — and serves it again on the new type. In the terminal
-UI the same choice is **Serve on database ▸** for a worktree that is not served,
-and **Database: … ▸** (the current type ticked) for one that is.
-`ddev tryout status` shows which servers run and which sites are on them.
+| Type | Versions |
+|---|---|
+| `mariadb` | 11.8, 11.4, 10.11, 10.6 |
+| `mysql` | 8.4, 8.0 |
+| `postgres` | 18, 17, 16, 15, 14 |
+| `sqlite` | whatever PHP brings — no server |
+
+That is a curated part of what DDEV runs: versions current TYPO3 runs on, and
+that the web image's clients can talk to (MySQL 9 no longer lets its MariaDB
+client log in). get.typo3.org lists MariaDB up to 10.x for TYPO3 12.4 to 14.3;
+11.x is DDEV's default and runs them, so that is a note in the picker, not a
+refusal.
+
+Every server other than the project's own runs as a service of its own, per
+type and version (`tryout-postgres-16`, `tryout-mariadb-10-11`, declared in
+`.ddev/docker-compose.tryout-db.yaml`), with a volume of its own — a Postgres 16
+data directory is not one 17 can open. The first site on one costs a DDEV
+restart to start it; later ones do not. It keeps running while a site runs on
+it or holds a database `unserve` kept there, so an `unserve`d site comes back
+with its database; once neither is left (`--drop-db`, `worktree remove`), it is
+stopped and its volume removed. `ddev delete` removes the volumes of the
+servers still running with the project. SQLite needs no server: the database is
+a file in the site's `var/sqlite/`, kept aside on `unserve` just the same.
+
+A served site keeps its server unless you say `--switch`, which unserves it —
+keeping the old database — and serves it again on the new one. In the terminal
+UI the same choice is **Serve on database ▸** for a worktree that is not
+served, and **Database: … ▸** (the current one ticked) for one that is: every
+type at every version, like the PHP picker. `ddev tryout status` shows which
+servers run and which sites are on them.
 
 #### Stopping a site
 

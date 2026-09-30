@@ -3,7 +3,7 @@
 
 use crate::core::ctx::Ctx;
 use crate::core::ctx::PRIMARY_SITE;
-use crate::core::db::Engine;
+use crate::core::db::Db;
 use crate::core::out::{self, DIM, NC, RED, YELLOW, print};
 use crate::core::prompt::{self, explain_missing};
 use crate::core::{ddev, gerrit, serve, site, status, webserver, worktree};
@@ -581,15 +581,15 @@ fn ensure_db_service(ctx: &Ctx, args: &[String], no_restart: bool) -> Res {
             value = Some(v.to_string());
         }
     }
-    // An unknown engine is the container's to refuse, with the choices.
-    let Some(engine) = value.as_deref().and_then(Engine::parse) else {
+    // An unknown one is the container's to refuse, with the choices.
+    let Some(engine) = value.as_deref().and_then(Db::parse) else {
         return Ok(());
     };
     let mut declared = webserver::declared_db_services(ctx);
     if !engine.needs_service(ctx) || declared.contains(&engine) {
         return Ok(());
     }
-    declared.push(engine);
+    declared.push(engine.clone());
     declared.sort();
     if let Err(e) = webserver::write_db_services(ctx, &declared) {
         out::error(format!(
@@ -842,9 +842,10 @@ fn worktree_remove(ctx: &Ctx, args: &[String]) -> Res {
     };
     let rest: Vec<&String> = args.iter().skip(1).collect();
     let yes = rest.iter().any(|a| *a == "--yes" || *a == "-y");
+    let no_restart = rest.iter().any(|a| *a == "--no-restart");
     let passed: Vec<&str> = rest
         .iter()
-        .filter(|a| **a != "--yes" && **a != "-y")
+        .filter(|a| **a != "--yes" && **a != "-y" && **a != "--no-restart")
         .map(|a| a.as_str())
         .collect();
     if !yes {
@@ -870,9 +871,14 @@ fn worktree_remove(ctx: &Ctx, args: &[String]) -> Res {
             }
         }
     }
+    // Like unserve: a served site's hostname goes, and so may the last need for
+    // a database server — both take effect only with a restart, which also
+    // lets the stopped server's volume be removed.
+    let before = webserver::restart_key(ctx);
     let mut a = vec!["worktree", "remove", name.as_str()];
     a.extend(passed);
-    delegate(ctx, &a)
+    delegate(ctx, &a)?;
+    restart_if_hosts_changed(ctx, &before, no_restart)
 }
 
 // ─── cs ─────────────────────────────────────────────────────────────────────
