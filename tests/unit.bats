@@ -529,7 +529,7 @@ fake_project() {
     'worktree list$' 'worktree list --plain' 'worktree list --json'
     'worktree branches --json'
     'worktree use' 'worktree serve [a-z0-9-]+ --php' 'worktree serve [a-z0-9-]+ --db' 'worktree serve .*--switch'
-    'worktree add .*--db'
+    'worktree add .*--db' 'worktree add .*--db-from' 'worktree serve .*--db-empty'
     'worktree unserve [a-z0-9-]+$'
     'worktree unserve .*--drop-db' 'worktree rename'
     'worktree remove [a-z0-9-]+$' 'worktree remove .*--yes'
@@ -538,6 +538,7 @@ fake_project() {
   # is tested by its own Rust suite (pseudo-terminal and snapshot tests).
   local lines p missing=()
   lines="$(grep -hoE 'ddev tryout [^|;&)`]*' "${DIR}/tests/test.bats" "${DIR}/tests/lifecycle.bats" \
+    "${DIR}/tests/project.bats" \
     | sed -e 's/["]*[[:space:]]*$//')"
   for p in "${patterns[@]}"; do
     printf '%s\n' "${lines}" | grep -qE "^ddev tryout ${p}" || missing+=("${p}")

@@ -5,7 +5,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use super::ctx::Ctx;
-use super::db::Db;
+use super::ctx::PRIMARY_SITE;
+use super::db::{Db, Seed};
 use super::kind::Mode;
 use super::out::{self, BOLD, DIM, NC, YELLOW};
 use super::{Failed, Step, composer, db, fpm, git, php, proc, site, webserver, worktree};
@@ -397,8 +398,8 @@ pub fn setup_frontend(ctx: &Ctx, name: &str) {
 /// Make a worktree a live site: its own tree, overlay, database, vhost and FPM.
 /// `db`: the engine to run on; None keeps the one it has (the project's for a
 /// site served the first time).
-pub fn serve(ctx: &Ctx, name: &str, php_version: &str, db: Option<Db>) -> Step {
-    serve_since(ctx, name, php_version, db, None)
+pub fn serve(ctx: &Ctx, name: &str, php_version: &str, db: Option<Db>, seed: &Seed) -> Step {
+    serve_since(ctx, name, php_version, db, seed, None)
 }
 
 /// `serve`, judging "is this a new hostname?" against `before` — what DDEV had
@@ -411,6 +412,7 @@ pub fn serve_since(
     name: &str,
     php_version: &str,
     db: Option<Db>,
+    seed: &Seed,
     before: Option<Vec<String>>,
 ) -> Step {
     worktree::validate_name(name).map_err(super::fail)?;
@@ -489,7 +491,7 @@ pub fn serve_since(
     let _ = site::write_marker(ctx, name, &php, &server);
     let result = match ctx.mode() {
         Mode::Core => build_site(ctx, name, &php, &core, &dir),
-        Mode::Project => build_project_site(ctx, name, &php, &dir),
+        Mode::Project => build_project_site(ctx, name, &php, &dir, seed),
     };
     if result.is_err() {
         let _ = std::fs::remove_file(&marker);
@@ -526,11 +528,25 @@ pub fn serve_since(
     Ok(())
 }
 
-/// A project's worktree is served as it is: its database, its own `composer
-/// install` on the site's PHP, its vhost. What the app needs to reach its
-/// database is in the vhost's environment (`site::db_env`).
-fn build_project_site(ctx: &Ctx, name: &str, php: &str, dir: &Path) -> Step {
+/// A project's worktree is served as it is: its database (a fresh one seeded,
+/// by default from the primary's), its own `composer install` on the site's
+/// PHP, its vhost. What the app needs to reach its database is in the vhost's
+/// environment (`site::db_env`).
+fn build_project_site(ctx: &Ctx, name: &str, php: &str, dir: &Path, seed: &Seed) -> Step {
+    // Kept by an earlier unserve: it stays as it is.
+    let fresh = !db::has_tables(ctx, name);
     db::ensure_site_database(ctx, name)?;
+    if fresh {
+        let from = match seed {
+            Seed::Empty => None,
+            Seed::Default => Some((Db::of_project(ctx), site::database(PRIMARY_SITE))),
+            Seed::Copy { db, name } => Some((db.clone(), name.clone())),
+        };
+        if let Some((db, from_name)) = from {
+            db::copy_into(ctx, &db, &from_name, name);
+        }
+    }
+    copy_local_config(ctx, dir);
     if dir.join("composer.json").is_file() {
         out::info(format!(
             "Installing dependencies for {name} on PHP {php} (this takes a moment)..."
@@ -718,8 +734,8 @@ fn stop_serving(ctx: &Ctx, name: &str) {
     }
 }
 
-/// A project site's reset: its database, empty. The app sets itself up again
-/// (migrations, installer) as it did the first time.
+/// A project site's reset: its database recreated as a fresh copy of the
+/// primary's, the way it started.
 fn empty_project_database(ctx: &Ctx, name: &str) -> Step {
     // The project's own database is DDEV's: `ddev snapshot` and `ddev
     // import-db` look after it.
@@ -736,8 +752,32 @@ fn empty_project_database(ctx: &Ctx, name: &str) -> Step {
         out::error(format!("Failed to reset database {db_name}"));
         return Err(Failed);
     }
-    out::success(format!("Database {db_name} is empty again"));
+    if db::copy_into(
+        ctx,
+        &Db::of_project(ctx),
+        &site::database(PRIMARY_SITE),
+        name,
+    ) {
+        out::success(format!(
+            "Database {db_name} is a fresh copy of the primary's"
+        ));
+    } else {
+        out::success(format!("Database {db_name} is empty"));
+    }
     Ok(())
+}
+
+/// A worktree checks out what is committed; the project's local settings
+/// (`.env`, `.env.local` — ignored by git, APP_KEY and the like) are not. A
+/// copy of the primary's goes in where the worktree has none; the site's own
+/// database still wins, from the environment.
+fn copy_local_config(ctx: &Ctx, dir: &Path) {
+    for f in [".env", ".env.local"] {
+        let (from, to) = (ctx.root.join(f), dir.join(f));
+        if from.is_file() && !to.exists() && std::fs::copy(&from, &to).is_ok() {
+            out::info(format!("Copied the project's {f} into the worktree"));
+        }
+    }
 }
 
 /// What `delete` is about to destroy, one line per site.

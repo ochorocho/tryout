@@ -454,6 +454,91 @@ pub fn drop(ctx: &Ctx, name: &str) -> bool {
     }
 }
 
+/// Where a new site's database starts from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Seed {
+    /// A project site: a copy of the primary's. A Core site: TYPO3's setup.
+    Default,
+    /// Nothing: the app sets itself up.
+    Empty,
+    /// A copy of this database.
+    Copy { db: Db, name: String },
+}
+
+impl Seed {
+    /// A copy of a site's database (the primary's: the project's own).
+    pub fn of_site(ctx: &Ctx, name: &str) -> Seed {
+        Seed::Copy {
+            db: site::db(ctx, name),
+            name: site::database(name),
+        }
+    }
+}
+
+/// Server engines whose dumps load into each other.
+fn family(e: Engine) -> Option<u8> {
+    match e {
+        Engine::Mariadb | Engine::Mysql => Some(1),
+        Engine::Postgres => Some(2),
+        Engine::Sqlite => None,
+    }
+}
+
+/// The shell pipeline that copies database `from` into `to`, run in the web
+/// container: the source server's dump loaded by the target's client. None
+/// across engine families (and for SQLite), where no dump loads as it is.
+pub fn copy_pipeline(from: (&Db, &str, &str), to: (&Db, &str, &str)) -> Option<String> {
+    let ((from_db, from_host, from_name), (to_db, to_host, to_name)) = (from, to);
+    if family(from_db.engine)? != family(to_db.engine)? {
+        return None;
+    }
+    // Everything here goes into a shell line: names and hosts are identifiers.
+    let safe = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+    };
+    if ![from_host, from_name, to_host, to_name]
+        .iter()
+        .all(|s| safe(s))
+    {
+        return None;
+    }
+    Some(match to_db.engine {
+        Engine::Postgres => format!(
+            "PGPASSWORD=db pg_dump -h {from_host} -U db --no-owner --no-acl {from_name} \
+             | PGPASSWORD=db psql -q -v ON_ERROR_STOP=1 -h {to_host} -U db -d {to_name}"
+        ),
+        _ => format!(
+            "mysqldump -h {from_host} -uroot -proot --single-transaction --routines --triggers --no-tablespaces {from_name} \
+             | mysql -h {to_host} -uroot -proot {to_name}"
+        ),
+    })
+}
+
+/// Fill a site's fresh database from `seed`. False when it could not be
+/// copied: the site then starts empty, and says so.
+pub fn copy_into(ctx: &Ctx, from: &Db, from_name: &str, site_name: &str) -> bool {
+    let to = site::db(ctx, site_name);
+    let (from_host, to_host, to_name) = (from.host(ctx), to.host(ctx), site::database(site_name));
+    let Some(line) = copy_pipeline((from, &from_host, from_name), (&to, &to_host, &to_name)) else {
+        out::warn(format!(
+            "No copy from {} into {} — '{site_name}' starts with an empty database",
+            from.label(),
+            to.label()
+        ));
+        return false;
+    };
+    out::info(format!("Copying database {from_name} into {to_name}..."));
+    let copied = proc::run("bash", &["-o", "pipefail", "-c", &line], None);
+    if !copied {
+        out::warn(format!(
+            "Copying {from_name} failed — '{site_name}' starts with what arrived"
+        ));
+    }
+    copied
+}
+
 /// Drop and recreate a site's database, re-granting what DROP took with it.
 pub fn recreate(ctx: &Ctx, name: &str) -> bool {
     let dbname = site::database(name);
@@ -481,6 +566,48 @@ pub fn recreate(ctx: &Ctx, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_database_is_copied_by_its_own_servers_tools_and_only_within_a_family() {
+        let db = |s: &str| Db::parse_recorded(s).unwrap();
+        let (maria, pg, lite) = (db("mariadb:11.8"), db("postgres:16"), db("sqlite"));
+        assert_eq!(
+            copy_pipeline(
+                (&maria, "db", "db"),
+                (&db("mysql:8.4"), "tryout-mysql-8-4", "db_my")
+            )
+            .as_deref(),
+            Some(
+                "mysqldump -h db -uroot -proot --single-transaction --routines --triggers \
+                 --no-tablespaces db | mysql -h tryout-mysql-8-4 -uroot -proot db_my"
+            )
+        );
+        assert_eq!(
+            copy_pipeline(
+                (&pg, "db", "db"),
+                (&db("postgres:17"), "tryout-postgres-17", "db_pg")
+            )
+            .as_deref(),
+            Some(
+                "PGPASSWORD=db pg_dump -h db -U db --no-owner --no-acl db \
+                 | PGPASSWORD=db psql -q -v ON_ERROR_STOP=1 -h tryout-postgres-17 -U db -d db_pg"
+            )
+        );
+        // No dump of one family loads into the other; SQLite has no server.
+        assert_eq!(
+            copy_pipeline((&maria, "db", "db"), (&pg, "h", "db_x")),
+            None
+        );
+        assert_eq!(
+            copy_pipeline((&maria, "db", "db"), (&lite, "", "db_x")),
+            None
+        );
+        // Nothing that is not an identifier reaches the shell line.
+        assert_eq!(
+            copy_pipeline((&maria, "db", "db; rm -rf /"), (&maria, "db", "db_x")),
+            None
+        );
+    }
     use crate::core::ctx::DdevEnv;
 
     fn ctx(db: &str) -> Ctx {

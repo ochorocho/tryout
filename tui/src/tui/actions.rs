@@ -233,6 +233,14 @@ pub fn for_worktree(w: &Worktree, project: &Db) -> Vec<Entry> {
             format!("worktree serve {n}"),
             JOB,
         ));
+        // A project site starts as a copy of the primary's database; this one
+        // does not (dropped for TYPO3 Core by `for_kind`).
+        site.push(act(
+            "Serve with an empty database",
+            "the app sets itself up",
+            format!("worktree serve {n} --db-empty"),
+            JOB,
+        ));
         if !w.php_versions.is_empty() {
             site.push(Entry::Sub {
                 label: "Serve on PHP".into(),
@@ -401,9 +409,11 @@ pub fn for_kind(entries: Vec<Entry>, kind: &dyn ProjectKind) -> Vec<Entry> {
     for e in entries {
         match e {
             Entry::Action(a) if !supported(&a) => {}
-            Entry::Action(mut a) if kind.setup_command("").is_empty() && a.args[0] == "delete" => {
-                a.label = "Empty its database…".into();
-                a.hint = "the app sets itself up again".into();
+            Entry::Action(a)
+                if !kind.seeds_databases() && a.args.iter().any(|x| x == "--db-empty") => {}
+            Entry::Action(mut a) if kind.seeds_databases() && a.args[0] == "delete" => {
+                a.label = "Reset its database…".into();
+                a.hint = "a fresh copy of the primary's".into();
                 out.push(Entry::Action(a));
             }
             Entry::Separator if matches!(out.last(), None | Some(Entry::Separator)) => {}
@@ -476,16 +486,17 @@ mod tests {
                     .windows(2)
                     .any(|p| matches!(p, [Entry::Separator, Entry::Separator]))
             );
-            // Core keeps everything it had.
-            let all = join([for_worktree(w, &maria()), project()]);
-            assert_eq!(menu(w, &TYPO3_CORE), all);
+            // Core keeps everything it had, but copies no databases.
+            let core = lines(&menu(w, &TYPO3_CORE));
+            assert!(core.iter().all(|l| !l.contains("--db-empty")), "{core:?}");
+            assert!(core.iter().any(|l| l.starts_with("patch")) || !w.served());
         }
         let served = fixture()
             .into_iter()
             .find(|w| w.served() && !w.primary)
             .unwrap();
         let entries = menu(&served, &GENERIC_PROJECT);
-        assert!(entries.iter().any(|e| e.label() == "Empty its database…"));
+        assert!(entries.iter().any(|e| e.label() == "Reset its database…"));
     }
 
     fn claim(line: &str) -> Claim {
@@ -709,6 +720,7 @@ mod tests {
             menu(&with_php(fixture()[2].clone())),
             [
                 "Serve → worktree serve bugfix",
+                "Serve with an empty database → worktree serve bugfix --db-empty",
                 "Serve on PHP ▸ [worktree serve bugfix --php 8.2, worktree serve bugfix --php 8.3, worktree serve bugfix --php 8.4]",
                 "Serve on database ▸ [12 servers]",
                 "Make primary → worktree use bugfix",

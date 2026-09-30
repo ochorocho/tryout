@@ -89,6 +89,12 @@ pub trait ProjectKind: Sync {
 
     /// Whether a verb applies to this kind (`patch`, `cs` … need Core).
     fn supports(&self, verb: &str) -> bool;
+
+    /// Whether a new site's database starts as a copy (`--db-from`,
+    /// `--db-empty`) — rather than from the kind's own setup.
+    fn seeds_databases(&self) -> bool {
+        self.setup_command("").is_empty()
+    }
 }
 
 /// A project of the user's own, of any DDEV type: its own repository, never

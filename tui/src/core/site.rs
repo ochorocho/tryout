@@ -173,9 +173,10 @@ pub fn write_marker(ctx: &Ctx, name: &str, php: &str, db: &Db) -> std::io::Resul
     std::fs::write(marker(ctx, name), format!("php={php}\ndb={}\n", db.name()))
 }
 
-/// A project site's database, as its vhost and `exec` hand it over: the app
-/// reads `TRYOUT_DB_*` (DDEV's own settings name `db` for every worktree).
-/// SQLite's name is the file, kept in the site's state beside its marker.
+/// A project site's database and URL, as its vhost and `exec` hand them over
+/// (`appenv`: tryout's names and its framework's; DDEV's own settings name
+/// `db` for every worktree). SQLite's name is the file, kept in the site's
+/// state beside its marker.
 pub fn db_env(ctx: &Ctx, name: &str) -> Vec<(&'static str, String)> {
     let db = db(ctx, name);
     let sqlite = db.engine == super::db::Engine::Sqlite;
@@ -188,19 +189,16 @@ pub fn db_env(ctx: &Ctx, name: &str) -> Vec<(&'static str, String)> {
     } else {
         database(name)
     };
-    let mut env = vec![
-        ("TRYOUT_DB_DRIVER", db.engine.name().to_string()),
-        ("TRYOUT_DB_NAME", database),
-    ];
-    if !sqlite {
-        env.extend([
-            ("TRYOUT_DB_HOST", db.host(ctx)),
-            ("TRYOUT_DB_PORT", db.engine.port().to_string()),
-            ("TRYOUT_DB_USER", "db".to_string()),
-            ("TRYOUT_DB_PASSWORD", "db".to_string()),
-        ]);
-    }
-    env
+    let host = if sqlite { String::new() } else { db.host(ctx) };
+    super::appenv::vars(
+        &ctx.env.project_type,
+        &super::appenv::SiteDb {
+            db: &db,
+            host: &host,
+            name: &database,
+        },
+        &format!("https://{}", hostname(ctx, name)),
+    )
 }
 
 /// The database servers needed besides the project's own: one extra service
@@ -321,6 +319,10 @@ mod tests {
                 ("TRYOUT_DB_PORT", "3306"),
                 ("TRYOUT_DB_USER", "db"),
                 ("TRYOUT_DB_PASSWORD", "db"),
+                (
+                    "DATABASE_URL",
+                    "mysql://db:db@db:3306/db_feat_x?serverVersion=11.8-MariaDB&charset=utf8mb4"
+                ),
             ])
         );
         // On another server: that server's host and port.
@@ -337,6 +339,10 @@ mod tests {
                 (
                     "TRYOUT_DB_NAME",
                     "/var/www/html/.ddev/tryout-sites/lite/sqlite/db_lite.sqlite"
+                ),
+                (
+                    "DATABASE_URL",
+                    "sqlite:////var/www/html/.ddev/tryout-sites/lite/sqlite/db_lite.sqlite"
                 ),
             ])
         );

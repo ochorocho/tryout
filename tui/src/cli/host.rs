@@ -810,12 +810,17 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
         match a.as_str() {
             // Both no-ops now (worktrees are always detached); --detach is passed on.
             "--branch" => {}
-            "--detach" | "--serve" => flags.push(a.clone()),
+            "--detach" | "--serve" | "--db-empty" => flags.push(a.clone()),
             "--no-restart" => no_restart = true,
-            "--php" | "--db" => {
+            "--php" | "--db" | "--db-from" => {
                 flags.push(format!("{a}={}", it.next().cloned().unwrap_or_default()))
             }
-            a if a.starts_with("--php=") || a.starts_with("--db=") => flags.push(a.to_string()),
+            a if a.starts_with("--php=")
+                || a.starts_with("--db=")
+                || a.starts_with("--db-from=") =>
+            {
+                flags.push(a.to_string())
+            }
             a if a.starts_with('-') => {
                 out::error(format!("Unknown option: {a}"));
                 out::error("  → ddev tryout worktree help");

@@ -128,7 +128,21 @@ laravel/laravel`, `artisan migrate`), write a row in the primary, serve a
 worktree with `--db-from primary`, read it back through `ddev tryout exec`; the
 site's own write does not reach the primary. E2E: the Laravel welcome page per
 site.
-**Status**: Not Started
+**Status**: Complete locally (unit, unit.bats, project.bats with Laravel and Symfony green); CI pending
+**Done so far**: `db::Seed` (`Default` = a copy of the primary's for a project
+site, `Empty`, `Copy`), `--db-from <site>` / `--db-empty` on `add`/`serve`
+(refused in core mode, completed in project mode), `db::copy_pipeline` —
+`mysqldump | mysql` within MariaDB/MySQL, `pg_dump | psql` within Postgres,
+nothing across families (the site starts empty, with a note). Only a fresh
+database is seeded; a kept one stays. `--switch` and `rename` copy the site's
+own old database. `delete` resets a project site to a fresh copy. `appenv`
+gives every site `TRYOUT_DB_*` and `DATABASE_URL`, Laravel `DB_*` + `APP_URL`,
+Craft `CRAFT_DB_*` + `PRIMARY_SITE_URL`, Shopware `APP_URL`; a worktree
+without `.env`/`.env.local` gets the project's. TUI: "Serve with an empty
+database", "Reset its database…". Tests: unit (env per type, URL per server,
+copy lines per engine pair), project.bats (seed, isolation, reset, empty,
+--db-from; Laravel with migrate + tinker; Symfony with orm-pack + dbal).
+Left: the Laravel welcome page is checked by curl in bats, not in Playwright.
 
 ## Stage 4: Settings-file and URL-bound types
 **Goal**: Adapters for `drupal*`/`backdrop` (per-site `settings.ddev.php`),

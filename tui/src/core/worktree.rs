@@ -1077,6 +1077,8 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
         String::new()
     };
     let engine = super::site::db(ctx, old);
+    // The new name's database starts as a copy of the old one (kept below).
+    let seed = super::db::Seed::of_site(ctx, old);
     if served {
         out::info(format!(
             "Unserving '{old}' so it can be re-served as '{new}'..."
@@ -1098,7 +1100,15 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
         ],
     ) {
         // Put the site back as it was, rather than leave it unserved.
-        let restored = served && super::serve::serve(ctx, old, &php, Some(engine.clone())).is_ok();
+        let restored = served
+            && super::serve::serve(
+                ctx,
+                old,
+                &php,
+                Some(engine.clone()),
+                &super::db::Seed::Default,
+            )
+            .is_ok();
         let mut lines = vec![format!(
             "Could not move {} (it may be locked: git worktree unlock)",
             old_dir.display()
@@ -1116,7 +1126,7 @@ pub fn rename(ctx: &Ctx, old: &str, new: &str) -> Step {
     out::success(format!("Renamed worktree '{old}' to '{new}'"));
     if served {
         out::info(format!("Re-serving as '{new}' on PHP {php}..."));
-        if super::serve::serve(ctx, new, &php, Some(engine.clone())).is_err() {
+        if super::serve::serve(ctx, new, &php, Some(engine.clone()), &seed).is_err() {
             return Err(fail(&[
                 "The worktree was renamed, but re-serving failed".into(),
                 format!("  → ddev tryout worktree serve {new}"),

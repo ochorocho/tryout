@@ -61,6 +61,8 @@ pub fn worktree() -> String {
 \x20        --php 8.2   (add/serve: run this site on another PHP version)\n\
 \x20        --db postgres:16 (add/serve: type[:version] — mariadb, mysql, postgres, sqlite)\n\
 \x20        --switch    (serve --db: move a served site, its old database kept)\n\
+\x20        --db-from x (add/serve, a project: copy the database of site x — default @primary)\n\
+\x20        --db-empty  (add/serve, a project: start with an empty database)\n\
 \x20        --force     (remove: also drop an unmerged branch)\n\
 \x20        --yes       (remove: skip the confirmation)\n\
 \x20        --drop-db   (unserve: also drop the site's database)\n\

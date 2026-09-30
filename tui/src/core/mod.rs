@@ -1,6 +1,7 @@
 //! The add-on's own logic, shared by the command line (host and container side)
 //! and the terminal UI, one helper group per module.
 
+pub mod appenv;
 pub mod composer;
 pub mod contrib;
 pub mod ctx;

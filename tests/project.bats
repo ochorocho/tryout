@@ -13,14 +13,37 @@
 
 setup() {
   load setup.sh
-  # setup.sh configures a TYPO3 Core project; this one is a plain PHP app.
-  run ddev config --project-type=php --docroot=public
-  assert_success
-  # The first config made the Core docroot; this project has none of that.
+  # setup.sh configures a TYPO3 Core project; these are projects of their own.
+  # The first config made the Core docroot; none of them has that.
   rm -rf TYPO3-Instances
-  bash "${DIR}/tests/fixture-app.sh"
 }
 teardown() { load teardown.sh; }
+
+# The fixture app as a plain `php` project.
+fixture_project() {
+  run ddev config --project-type=php --docroot=public
+  assert_success
+  bash "${DIR}/tests/fixture-app.sh"
+}
+
+# One statement as root against a database of the project's server.
+sql() {
+  ddev exec mysql -uroot -proot -N "$1" -e "$2"
+}
+
+# A framework's own app, created by its installer, committed as a user's would be.
+framework_project() {
+  local type="$1" package="$2"
+  run ddev config --project-type="${type}" --docroot=public
+  assert_success
+  run ddev start -y
+  assert_success
+  run ddev composer create-project -n "${package}"
+  assert_success
+  git -c init.defaultBranch=main init -q
+  git add -A
+  git -c user.name=t -c user.email=t@t commit -qm "${type} app"
+}
 
 # What a site answers at its own hostname, from inside the web container.
 page() {
@@ -31,6 +54,7 @@ page() {
 # bats test_tags=project
 @test "install leaves a project of your own as it was" {
   set -eu -o pipefail
+  fixture_project
   run ddev add-on get "${DIR}"
   assert_success
   assert_output --partial "Not a TYPO3 Core checkout"
@@ -71,14 +95,23 @@ page() {
 # bats test_tags=project
 @test "two worktrees of a project are served side by side, each on its own database" {
   set -eu -o pipefail
+  fixture_project
   run ddev add-on get "${DIR}"
   assert_success
   run ddev start -y
   assert_success
+  sql db "CREATE TABLE seed (v VARCHAR(20)); INSERT INTO seed VALUES ('from-primary')"
 
-  # A local branch, no origin: the worktree starts from it.
+  # A local branch, no origin: the worktree starts from it — and its database
+  # as a copy of the primary's.
   run ddev tryout worktree add one feature --serve
   assert_success
+  run sql db_one "SELECT v FROM seed"
+  assert_output "from-primary"
+  # What the site writes stays in its own.
+  sql db_one "INSERT INTO seed VALUES ('from-one')"
+  run sql db "SELECT COUNT(*) FROM seed"
+  assert_output "1"
   run ddev tryout worktree add two main --serve --db sqlite
   assert_success
 
@@ -107,9 +140,12 @@ page() {
   assert_success
   assert_output --partial "one.${PROJNAME}.ddev.site"
 
-  # delete empties a site's database; the project's own is not tryout's.
+  # delete resets a site's database to a fresh copy; the project's own is not
+  # tryout's to wipe.
   run ddev tryout delete one --yes
   assert_success
+  run sql db_one "SELECT v FROM seed"
+  assert_output "from-primary"
   run ddev tryout delete --yes
   assert_failure
   assert_output --partial "project's own"
@@ -126,4 +162,70 @@ page() {
   assert_success
   assert_dir_not_exist "${TESTDIR}/worktrees/two"
   assert_dir_not_exist "${TESTDIR}/.ddev/tryout-sites/two"
+
+  # A kept database is served again as it was; --db-empty starts from nothing.
+  run ddev tryout worktree serve one
+  assert_success
+  run sql db_one "SELECT COUNT(*) FROM seed"
+  assert_output "1"
+  run ddev tryout worktree unserve one --drop-db
+  assert_success
+  run ddev tryout worktree serve one --db-empty
+  assert_success
+  run sql db_one "SHOW TABLES LIKE 'seed'"
+  assert_output ""
+  # --db-from copies another served site's.
+  run ddev tryout worktree add three main --serve --db-from one --no-restart
+  assert_success
+}
+
+# bats test_tags=project,db,laravel
+@test "a Laravel project's worktrees start from the primary's data and keep their own" {
+  set -eu -o pipefail
+  framework_project laravel laravel/laravel
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+  run ddev artisan migrate --force
+  assert_success
+  sql db "INSERT INTO users (name, email, password) VALUES ('primary', 'p@example.com', 'x')"
+
+  # .env is not committed: the worktree gets the project's (APP_KEY), and the
+  # site's own database from the environment.
+  run ddev tryout worktree add feat main --serve
+  assert_success
+  assert_file_exist "${TESTDIR}/worktrees/feat/.env"
+  run ddev tryout exec feat artisan tinker --execute='echo DB::connection()->getDatabaseName(), " ", DB::table("users")->value("name");'
+  assert_success
+  assert_output --partial "db_feat primary"
+
+  run ddev tryout exec feat artisan tinker --execute='DB::table("users")->insert(["name" => "feat", "email" => "f@example.com", "password" => "x"]);'
+  assert_success
+  run sql db "SELECT COUNT(*) FROM users"
+  assert_output "1"
+
+  run page "feat.${PROJNAME}.ddev.site"
+  assert_output --partial "Laravel"
+}
+
+# bats test_tags=project,db,symfony
+@test "a Symfony project's worktrees reach their own database through DATABASE_URL" {
+  set -eu -o pipefail
+  framework_project symfony symfony/skeleton
+  run ddev composer require -n symfony/orm-pack
+  assert_success
+  git add -A
+  git -c user.name=t -c user.email=t@t commit -qm "doctrine"
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+  sql db "CREATE TABLE seed (v VARCHAR(20)); INSERT INTO seed VALUES ('from-primary')"
+
+  run ddev tryout worktree add feat main --serve
+  assert_success
+  run ddev tryout exec feat bin/console dbal:run-sql "SELECT CONCAT(DATABASE(), ' ', v) AS x FROM seed"
+  assert_success
+  assert_output --partial "db_feat from-primary"
 }

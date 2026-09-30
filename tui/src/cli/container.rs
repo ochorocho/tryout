@@ -3,7 +3,7 @@
 //! error with the usage line. Nothing in here runs `ddev`.
 
 use crate::core::ctx::{Ctx, PRIMARY_SITE};
-use crate::core::db::{Db, Engine};
+use crate::core::db::{Db, Engine, Seed};
 use crate::core::kind::Mode;
 use crate::core::out::{self, BOLD, CYAN, DIM, GREEN, NC, TEXT, YELLOW};
 use crate::core::{
@@ -145,6 +145,7 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
                 return usage("ddev tryout worktree serve <name> [--php 8.2] [--db postgres]");
             }
             let db = engine_flag(flags)?;
+            let seed = seed_flag(ctx, flags)?;
             // --switch: a served site moves to another database server — unserved
             // first (its old database kept), then served on the new one, on the
             // PHP it had.
@@ -156,12 +157,17 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
                 if php.is_empty() {
                     php = site::php_version(ctx, name);
                 }
-                // Before the unserve: its hostname is not new, only reloaded.
+                // Before the unserve: its hostname is not new, only reloaded;
+                // and its data comes along where the new server can load it.
                 let before = webserver::restart_key(ctx);
+                let seed = match seed {
+                    Seed::Default => Seed::of_site(ctx, name),
+                    s => s,
+                };
                 step(serve::unserve(ctx, name, true))?;
-                return step(serve::serve_since(ctx, name, &php, db, Some(before)));
+                return step(serve::serve_since(ctx, name, &php, db, &seed, Some(before)));
             }
-            step(serve::serve(ctx, name, &php, db))
+            step(serve::serve(ctx, name, &php, db, &seed))
         }
         "unserve" => {
             let name = rest.first().map(String::as_str).unwrap_or("");
@@ -237,6 +243,31 @@ fn engine_flag(args: &[String]) -> Result<Option<Db>, Exit> {
     })
 }
 
+/// Where a new site database starts: `--db-empty`, `--db-from <site>` (the
+/// primary or a served site), or the default for the mode.
+fn seed_flag(ctx: &Ctx, args: &[String]) -> Result<Seed, Exit> {
+    let from = flag_value(args, "--db-from");
+    let empty = args.iter().any(|a| a == "--db-empty");
+    if (empty || !from.is_empty()) && !ctx.kind().seeds_databases() {
+        out::error("A TYPO3 site's database is set up by `typo3 setup`, not copied");
+        out::error("  → leave out --db-from and --db-empty");
+        return Err(Exit(1));
+    }
+    if empty {
+        return Ok(Seed::Empty);
+    }
+    if from.is_empty() {
+        return Ok(Seed::Default);
+    }
+    let from = site::for_name(ctx, &from);
+    if !site::is_served(ctx, &from) {
+        out::error(format!("No served site '{from}' to copy a database from"));
+        out::error("  → --db-from @primary   (the project's own)");
+        return Err(Exit(1));
+    }
+    Ok(Seed::of_site(ctx, &from))
+}
+
 fn basename(p: &std::path::Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -251,18 +282,22 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
         match a.as_str() {
             "--detach" => {}
             "--serve" => serve_it = true,
-            "--php" | "--db" => {
+            "--db-empty" => {}
+            "--php" | "--db" | "--db-from" => {
                 it.next();
             }
-            a if a.starts_with("--php=") || a.starts_with("--db=") => {}
+            a if a.starts_with("--php=")
+                || a.starts_with("--db=")
+                || a.starts_with("--db-from=") => {}
             a => branch = a.to_string(),
         }
     }
     let php = flag_value(args, "--php");
     let db = engine_flag(args)?;
+    let seed = seed_flag(ctx, args)?;
     step(worktree::validate_name(&name).map_err(crate::core::fail))?;
     // A named PHP version or database only takes effect on a served site.
-    if !php.is_empty() || db.is_some() {
+    if !php.is_empty() || db.is_some() || seed != Seed::Default {
         serve_it = true;
     }
     let _ = std::fs::create_dir_all(ctx.worktrees_dir());
@@ -274,7 +309,13 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
     step(worktree::add(ctx, &name, &branch))?;
     print("\n");
     if serve_it {
-        return step(serve::serve(ctx, &name, &php, db));
+        return step(serve::serve(ctx, &name, &php, db, &seed));
+    }
+    if ctx.mode() == Mode::Project {
+        print(&format!(
+            "  {DIM}→ ddev tryout worktree serve {name}    (give it its own URL){NC}\n"
+        ));
+        return Ok(());
     }
     print(&format!(
         "  {DIM}→ ddev tryout worktree use {name}      (switch the primary site){NC}\n\
@@ -602,7 +643,7 @@ fn delete(ctx: &Ctx, args: &[String]) -> Res {
     }
     print("\n");
     if ctx.mode() == Mode::Project {
-        out::success("Emptied — each app sets itself up again, as it did the first time.");
+        out::success("Reset — each site's database starts again from the primary's.");
         return Ok(());
     }
     out::success("Fresh setup complete!");

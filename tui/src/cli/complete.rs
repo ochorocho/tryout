@@ -205,6 +205,8 @@ fn worktree(ctx: &Ctx, l: &Line, o: &mut Out) {
                 php_versions(ctx, third, o);
             } else if l.prev == "--db" {
                 engines(ctx, o);
+            } else if l.prev == "--db-from" {
+                db_sources(ctx, o);
             } else {
                 if l.pos == 3 && !l.wants_flag() {
                     branches(ctx, o);
@@ -212,6 +214,7 @@ fn worktree(ctx: &Ctx, l: &Line, o: &mut Out) {
                 o.flag(l, "--serve", "serve it immediately");
                 o.flag(l, "--php", "run it on another PHP version");
                 o.flag(l, "--db", "run it on another database type");
+                seed_flags(ctx, l, o);
                 o.flag(l, "--no-restart", "skip the DDEV restart --serve needs");
             }
         }
@@ -242,12 +245,15 @@ fn worktree(ctx: &Ctx, l: &Line, o: &mut Out) {
                 php_versions(ctx, third, o);
             } else if l.prev == "--db" {
                 engines(ctx, o);
+            } else if l.prev == "--db-from" {
+                db_sources(ctx, o);
             } else {
                 if l.pos <= 2 && !l.wants_flag() {
                     worktrees(ctx, Mode::Unserved, o);
                 }
                 o.flag(l, "--php", "run this site on another PHP version");
                 o.flag(l, "--db", "run this site on another database type");
+                seed_flags(ctx, l, o);
                 o.flag(
                     l,
                     "--switch",
@@ -303,6 +309,26 @@ impl Out {
         if !l.on_line(flag) {
             self.c(flag, description);
         }
+    }
+}
+
+/// A project site's database starts as a copy; a TYPO3 site is set up.
+fn seed_flags(ctx: &Ctx, l: &Line, o: &mut Out) {
+    if ctx.kind().seeds_databases() {
+        o.flag(
+            l,
+            "--db-from",
+            "copy its database from this site (default: primary)",
+        );
+        o.flag(l, "--db-empty", "start with an empty database");
+    }
+}
+
+/// What `--db-from` copies: the project's own database, or a served site's.
+fn db_sources(ctx: &Ctx, o: &mut Out) {
+    o.c("@primary", "the project's own database");
+    for name in site::served_names(ctx) {
+        o.c(&name, "a served site");
     }
 }
 
