@@ -297,8 +297,8 @@ page() {
   run ddev tryout worktree add feat main --serve
   assert_success
   assert_output --partial "sites/default/settings.ddev.php for 'feat'"
-  # vendor/bin/drush is a shell proxy; exec runs PHP, so Drush's own script.
-  run ddev tryout exec feat vendor/drush/drush/drush status --field=db-name
+  # vendor/bin/drush and drush/drush are shell scripts; exec runs PHP.
+  run ddev tryout exec feat vendor/drush/drush/drush.php status --field=db-name
   assert_success
   assert_output "db_feat"
   run ddev drush status --field=db-name
