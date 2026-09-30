@@ -160,6 +160,62 @@ pub fn find(name: &str) -> Option<&'static Spec> {
     VERBS.iter().find(|s| s.name == name)
 }
 
+/// A verb's help line for this project: the table's, or its project-mode
+/// wording where the table's speaks of TYPO3 Core.
+pub fn help_for(spec: &Spec, ctx: &crate::core::ctx::Ctx) -> String {
+    let project = ctx.mode() == crate::core::kind::Mode::Project;
+    match spec.verb {
+        Verb::Launch => match ctx.backend_path() {
+            Some(p) => format!("Open a site in the browser (--backend for {p})"),
+            None => "Open a site in the browser".into(),
+        },
+        Verb::Worktree if project => "Manage side-by-side checkouts, each its own site".into(),
+        Verb::Delete if project => {
+            "Reset a site's database to a fresh copy of the primary's (--all for every site)".into()
+        }
+        _ => spec.help.into(),
+    }
+}
+
+/// A verb's TAB description for this project, like `help_for`.
+pub fn complete_for(spec: &Spec, ctx: &crate::core::ctx::Ctx) -> String {
+    let project = ctx.mode() == crate::core::kind::Mode::Project;
+    match spec.verb {
+        Verb::Worktree if project => "Manage side-by-side checkouts".into(),
+        Verb::Delete if project => "Reset a site's database to a fresh copy".into(),
+        _ => spec.complete.into(),
+    }
+}
+
+/// What to show as examples: this project type's typical commands.
+pub fn examples(ctx: &crate::core::ctx::Ctx) -> Vec<String> {
+    let backend = if ctx.backend_path().is_some() {
+        " --backend"
+    } else {
+        ""
+    };
+    let mut e = Vec::new();
+    if ctx.mode() == crate::core::kind::Mode::Core {
+        e.push("ddev tryout status".to_string());
+        e.push("ddev tryout worktree add v13 13.4 --serve".to_string());
+        e.push("ddev tryout patch 56947".to_string());
+        e.push("ddev tryout checkout 13.4".to_string());
+        if let Some(c) = ctx.cli() {
+            e.push(format!("ddev tryout {} v13 {}", c.verb, c.example));
+        }
+        e.push(format!("ddev tryout launch v13{backend}"));
+        return e;
+    }
+    e.push("ddev tryout worktree add feature-x feature/x --serve".to_string());
+    if let Some(c) = ctx.cli() {
+        e.push(format!("ddev tryout {} feature-x {}", c.verb, c.example));
+    }
+    e.push("ddev tryout worktree add --pr 42".to_string());
+    e.push(format!("ddev tryout launch feature-x{backend}"));
+    e.push("ddev tryout delete feature-x".to_string());
+    e
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -72,6 +72,23 @@ the command line.
 worktree has none. `.env` is usually not committed, but Laravel needs it for
 `APP_KEY`. The variables above replace its database lines.
 
+## Commands in this project
+
+Your framework's own tool is a tryout command: `ddev tryout artisan <site> …`
+runs it in that site, with the site's PHP and its own database.
+
+```bash
+# Run artisan in the site feat
+ddev tryout artisan feat migrate
+
+# And in the project's own site
+ddev tryout artisan @primary migrate
+```
+
+`ddev tryout launch feat` opens the site. There is no admin for `--backend` to open.
+
+See [commands per project type](/reference/commands#commands-per-project-type).
+
 ## What happens to the database
 
 A new site does not start empty. tryout copies the primary's database into it.

@@ -100,6 +100,13 @@ post_install_actions:
     fi
 
   - |
+    #ddev-description:Describe ddev tryout for this project type
+    # `ddev help tryout` shows the command file's Description and Example lines:
+    # the binary writes them for this project's type. Without a build, the
+    # shipped generic ones stay.
+    tryout/tryout __host-command .. >/dev/null 2>&1 || true
+
+  - |
     #ddev-description:Set the TYPO3 and Composer environment (TYPO3 Core only)
     # A project keeps its own: COMPOSER=composer.tryout.json would point its
     # `ddev composer` at a file it does not have. Ours is replaced on update; one

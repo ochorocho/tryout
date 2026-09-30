@@ -107,6 +107,97 @@ pub fn support(project_type: &str) -> (Support, &'static str) {
         ))
 }
 
+/// A framework's own command-line tool, offered as a tryout command named after
+/// it: `ddev tryout drush <site> …` runs `program` with the site's PHP, in the
+/// site, with its database — `exec` with the program filled in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cli {
+    pub verb: &'static str,
+    /// What PHP runs: a PHP file or a PHP archive (exec runs PHP).
+    pub program: &'static str,
+    pub about: &'static str,
+    /// An example after the site name, for help texts.
+    pub example: &'static str,
+}
+
+/// The CLI a type's site has. Only tools whose entry point PHP runs directly;
+/// the others stay with `exec`.
+pub fn cli(project_type: &str) -> Option<Cli> {
+    let c = |verb, program, about, example| Cli {
+        verb,
+        program,
+        about,
+        example,
+    };
+    Some(match project_type {
+        "typo3" => c(
+            "typo3",
+            "vendor/bin/typo3",
+            "TYPO3's console in a site",
+            "cache:flush",
+        ),
+        "drupal" | "drupal7" | "drupal8" | "drupal9" | "drupal10" | "drupal11" | "drupal12" => c(
+            "drush",
+            "vendor/drush/drush/drush.php",
+            "Drush in a site",
+            "status",
+        ),
+        "wordpress" | "wp-bedrock" => {
+            c("wp", "/usr/local/bin/wp", "WP-CLI in a site", "plugin list")
+        }
+        "laravel" => c("artisan", "artisan", "Artisan in a site", "migrate"),
+        "symfony" | "shopware6" => c(
+            "console",
+            "bin/console",
+            "The Symfony console in a site",
+            "cache:clear",
+        ),
+        "craftcms" => c(
+            "craft",
+            "craft",
+            "Craft's console in a site",
+            "project-config/apply",
+        ),
+        "codeigniter" => c("spark", "spark", "Spark in a site", "migrate"),
+        "cakephp" => c(
+            "cake",
+            "bin/cake.php",
+            "The Cake console in a site",
+            "migrations migrate",
+        ),
+        "magento2" => c(
+            "magento",
+            "bin/magento",
+            "bin/magento in a site",
+            "cache:flush",
+        ),
+        "joomla" => c(
+            "joomla",
+            "cli/joomla.php",
+            "Joomla's console in a site",
+            "cache:clean",
+        ),
+        _ => return None,
+    })
+}
+
+/// The admin below a site's URL, for `launch --backend`; None where the app
+/// has none, or where it is set per install (Magento 2).
+pub fn backend_path(project_type: &str) -> Option<&'static str> {
+    Some(match project_type {
+        "typo3" => "/typo3/",
+        "drupal" | "drupal7" | "drupal8" | "drupal9" | "drupal10" | "drupal11" | "drupal12"
+        | "backdrop" => "/user/login",
+        "drupal6" => "/user",
+        "wordpress" => "/wp-admin/",
+        "wp-bedrock" => "/wp/wp-admin/",
+        "shopware6" | "craftcms" | "silverstripe" | "magento" | "maho" => "/admin",
+        "joomla" => "/administrator/",
+        "modx" => "/manager/",
+        _ => return None,
+    })
+}
+
 /// Where tryout's snippet goes in the copy of DDEV's file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
@@ -391,6 +482,55 @@ mod tests {
                 .unwrap_or_else(|| panic!("{t}: no page linked"));
             let file = pages.join(format!("{}.md", link.split('#').next().unwrap()));
             assert!(file.is_file(), "{t}: {} is missing", file.display());
+        }
+    }
+
+    #[test]
+    fn each_type_has_its_own_cli_and_admin_or_none() {
+        let cli = |t: &str| cli(t).map(|c| c.verb);
+        for (t, want) in [
+            ("drupal11", Some("drush")),
+            ("drupal7", Some("drush")),
+            ("drupal6", None),
+            ("laravel", Some("artisan")),
+            ("symfony", Some("console")),
+            ("shopware6", Some("console")),
+            ("wordpress", Some("wp")),
+            ("wp-bedrock", Some("wp")),
+            ("typo3", Some("typo3")),
+            ("craftcms", Some("craft")),
+            ("codeigniter", Some("spark")),
+            ("cakephp", Some("cake")),
+            ("magento2", Some("magento")),
+            ("joomla", Some("joomla")),
+            ("silverstripe", None),
+            ("php", None),
+            ("generic", None),
+            ("", None),
+        ] {
+            assert_eq!(cli(t), want, "{t}");
+        }
+        // No tool's verb may shadow one of tryout's own.
+        for (t, ..) in MATRIX {
+            if let Some(c) = super::cli(t) {
+                assert!(crate::cli::verbs::find(c.verb).is_none(), "{t}: {}", c.verb);
+            }
+        }
+        assert_eq!(backend_path("drupal10"), Some("/user/login"));
+        assert_eq!(backend_path("wordpress"), Some("/wp-admin/"));
+        assert_eq!(backend_path("wp-bedrock"), Some("/wp/wp-admin/"));
+        assert_eq!(backend_path("typo3"), Some("/typo3/"));
+        assert_eq!(backend_path("shopware6"), Some("/admin"));
+        for none in [
+            "laravel",
+            "symfony",
+            "codeigniter",
+            "cakephp",
+            "magento2",
+            "php",
+            "",
+        ] {
+            assert_eq!(backend_path(none), None, "{none}");
         }
     }
 

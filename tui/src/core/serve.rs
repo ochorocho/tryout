@@ -517,9 +517,14 @@ pub fn serve_since(
             site::hostname(ctx, name)
         ));
     }
-    match ctx.kind().backend_path() {
-        Some(path) => out::print_line(&format!(
+    match ctx.backend_path() {
+        Some(path) if ctx.mode() == Mode::Core => out::print_line(&format!(
             "  {DIM}then: https://{}{path}  (admin / Password.1){NC}",
+            site::hostname(ctx, name)
+        )),
+        // A copy of the primary's database: the primary's logins.
+        Some(path) => out::print_line(&format!(
+            "  {DIM}then: https://{}{path}  (the primary's logins){NC}",
             site::hostname(ctx, name)
         )),
         None => out::print_line(&format!(

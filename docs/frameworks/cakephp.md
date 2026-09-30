@@ -55,6 +55,23 @@ Every site also gets tryout's own variables (see
 the worktree has none. DDEV writes CakePHP's settings into `config/.env`. tryout
 does **not** copy that file.
 
+## Commands in this project
+
+Your framework's own tool is a tryout command: `ddev tryout cake <site> …`
+runs it in that site, with the site's PHP and its own database.
+
+```bash
+# Run cake in the site feat
+ddev tryout cake feat migrations migrate
+
+# And in the project's own site
+ddev tryout cake @primary migrations migrate
+```
+
+`ddev tryout launch feat` opens the site. There is no admin for `--backend` to open.
+
+See [commands per project type](/reference/commands#commands-per-project-type).
+
 ## What happens to the database
 
 A new site does not start empty. tryout copies the primary's database into it.

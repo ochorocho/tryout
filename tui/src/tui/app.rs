@@ -588,6 +588,7 @@ impl App {
                 actions::project(),
             ]),
             self.kind(),
+            self.backend_path(),
         )
     }
 
@@ -1230,6 +1231,12 @@ impl App {
             return Effect::None;
         }
         self.open_form(FormKind::NewWorktree)
+    }
+
+    /// The admin path this project's sites have, for "Open backend": TYPO3's
+    /// in a Core checkout, the project type's (from .ddev/config.yaml) otherwise.
+    pub fn backend_path(&self) -> Option<&'static str> {
+        crate::core::ctx::Ctx::new(&self.root, crate::core::ctx::DdevEnv::default()).backend_path()
     }
 
     /// TYPO3 Core or a project of the user's own: what the menus offer.

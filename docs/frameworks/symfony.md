@@ -50,11 +50,11 @@ ddev tryout exec feat bin/console dbal:run-sql "SELECT DATABASE()"
 
 | Variable | Value |
 |---|---|
-| `DATABASE_URL` | `mysql://db:db@db:3306/db_<site>?serverVersion=11.8-MariaDB&charset=utf8mb4` |
+| `DATABASE_URL` | `mysql://db:db@db:3306/db_<site>?serverVersion=mariadb-11.8.0&charset=utf8mb4` |
 
 The value follows the site's database server:
 
-- MySQL: `serverVersion=8.4` (no `-MariaDB`).
+- MySQL: `serverVersion=8.4.0` (Doctrine DBAL 4 needs the full version).
 - PostgreSQL: `postgresql://db:db@<host>:5432/db_<site>?serverVersion=16&charset=utf8`.
 - SQLite: `sqlite:///` followed by the full path of the file.
 
@@ -65,6 +65,23 @@ Every site also gets tryout's other variables (see
 **Copied into the worktree:** `.env.local` and `.env` from your project, if the
 worktree has none. DDEV writes its `DATABASE_URL` into `.env.local`; the
 variable tryout sets wins over it.
+
+## Commands in this project
+
+Your framework's own tool is a tryout command: `ddev tryout console <site> …`
+runs it in that site, with the site's PHP and its own database.
+
+```bash
+# Run console in the site feat
+ddev tryout console feat cache:clear
+
+# And in the project's own site
+ddev tryout console @primary cache:clear
+```
+
+`ddev tryout launch feat` opens the site. There is no admin for `--backend` to open.
+
+See [commands per project type](/reference/commands#commands-per-project-type).
 
 ## What happens to the database
 

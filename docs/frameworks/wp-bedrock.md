@@ -61,6 +61,23 @@ Every site also gets tryout's own variables (`TRYOUT_*` and `DATABASE_URL`, see
 worktree has none. `.env` holds the salts. The variables above replace its
 database and URL lines.
 
+## Commands in this project
+
+Your framework's own tool is a tryout command: `ddev tryout wp <site> …`
+runs it in that site, with the site's PHP and its own database.
+
+```bash
+# Run wp in the site feat
+ddev tryout wp feat plugin list
+
+# And in the project's own site
+ddev tryout wp @primary plugin list
+```
+
+`ddev tryout launch feat --backend` opens the site's admin at `/wp/wp-admin/`.
+
+See [commands per project type](/reference/commands#commands-per-project-type).
+
 ## What happens to the database
 
 A new site does not start empty. tryout copies the primary's database into it.

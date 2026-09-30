@@ -83,8 +83,20 @@ pub fn candidates(ctx: &Ctx, argv: &[String]) -> String {
     let mut o = Out(String::new());
     match l.verb {
         "" | "''" => {
-            for v in VERBS {
-                o.c(v.name, v.complete);
+            // What this project has: TYPO3 Core's verbs only in a Core checkout,
+            // and the project type's own tool.
+            for v in VERBS.iter().filter(|v| ctx.kind().supports(v.name)) {
+                o.c(v.name, &super::verbs::complete_for(v, ctx));
+            }
+            if let Some(cli) = ctx.cli() {
+                o.c(cli.verb, cli.about);
+            }
+        }
+        v if ctx.cli().is_some_and(|c| c.verb == v) => {
+            if l.pos <= 1 {
+                sites(ctx, &mut o);
+            } else {
+                o.hint(&format!("arguments for {v}"));
             }
         }
         "ui" => {
@@ -136,17 +148,25 @@ pub fn candidates(ctx: &Ctx, argv: &[String]) -> String {
             if l.pos <= 1 && !l.wants_flag() {
                 sites(ctx, &mut o);
             }
-            o.flag(&l, "--backend", "open /typo3/ instead of the frontend");
+            if let Some(path) = ctx.backend_path() {
+                o.flag(
+                    &l,
+                    "--backend",
+                    &format!("open {path} instead of the home page"),
+                );
+            }
         }
         "exec" => {
             if l.pos <= 1 {
                 sites(ctx, &mut o);
             } else if l.pos == 2 {
-                o.hint(&format!("command to run in {}", l.sub));
-                o.c("typo3", "the TYPO3 console");
-                o.c("composer", "Composer in that site");
-                o.c("php", "that site's PHP");
-                o.c("bash", "a shell in that site");
+                // exec runs PHP: what it can run is a PHP file.
+                o.hint(&format!("what PHP runs in {}", l.sub));
+                if let Some(cli) = ctx.cli() {
+                    o.c(cli.program, cli.about);
+                }
+                o.c("/usr/local/bin/composer", "Composer in that site");
+                o.c("-r", "a line of PHP");
             }
         }
         "delete" => {
@@ -194,6 +214,10 @@ fn worktree(ctx: &Ctx, l: &Line, o: &mut Out) {
                     ("branches", "the branches a worktree can be based on"),
                     ("help", "show help"),
                 ] {
+                    // `use` rewrites Core's overlay: a project has none.
+                    if !ctx.kind().supports(&format!("worktree {v}")) {
+                        continue;
+                    }
                     o.c(v, d);
                 }
             }
@@ -547,9 +571,42 @@ mod tests {
     fn every_verb_is_offered_described() {
         let (_d, ctx) = project();
         let got = names(&ctx, "''");
-        assert_eq!(got, VERBS.iter().map(|v| v.name).collect::<Vec<_>>());
+        // Every verb in a Core checkout, and TYPO3's console as its own.
+        let mut want: Vec<String> = VERBS.iter().map(|v| v.name.to_string()).collect();
+        want.push("typo3".into());
+        assert_eq!(got, want);
         // A partly typed verb is not a verb: the list is the same, cobra filters.
         assert_eq!(names(&ctx, "st"), got);
+    }
+
+    #[test]
+    fn a_drupal_project_completes_drupals_commands_only() {
+        let d = crate::core::ctx::tests::project_repo();
+        // Completion gets no DDEV_* variables: the type comes from config.yaml.
+        std::fs::create_dir_all(d.path().join(".ddev")).unwrap();
+        std::fs::write(
+            d.path().join(".ddev/config.yaml"),
+            "name: shop\ntype: drupal11\ndocroot: web\n",
+        )
+        .unwrap();
+        let ctx = Ctx::new(d.path(), DdevEnv::default());
+        let got = names(&ctx, "''");
+        assert_eq!(
+            got,
+            [
+                "status", "worktree", "exec", "launch", "ui", "delete", "help", "drush"
+            ]
+        );
+        assert!(complete(&ctx, "launch x -").contains("--backend\topen /user/login"));
+        let exec = names(&ctx, "exec x ''");
+        assert_eq!(exec[0], "vendor/drush/drush/drush.php");
+        assert!(!names(&ctx, "worktree ''").contains(&"use".to_string()));
+
+        // Laravel has no admin to open.
+        std::fs::write(d.path().join(".ddev/config.yaml"), "type: laravel\n").unwrap();
+        let ctx = Ctx::new(d.path(), DdevEnv::default());
+        assert!(names(&ctx, "''").contains(&"artisan".to_string()));
+        assert!(!complete(&ctx, "launch x -").contains("--backend"));
     }
 
     #[test]

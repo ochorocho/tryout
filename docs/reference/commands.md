@@ -56,6 +56,48 @@ primary, or reads one line from standard input.
 | 64 | Internal: the container side got a verb it does not know. |
 | 69 | There is no tryout build for this machine. Builds exist for macOS and Linux only. |
 
+## Commands per project type
+
+tryout shows only the commands that make sense for your project, in `ddev
+tryout help`, in tab completion, in `ddev help tryout` and in the terminal UI.
+
+- **Every project** has `status`, `help`, `worktree`, `exec`, `launch`, `ui`
+  and `delete`. In a project of your own, `delete` resets a site's database to
+  a fresh copy of the primary's.
+- **Only a TYPO3 Core checkout** has `download`, `checkout`, `composer`,
+  `patch`, `reset`, `cs` and `worktree use`. They work on the Core clone, its
+  Composer overlay or Gerrit, which a project of your own does not have.
+- **Your framework's own tool** is a tryout command named after it. It runs in a
+  site, with the site's PHP and its own database: `ddev tryout drush feat
+  status` is the same as `ddev tryout exec feat vendor/drush/drush/drush.php
+  status`. Use `@primary` for the project's own site.
+- **`launch --backend`** opens the admin of your framework, where it has one.
+
+| Project type | Tool command | Runs | `launch --backend` opens |
+|---|---|---|---|
+| TYPO3 Core checkout | `typo3` | `vendor/bin/typo3` | `/typo3/` |
+| `typo3` (a TYPO3 site) | `typo3` | `vendor/bin/typo3` | `/typo3/` |
+| `drupal`, `drupal7` – `drupal12` | `drush` | `vendor/drush/drush/drush.php` | `/user/login` |
+| `drupal6` | — | — | `/user` |
+| `backdrop` | — | — | `/user/login` |
+| `wordpress` | `wp` | `/usr/local/bin/wp` (WP-CLI) | `/wp-admin/` |
+| `wp-bedrock` | `wp` | `/usr/local/bin/wp` (WP-CLI) | `/wp/wp-admin/` |
+| `laravel` | `artisan` | `artisan` | — |
+| `symfony` | `console` | `bin/console` | — |
+| `shopware6` | `console` | `bin/console` | `/admin` |
+| `craftcms` | `craft` | `craft` | `/admin` |
+| `codeigniter` | `spark` | `spark` | — |
+| `cakephp` | `cake` | `bin/cake.php` | — |
+| `silverstripe` | — | — | `/admin` |
+| `magento2` | `magento` | `bin/magento` | — (the admin path is set per install) |
+| `magento`, `maho` | — | — | `/admin` |
+| `joomla` | `joomla` | `cli/joomla.php` | `/administrator/` |
+| `modx` | — | — | `/manager/` |
+| `asterios`, `php`, `generic` | — | — | — |
+
+Where a type has no tool command, `exec` runs any PHP file in the site:
+`ddev tryout exec feat vendor/bin/sake db:build`.
+
 ## status
 
 Shows an overview of the project.

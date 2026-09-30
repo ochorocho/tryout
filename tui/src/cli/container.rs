@@ -25,7 +25,7 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
             let lines = status::body(ctx, &patch::configured());
             print(&format!(
                 "\n{}\n",
-                status::boxed("TYPO3 tryout — Status", &lines)
+                status::boxed(status::title(ctx), &lines)
             ));
             Ok(())
         }
@@ -656,7 +656,7 @@ fn list(ctx: &Ctx, flag: &str) -> Res {
         }
         // The machine-readable contract other tools parse (tests/e2e).
         "--plain" => {
-            s.push_str(&format!("\n{BOLD}Core worktrees{NC}\n"));
+            s.push_str(&format!("\n{BOLD}{}{NC}\n", worktrees_title(ctx)));
             s.push_str(&plain_row([
                 "NAME", "HEAD", "BRANCH", "STATE", "PHP", "DB", "URL",
             ]));
@@ -689,7 +689,8 @@ fn list(ctx: &Ctx, flag: &str) -> Res {
         "" => {
             let rows = worktree::rows(ctx);
             s.push_str(&format!(
-                "\n{BOLD}{TEXT}Core worktrees{NC} {DIM}{TEXT}· {}{NC}\n",
+                "\n{BOLD}{TEXT}{}{NC} {DIM}{TEXT}· {}{NC}\n",
+                worktrees_title(ctx),
                 rows.len()
             ));
             for r in &rows {
@@ -703,11 +704,25 @@ fn list(ctx: &Ctx, flag: &str) -> Res {
             return Err(Exit(1));
         }
     }
+    let primary = if ctx.kind().supports("worktree use") {
+        "the primary is whichever worktree 'use' points at"
+    } else {
+        "the primary is the project itself, at its own URL"
+    };
     s.push_str(&format!(
-        "\n  {DIM}served sites have their own URL, PHP and database;{NC}\n  {DIM}the primary is whichever worktree 'use' points at{NC}\n\n"
+        "\n  {DIM}served sites have their own URL, PHP and database;{NC}\n  {DIM}{primary}{NC}\n\n"
     ));
     print(&s);
     Ok(())
+}
+
+/// "Core worktrees" in a Core checkout (the --plain header tests parse), plain
+/// "Worktrees" in a project of one's own.
+fn worktrees_title(ctx: &Ctx) -> &'static str {
+    match ctx.mode() {
+        Mode::Core => "Core worktrees",
+        Mode::Project => "Worktrees",
+    }
 }
 
 /// `  %-12s %-12s %-12s %-6s %-5s %-10s %s`

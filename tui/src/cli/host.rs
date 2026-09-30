@@ -31,9 +31,14 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
         Some((a, r)) => (a.as_str(), r),
         None => ("help", &[][..]),
     };
+    // The site's own CLI, named after the tool: `drush feat status` is
+    // `exec feat vendor/drush/drush/drush.php status`.
+    if let Some(cli) = ctx.cli().filter(|c| c.verb == action) {
+        return run_cli(ctx, cli, rest);
+    }
     let Some(spec) = verbs::find(action) else {
         out::error(format!("Unknown command: {action}"));
-        print(&help::main(ctx.kind()));
+        print(&help::main(ctx));
         return Err(Exit(1));
     };
     available(ctx, spec.name)?;
@@ -41,7 +46,7 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
         Verb::Status => status(ctx, rest),
         Verb::Help => {
             reject_args("help", rest)?;
-            print(&help::main(ctx.kind()));
+            print(&help::main(ctx));
             Ok(())
         }
         Verb::Launch => launch(ctx, rest),
@@ -97,7 +102,7 @@ fn status(ctx: &Ctx, args: &[String]) -> Res {
         ];
         print(&format!(
             "\n{}\n",
-            status::boxed("TYPO3 tryout — Status", &lines)
+            status::boxed(status::title(ctx), &lines)
         ));
         return Ok(());
     }
@@ -129,12 +134,12 @@ fn launch(ctx: &Ctx, args: &[String]) -> Res {
         match a.as_str() {
             "--backend" | "-b" => backend = true,
             "-h" | "--help" => {
-                print(&help::launch());
+                print(&help::launch(ctx));
                 return Ok(());
             }
             a if a.starts_with('-') => {
                 out::error(format!("Unknown option: {a}"));
-                print(&help::launch());
+                print(&help::launch(ctx));
                 return Err(Exit(1));
             }
             a => target = a.to_string(),
@@ -174,8 +179,15 @@ fn launch(ctx: &Ctx, args: &[String]) -> Res {
         format!("https://{}", site::hostname(ctx, &target))
     };
     if backend {
-        let Some(path) = ctx.kind().backend_path() else {
-            out::error(format!("{} has no backend to open", ctx.kind().label()));
+        let Some(path) = ctx.backend_path() else {
+            out::error(format!(
+                "A {} site has no admin to open",
+                if ctx.env.project_type.is_empty() {
+                    "project"
+                } else {
+                    &ctx.env.project_type
+                }
+            ));
             out::error("  → ddev tryout launch   opens the site");
             return Err(Exit(1));
         };
@@ -550,6 +562,32 @@ fn delete(ctx: &Ctx, args: &[String]) -> Res {
     delegate(ctx, &a)
 }
 
+/// `<tool> <site> <args…>`: the tool's program through `exec`.
+fn run_cli(ctx: &Ctx, cli: crate::core::types::Cli, args: &[String]) -> Res {
+    let Some((site_name, rest)) = args.split_first() else {
+        out::error(format!(
+            "Usage: ddev tryout {} <site> <arguments>",
+            cli.verb
+        ));
+        out::error(format!(
+            "  → ddev tryout {} @primary {}   (@primary: the project's own site)",
+            cli.verb, cli.example
+        ));
+        return Err(Exit(1));
+    };
+    let mut a = vec![site_name.clone(), cli.program.to_string()];
+    a.extend(rest.iter().cloned());
+    exec(ctx, &a)
+}
+
+/// What `exec` examples show: the type's own tool where it has one.
+fn exec_example(ctx: &Ctx) -> String {
+    match ctx.cli() {
+        Some(c) => format!("{} {}", c.program, c.example),
+        None => "-r 'echo PHP_VERSION, PHP_EOL;'".into(),
+    }
+}
+
 fn exec(ctx: &Ctx, args: &[String]) -> Res {
     let mut target = args.first().cloned().unwrap_or_default();
     let mut cmd: Vec<String> = args.iter().skip(1).cloned().collect();
@@ -568,7 +606,7 @@ fn exec(ctx: &Ctx, args: &[String]) -> Res {
     if !target.is_empty() && cmd.is_empty() && prompt::have_tty() {
         let typed = prompt::ask_text(
             &format!("Command to run in {target} (after php)"),
-            "vendor/bin/typo3 cache:flush",
+            &format!("e.g. {}", exec_example(ctx)),
         )
         .ok_or_else(|| {
             explain_missing(usage);
@@ -584,8 +622,9 @@ fn exec(ctx: &Ctx, args: &[String]) -> Res {
             .map(|n| format!(", {n}"))
             .collect();
         print(&format!(
-            "\n  Examples:\n    ddev tryout exec v13 vendor/bin/typo3 cache:flush\n\
-\x20   ddev tryout exec v13 /usr/local/bin/composer show typo3/cms-core\n\n  Sites: primary{sites}\n"
+            "\n  Examples:\n    ddev tryout exec <site> {}\n\
+\x20   ddev tryout exec <site> /usr/local/bin/composer show\n\n  Sites: primary{sites}\n",
+            exec_example(ctx)
         ));
         return Err(Exit(1));
     }
@@ -710,7 +749,7 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
             delegate(ctx, &a)
         }
         "help" | "-h" | "--help" => {
-            print(&help::worktree(ctx.kind()));
+            print(&help::worktree(ctx));
             Ok(())
         }
         "add" => worktree_add(ctx, rest),
@@ -795,7 +834,7 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
         }
         _ => {
             out::error(format!("Unknown worktree command: {sub}"));
-            print(&help::worktree(ctx.kind()));
+            print(&help::worktree(ctx));
             Err(Exit(1))
         }
     }

@@ -530,6 +530,7 @@ fake_project() {
     'worktree branches --json'
     'worktree use' 'worktree serve [a-z0-9-]+ --php' 'worktree serve [a-z0-9-]+ --db' 'worktree serve .*--switch'
     'worktree add .*--db' 'worktree add .*--db-from' 'worktree serve .*--db-empty' 'worktree add .*--pr'
+    'drush [a-z]' 'artisan [a-z]' 'wp [a-z]' 'console [a-z]' 'typo3 [a-z@]'
     'worktree unserve [a-z0-9-]+$'
     'worktree unserve .*--drop-db' 'worktree rename'
     'worktree remove [a-z0-9-]+$' 'worktree remove .*--yes'

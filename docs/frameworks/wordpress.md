@@ -69,6 +69,23 @@ primary does not get them, so DDEV's settings still apply there.
 the copied database still stores the primary's URL. (DDEV works out
 `WP_SITEURL` from the folder, which gives a wrong result inside a worktree.)
 
+## Commands in this project
+
+Your framework's own tool is a tryout command: `ddev tryout wp <site> …`
+runs it in that site, with the site's PHP and its own database.
+
+```bash
+# Run wp in the site feat
+ddev tryout wp feat plugin list
+
+# And in the project's own site
+ddev tryout wp @primary plugin list
+```
+
+`ddev tryout launch feat --backend` opens the site's admin at `/wp-admin/`.
+
+See [commands per project type](/reference/commands#commands-per-project-type).
+
 ## What happens to the database
 
 A new site does not start empty. tryout copies the primary's database into it.

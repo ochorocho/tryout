@@ -23,6 +23,8 @@ pub enum FormKind {
     DropDb(String),
     Reset(String),
     FreshInstall(String),
+    /// A project site's reset: its database, a fresh copy of the primary's.
+    ResetDatabase(String),
     Exec(String),
     Patch(String),
     /// A project's open pull/merge requests, one opened as a served worktree.
@@ -218,12 +220,20 @@ impl Form {
                     "Content, users and uploads are lost.".into(),
                 ],
             ),
+            FormKind::ResetDatabase(n) => (
+                format!("Reset the database of {n}?"),
+                vec![],
+                vec![
+                    "Throws its database away and copies the primary's again.".into(),
+                    "What the site wrote since is lost.".into(),
+                ],
+            ),
             FormKind::Exec(n) => (
                 format!("Run a command in {n}"),
                 vec![Field::Text {
                     label: "Command, run with the site's own PHP",
                     value: String::new(),
-                    hint: "e.g. vendor/bin/typo3 cache:flush — quote as in a shell",
+                    hint: "a PHP file and its arguments, e.g. bin/console cache:clear — quote as in a shell",
                 }],
                 vec![],
             ),
@@ -621,6 +631,10 @@ impl Form {
             FormKind::FreshInstall(n) => {
                 job(format!("Fresh install {n}"), format!("delete {n} --yes"))
             }
+            FormKind::ResetDatabase(n) => job(
+                format!("Reset the database of {n}"),
+                format!("delete {n} --yes"),
+            ),
             FormKind::Exec(n) => {
                 let words = split_args(&self.text(0))?;
                 if words.is_empty() {

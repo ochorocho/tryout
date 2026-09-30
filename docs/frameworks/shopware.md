@@ -78,6 +78,23 @@ bin/console theme:compile
 If one of them fails, the site is still served, and tryout warns you that the
 storefront may still link to the primary's URL.
 
+## Commands in this project
+
+Your framework's own tool is a tryout command: `ddev tryout console <site> …`
+runs it in that site, with the site's PHP and its own database.
+
+```bash
+# Run console in the site feat
+ddev tryout console feat cache:clear
+
+# And in the project's own site
+ddev tryout console @primary cache:clear
+```
+
+`ddev tryout launch feat --backend` opens the site's admin at `/admin`.
+
+See [commands per project type](/reference/commands#commands-per-project-type).
+
 ## What happens to the database
 
 A new site does not start empty. tryout copies the primary's database into it.

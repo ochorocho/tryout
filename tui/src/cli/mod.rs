@@ -33,10 +33,28 @@ pub fn main(args: Vec<String>) -> i32 {
         Some("__post-start") => {
             let mut ctx = Ctx::from_env(approot().unwrap_or_else(|| PathBuf::from(CONTAINER_ROOT)));
             ctx.in_container = true;
+            // `ddev config --project-type` may have changed it since install.
+            let _ = help::write_host_command(&ctx);
             if crate::core::poststart::run(&ctx).is_ok() {
                 0
             } else {
                 1
+            }
+        }
+        // The `ddev help` header for this project's type (install, post-start).
+        Some("__host-command") => {
+            let root = args
+                .get(1)
+                .map(PathBuf::from)
+                .or_else(approot)
+                .unwrap_or_else(|| PathBuf::from("."));
+            let ctx = crate::core::ctx::Ctx::from_env(root);
+            match help::write_host_command(&ctx) {
+                Ok(_) => 0,
+                Err(e) => {
+                    eprintln!("tryout: could not write .ddev/commands/host/tryout: {e}");
+                    1
+                }
             }
         }
         // What the install asks before it touches anything: `core` or `project`.

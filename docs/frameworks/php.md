@@ -60,7 +60,7 @@ Every served site gets these variables, whatever its type:
 | `TRYOUT_DB_HOST` | `db`, or the site's own database server (for example `tryout-postgres-16`) |
 | `TRYOUT_DB_PORT` | `3306` or `5432` |
 | `TRYOUT_DB_USER`, `TRYOUT_DB_PASSWORD` | `db`, `db` |
-| `DATABASE_URL` | for example `mysql://db:db@db:3306/db_feat?serverVersion=11.8-MariaDB&charset=utf8mb4` |
+| `DATABASE_URL` | for example `mysql://db:db@db:3306/db_feat?serverVersion=mariadb-11.8.0&charset=utf8mb4` |
 | `TRYOUT_URL` | `https://<site>.<project>.ddev.site` |
 | `TRYOUT_SITE` | the site's name |
 
@@ -77,6 +77,15 @@ The web server passes the variables to PHP; read them with `getenv()` or
 worktree has none. These files are usually not committed. The variables above
 still win over them, as long as your `.env` loader does not replace existing
 variables (most do not).
+
+## Commands in this project
+
+This type has no tool command in tryout. Run any PHP file in a site with
+`ddev tryout exec <site> <file> …`.
+
+`ddev tryout launch feat` opens the site. There is no admin for `--backend` to open.
+
+See [commands per project type](/reference/commands#commands-per-project-type).
 
 ## What happens to the database
 

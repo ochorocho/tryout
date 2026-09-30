@@ -402,15 +402,16 @@ pub fn project() -> Vec<Entry> {
 /// What this kind of project can do: a project has no Core to update, patch
 /// or reset, no overlay and no backend of tryout's knowing, and its "fresh
 /// install" is an empty database. Separators left doubled are dropped.
-pub fn for_kind(entries: Vec<Entry>, kind: &dyn ProjectKind) -> Vec<Entry> {
+/// `backend`: the admin path the project's sites have (`/typo3/`,
+/// `/user/login` …), or None, and the "Open backend" entry goes.
+pub fn for_kind(entries: Vec<Entry>, kind: &dyn ProjectKind, backend: Option<&str>) -> Vec<Entry> {
     let supported = |a: &Action| {
         let verb = match a.args.as_slice() {
             [w, sub, ..] if w == "worktree" => format!("{w} {sub}"),
             [v, ..] => v.clone(),
             [] => String::new(),
         };
-        kind.supports(&verb)
-            && (kind.backend_path().is_some() || !a.args.iter().any(|x| x == "--backend"))
+        kind.supports(&verb) && (backend.is_some() || !a.args.iter().any(|x| x == "--backend"))
     };
     let mut out: Vec<Entry> = Vec::new();
     for e in entries {
@@ -423,6 +424,15 @@ pub fn for_kind(entries: Vec<Entry>, kind: &dyn ProjectKind) -> Vec<Entry> {
             Entry::Action(mut a) if kind.seeds_databases() && a.args[0] == "delete" => {
                 a.label = "Reset its database…".into();
                 a.hint = "a fresh copy of the primary's".into();
+                if let Run::Form(FormKind::FreshInstall(n)) = a.run {
+                    a.run = Run::Form(FormKind::ResetDatabase(n));
+                }
+                out.push(Entry::Action(a));
+            }
+            Entry::Action(mut a) if a.args.iter().any(|x| x == "--backend") => {
+                if let Some(path) = backend {
+                    a.hint = format!("{path} in the browser");
+                }
                 out.push(Entry::Action(a));
             }
             // TYPO3's version notes are Core's business.
@@ -472,7 +482,11 @@ mod tests {
     fn a_project_is_offered_only_what_it_can_do() {
         use crate::core::kind::{GENERIC_PROJECT, TYPO3_CORE};
         let menu = |w: &Worktree, kind: &dyn ProjectKind| {
-            for_kind(join([for_worktree(w, &maria()), project()]), kind)
+            for_kind(
+                join([for_worktree(w, &maria()), project()]),
+                kind,
+                kind.backend_path(),
+            )
         };
         let lines = |entries: &[Entry]| -> Vec<String> {
             entries
@@ -520,7 +534,7 @@ mod tests {
 
         // Pull requests: a project's; TYPO3 Core has Gerrit.
         let pr = |kind: &dyn ProjectKind| {
-            lines(&for_kind(project(), kind))
+            lines(&for_kind(project(), kind, None))
                 .iter()
                 .any(|l| l.contains("--pr"))
         };
@@ -538,6 +552,39 @@ mod tests {
             .map(|a| a.hint)
             .collect();
         assert!(hints.iter().all(|h| !h.contains("TYPO3")), "{hints:?}");
+    }
+
+    #[test]
+    fn a_projects_menu_opens_its_own_admin_and_resets_its_database() {
+        use crate::core::kind::GENERIC_PROJECT;
+        let served = fixture()
+            .into_iter()
+            .find(|w| w.served() && !w.primary)
+            .unwrap();
+        let find = |entries: &[Entry], arg: &str| -> Option<Action> {
+            entries.iter().find_map(|e| match e {
+                Entry::Action(a) if a.args.iter().any(|x| x == arg) => Some(a.clone()),
+                _ => None,
+            })
+        };
+        // A Drupal site: its admin is /user/login.
+        let drupal = for_kind(
+            for_worktree(&served, &maria()),
+            &GENERIC_PROJECT,
+            Some("/user/login"),
+        );
+        assert_eq!(
+            find(&drupal, "--backend").unwrap().hint,
+            "/user/login in the browser"
+        );
+        let reset = find(&drupal, "delete").unwrap();
+        assert_eq!(
+            reset.run,
+            Run::Form(FormKind::ResetDatabase(served.name.clone()))
+        );
+        // A Laravel site has none: no entry for it.
+        let laravel = for_kind(for_worktree(&served, &maria()), &GENERIC_PROJECT, None);
+        assert!(find(&laravel, "--backend").is_none());
     }
 
     fn claim(line: &str) -> Claim {

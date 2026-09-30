@@ -40,6 +40,17 @@ tested by tryout's CI.
 
 The `add-on get` line installs tryout from its development branch. Once tryout is released, use `ddev add-on get bmack/tryout` instead.
 
+## Commands in these projects
+
+Even served only, each type gets what tryout can offer:
+
+| Type | Tool command | `launch --backend` opens |
+|---|---|---|
+| `joomla` | `ddev tryout joomla <site> …` (`cli/joomla.php`) | `/administrator/` |
+| `magento2` | `ddev tryout magento <site> …` (`bin/magento`) | — (the admin path is set per install) |
+| `magento`, `maho` | — | `/admin` |
+| `modx` | — | `/manager/` |
+
 ## What works
 
 Everything that does not depend on the app's own configuration:

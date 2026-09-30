@@ -321,7 +321,7 @@ mod tests {
                 ("TRYOUT_DB_PASSWORD", "db"),
                 (
                     "DATABASE_URL",
-                    "mysql://db:db@db:3306/db_feat_x?serverVersion=11.8-MariaDB&charset=utf8mb4"
+                    "mysql://db:db@db:3306/db_feat_x?serverVersion=mariadb-11.8.0&charset=utf8mb4"
                 ),
                 ("TRYOUT_URL", "https://feat-x..ddev.site"),
             ])

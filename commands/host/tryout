@@ -2,9 +2,11 @@
 #ddev-silent-no-warn
 #ddev-generated
 
-## Description: TYPO3 development toolkit — manage Core, patches, and extensions
+## Description: Every branch of this project, served side by side
 ## Usage: tryout [command] [args]
-## Example: "ddev tryout status\nddev tryout download\nddev tryout patch 56947\nddev tryout reset\nddev tryout delete"
+## Example: "ddev tryout status\nddev tryout worktree add feature-x feature/x --serve\nddev tryout help"
+# Description and Example are this project type's: tryout writes them at
+# install and on every start (`tryout __host-command`).
 # NO ## AutocompleteTerms: header on purpose. It sets cobra's ValidArgs, which
 # then rejects any second argument during completion — so ValidArgsFunction,
 # i.e. commands/host/autocomplete/tryout, is never called and

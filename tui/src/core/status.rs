@@ -5,6 +5,15 @@ use super::kind::Mode;
 use super::out::{BOLD, CYAN, DIM, GREEN, NC, RED, TEXT, YELLOW};
 use super::{contrib, git, worktree};
 
+/// The report's frame title: TYPO3 tryout for a Core checkout, tryout for a
+/// project of one's own.
+pub fn title(ctx: &Ctx) -> &'static str {
+    match ctx.mode() {
+        Mode::Core => "TYPO3 tryout — Status",
+        Mode::Project => "tryout — Status",
+    }
+}
+
 /// The report's lines, framed by the caller.
 pub fn body(ctx: &Ctx, patches: &str) -> Vec<String> {
     let ok = format!("{GREEN}✓{TEXT}");

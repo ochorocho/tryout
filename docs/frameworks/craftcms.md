@@ -63,6 +63,23 @@ also gets tryout's own variables (`TRYOUT_*` and `DATABASE_URL`, see
 **Copied into the worktree:** `.env` and `.env.local` from your project, if the
 worktree has none.
 
+## Commands in this project
+
+Your framework's own tool is a tryout command: `ddev tryout craft <site> …`
+runs it in that site, with the site's PHP and its own database.
+
+```bash
+# Run craft in the site feat
+ddev tryout craft feat project-config/apply
+
+# And in the project's own site
+ddev tryout craft @primary project-config/apply
+```
+
+`ddev tryout launch feat --backend` opens the site's admin at `/admin`.
+
+See [commands per project type](/reference/commands#commands-per-project-type).
+
 ## What happens to the database
 
 A new site does not start empty. tryout copies the primary's database into it.

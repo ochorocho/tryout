@@ -59,6 +59,15 @@ if (getenv('TRYOUT_DB_NAME')) {
 The web server and `ddev tryout exec` set these variables for each site. The
 primary does not get them, so DDEV's settings still apply there.
 
+## Commands in this project
+
+This type has no tool command in tryout. Run any PHP file in a site with
+`ddev tryout exec <site> <file> …`.
+
+`ddev tryout launch feat --backend` opens the site's admin at `/user/login`.
+
+See [commands per project type](/reference/commands#commands-per-project-type).
+
 ## What happens to the database
 
 A new site does not start empty. tryout copies the primary's database into it.

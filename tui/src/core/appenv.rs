@@ -140,29 +140,35 @@ pub fn vars(project_type: &str, site: &SiteDb, url: &str) -> Vec<(&'static str, 
 }
 
 /// The Doctrine-style URL (Symfony, Shopware, CakePHP read it as is), with
-/// `serverVersion` so Doctrine need not ask the server.
+/// `serverVersion` so Doctrine need not ask the server. DBAL 4 takes a MariaDB
+/// or MySQL version only as major.minor.patch ("mariadb-11.8.0"): a bare
+/// "11.8-MariaDB" fails every query with InvalidPlatformVersion.
 pub fn database_url(site: &SiteDb) -> String {
     let (db, host, name) = (site.db, site.host, site.name);
     let port = db.engine.port();
-    let version = |suffix: &str| {
+    let version = |v: String| {
         if db.version.is_empty() {
             String::new()
         } else {
-            format!("serverVersion={}{suffix}&", db.version)
+            format!("serverVersion={v}&")
         }
+    };
+    let full = || {
+        let dots = db.version.matches('.').count();
+        format!("{}{}", db.version, ".0".repeat(2usize.saturating_sub(dots)))
     };
     match db.engine {
         Engine::Mariadb => format!(
             "mysql://db:db@{host}:{port}/{name}?{}charset=utf8mb4",
-            version("-MariaDB")
+            version(format!("mariadb-{}", full()))
         ),
         Engine::Mysql => format!(
             "mysql://db:db@{host}:{port}/{name}?{}charset=utf8mb4",
-            version("")
+            version(full())
         ),
         Engine::Postgres => format!(
             "postgresql://db:db@{host}:{port}/{name}?{}charset=utf8",
-            version("")
+            version(db.version.clone())
         ),
         // An absolute path after `sqlite:///`.
         Engine::Sqlite => format!("sqlite:///{name}"),
@@ -197,7 +203,7 @@ mod tests {
         let symfony = vars("symfony", &site, url);
         assert_eq!(
             get(&symfony, "DATABASE_URL"),
-            Some("mysql://db:db@db:3306/db_one?serverVersion=11.8-MariaDB&charset=utf8mb4")
+            Some("mysql://db:db@db:3306/db_one?serverVersion=mariadb-11.8.0&charset=utf8mb4")
         );
         assert_eq!(get(&symfony, "DB_DATABASE"), None);
 
@@ -243,7 +249,7 @@ mod tests {
         );
         assert_eq!(
             url("mysql:8.4", "tryout-mysql-8-4", "db_my"),
-            "mysql://db:db@tryout-mysql-8-4:3306/db_my?serverVersion=8.4&charset=utf8mb4"
+            "mysql://db:db@tryout-mysql-8-4:3306/db_my?serverVersion=8.4.0&charset=utf8mb4"
         );
         assert_eq!(
             url(

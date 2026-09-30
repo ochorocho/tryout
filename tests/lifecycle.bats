@@ -227,7 +227,7 @@ addon_start() {
   assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
   assert_backend_loads "https://v13.${PROJNAME}.ddev.site/typo3/"
 
-  run ddev tryout exec v13 vendor/bin/typo3 --version
+  run ddev tryout typo3 v13 --version
   assert_success
   assert_output --partial "TYPO3 CMS 13.4"
   assert_output --partial "PHP 8.4"
@@ -282,7 +282,7 @@ addon_start() {
   assert_backend_loads "https://v12.${PROJNAME}.ddev.site/typo3/"
 
   # Each on its own Core, and its own database.
-  run ddev tryout exec v13 vendor/bin/typo3 --version
+  run ddev tryout typo3 v13 --version
   assert_success
   assert_output --partial "TYPO3 CMS 13.4"
 

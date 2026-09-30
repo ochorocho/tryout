@@ -249,11 +249,12 @@ page() {
   run ddev tryout worktree add feat main --serve
   assert_success
   assert_file_exist "${TESTDIR}/worktrees/feat/.env"
-  run ddev tryout exec feat artisan tinker --execute='echo DB::connection()->getDatabaseName(), " ", DB::table("users")->value("name");'
+  # Laravel's own tool, as a tryout command: artisan in the site.
+  run ddev tryout artisan feat tinker --execute='echo DB::connection()->getDatabaseName(), " ", DB::table("users")->value("name");'
   assert_success
   assert_output --partial "db_feat primary"
 
-  run ddev tryout exec feat artisan tinker --execute='DB::table("users")->insert(["name" => "feat", "email" => "f@example.com", "password" => "x"]);'
+  run ddev tryout artisan feat tinker --execute='DB::table("users")->insert(["name" => "feat", "email" => "f@example.com", "password" => "x"]);'
   assert_success
   run sql db "SELECT COUNT(*) FROM users"
   assert_output "1"
@@ -278,7 +279,7 @@ page() {
 
   run ddev tryout worktree add feat main --serve
   assert_success
-  run ddev tryout exec feat bin/console dbal:run-sql "SELECT CONCAT(DATABASE(), ' ', v) AS x FROM seed"
+  run ddev tryout console feat dbal:run-sql "SELECT CONCAT(DATABASE(), ' ', v) AS x FROM seed"
   assert_success
   assert_output --partial "db_feat from-primary"
 }
@@ -341,10 +342,16 @@ page() {
   run ddev tryout worktree add feat main --serve
   assert_success
   assert_output --partial "sites/default/settings.ddev.php for 'feat'"
-  # vendor/bin/drush and drush/drush are shell scripts; exec runs PHP.
-  run ddev tryout exec feat vendor/drush/drush/drush.php status --field=db-name
+  # Drush as a tryout command (vendor/drush/drush/drush.php in the site).
+  run ddev tryout drush feat status --field=db-name
   assert_success
   assert_output "db_feat"
+  # Help is Drupal's: its tool and its admin, none of TYPO3 Core's commands.
+  run ddev tryout help
+  assert_output --partial "drush <site> <args>"
+  assert_output --partial "--backend for /user/login"
+  refute_output --partial "patch [<id>]"
+  refute_output --partial "checkout <branch>"
   run ddev drush status --field=db-name
   assert_output "db"
   run page "feat.${PROJNAME}.ddev.site/user/login"
@@ -372,6 +379,10 @@ page() {
   run ddev tryout exec feat -r 'require "wp-load.php"; echo DB_NAME, " ", home_url(), "\n";'
   assert_success
   assert_output --partial "db_feat https://feat.${PROJNAME}.ddev.site"
+  # WP-CLI as a tryout command, on the site's own database.
+  run ddev tryout wp feat eval 'echo DB_NAME;'
+  assert_success
+  assert_output --partial "db_feat"
   run page "feat.${PROJNAME}.ddev.site/wp-login.php"
   assert_output --partial 'name="log"'
 }
@@ -401,6 +412,10 @@ page() {
   run ddev tryout exec feat -r '$GLOBALS["TYPO3_CONF_VARS"]["DB"]["Connections"]["Default"] = []; include "config/system/additional.php"; echo $GLOBALS["TYPO3_CONF_VARS"]["DB"]["Connections"]["Default"]["dbname"], "\n";'
   assert_success
   assert_output "db_feat"
+  # The site's own TYPO3 console, as a tryout command.
+  run ddev tryout typo3 feat --version
+  assert_success
+  assert_output --partial "TYPO3 CMS"
   run page "feat.${PROJNAME}.ddev.site/typo3/"
   assert_output --partial "TYPO3"
 }

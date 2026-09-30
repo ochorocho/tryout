@@ -70,10 +70,28 @@ pub struct Ctx {
     mode: OnceLock<Mode>,
 }
 
+/// `key: value` from the project's .ddev/config.yaml — what DDEV would put in
+/// DDEV_PROJECT_TYPE / DDEV_DOCROOT, for callers DDEV does not give them to
+/// (tab completion).
+fn config_value(root: &Path, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(root.join(".ddev/config.yaml")).ok()?;
+    text.lines().find_map(|l| {
+        let v = l.strip_prefix(key)?.strip_prefix(':')?.trim();
+        Some(v.trim_matches(|c| c == '"' || c == '\'').to_string())
+    })
+}
+
 impl Ctx {
-    pub fn new(root: impl Into<PathBuf>, env: DdevEnv) -> Self {
+    pub fn new(root: impl Into<PathBuf>, mut env: DdevEnv) -> Self {
+        let root = root.into();
+        if env.project_type.is_empty() {
+            env.project_type = config_value(&root, "type").unwrap_or_default();
+        }
+        if env.docroot.is_empty() {
+            env.docroot = config_value(&root, "docroot").unwrap_or_default();
+        }
         Self {
-            root: root.into(),
+            root,
             env,
             in_container: false,
             branch_override: None,
@@ -102,6 +120,24 @@ impl Ctx {
     /// generic project of the user's own otherwise.
     pub fn kind(&self) -> &'static dyn ProjectKind {
         kind::for_mode(self.mode())
+    }
+
+    /// The site's own CLI as a tryout command (`drush`, `artisan`, `typo3` …):
+    /// TYPO3's in core mode, the project type's otherwise.
+    pub fn cli(&self) -> Option<super::types::Cli> {
+        match self.mode() {
+            Mode::Core => super::types::cli("typo3"),
+            Mode::Project => super::types::cli(&self.env.project_type),
+        }
+    }
+
+    /// The admin below a site's URL, when it has one: `/typo3/` in core mode,
+    /// the project type's otherwise.
+    pub fn backend_path(&self) -> Option<&'static str> {
+        match self.mode() {
+            Mode::Core => self.kind().backend_path(),
+            Mode::Project => super::types::backend_path(&self.env.project_type),
+        }
     }
 
     pub fn core_dir(&self) -> &Path {
