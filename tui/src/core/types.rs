@@ -198,6 +198,72 @@ pub fn backend_path(project_type: &str) -> Option<&'static str> {
     })
 }
 
+/// The framework version a checkout runs, as (major, minor): from the file
+/// that states it, or the core package in composer.lock. A database of a newer
+/// version breaks older code (Drupal cannot downgrade a schema, TYPO3 and the
+/// others migrate forward only), so a copy is made only onto the same version
+/// or a newer one.
+pub fn code_version(project_type: &str, checkout: &Path, docroot: &str) -> Option<(u32, u32)> {
+    let docroot = docroot.trim_matches('/');
+    let read = |rel: &str| std::fs::read_to_string(checkout.join(rel)).ok();
+    let version = |text: &str, after: &str| -> Option<(u32, u32)> {
+        let rest = &text[text.find(after)? + after.len()..];
+        let rest = rest.trim_start_matches([' ', '=', '\'', '"', 'v']);
+        let mut parts = rest.split(|c: char| !c.is_ascii_digit());
+        Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+    };
+    let lock = |package: &str| -> Option<(u32, u32)> {
+        let text = read("composer.lock")?;
+        let at = text.find(&format!("\"name\": \"{package}\""))?;
+        version(&text[at..], "\"version\":")
+    };
+    match project_type {
+        t if t.starts_with("drupal") => [
+            format!("{docroot}/core/lib/Drupal.php"),
+            "core/lib/Drupal.php".to_string(),
+        ]
+        .iter()
+        .find_map(|f| version(&read(f.trim_start_matches('/'))?, "const VERSION"))
+        .or_else(|| lock("drupal/core")),
+        "wordpress" => [
+            format!("{docroot}/wp-includes/version.php"),
+            "wp-includes/version.php".into(),
+        ]
+        .iter()
+        .find_map(|f| version(&read(f.trim_start_matches('/'))?, "$wp_version")),
+        "laravel" => lock("laravel/framework"),
+        "symfony" => lock("symfony/framework-bundle"),
+        "typo3" => lock("typo3/cms-core"),
+        "shopware6" => lock("shopware/core"),
+        "craftcms" => lock("craftcms/cms"),
+        _ => None,
+    }
+}
+
+/// Is `code` older than `data`'s code? Compared by major.minor; unknown on
+/// either side is not older.
+pub fn older_than(code: Option<(u32, u32)>, data: Option<(u32, u32)>) -> bool {
+    matches!((code, data), (Some(c), Some(d)) if c < d)
+}
+
+/// How a site of a type sets itself up on an empty database.
+pub fn install_hint(project_type: &str, site: &str) -> Option<String> {
+    Some(match project_type {
+        t if t.starts_with("drupal") && t != "drupal6" => {
+            format!("ddev tryout drush {site} site:install standard -y")
+        }
+        "laravel" => format!("ddev tryout artisan {site} migrate"),
+        "typo3" => format!("ddev tryout typo3 {site} setup"),
+        "wordpress" | "wp-bedrock" => {
+            format!("ddev tryout wp {site} core install --url=… --title=… --admin_user=…")
+        }
+        "symfony" => format!("ddev tryout console {site} doctrine:schema:create"),
+        "shopware6" => format!("ddev tryout console {site} system:install --basic-setup"),
+        "craftcms" => format!("ddev tryout craft {site} install"),
+        _ => return None,
+    })
+}
+
 /// Where tryout's snippet goes in the copy of DDEV's file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
@@ -532,6 +598,40 @@ mod tests {
         ] {
             assert_eq!(backend_path(none), None, "{none}");
         }
+    }
+
+    #[test]
+    fn a_checkout_says_which_framework_version_it_runs() {
+        let d = tempfile::tempdir().unwrap();
+        let w = |rel: &str, text: &str| {
+            let p = d.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        // Drupal's own repository: core/ at the root.
+        w(
+            "core/lib/Drupal.php",
+            "class Drupal {\n  const VERSION = '10.6.19-dev';\n",
+        );
+        assert_eq!(code_version("drupal11", d.path(), ""), Some((10, 6)));
+        // A Composer project: web/core, or only composer.lock before an install.
+        let d2 = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d2.path().join("composer.lock"),
+            r#"{"packages": [{"name": "drupal/core", "version": "11.4.0"}, {"name": "laravel/framework", "version": "v12.3.1"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(code_version("drupal", d2.path(), "web"), Some((11, 4)));
+        assert_eq!(code_version("laravel", d2.path(), "public"), Some((12, 3)));
+        w("wp-includes/version.php", "<?php\n$wp_version = '6.8.1';\n");
+        assert_eq!(code_version("wordpress", d.path(), ""), Some((6, 8)));
+        assert_eq!(code_version("php", d.path(), ""), None);
+
+        // 10.6 code must not get an 11.4 database; the same or a newer one may.
+        assert!(older_than(Some((10, 6)), Some((11, 4))));
+        assert!(!older_than(Some((11, 4)), Some((11, 4))));
+        assert!(!older_than(Some((11, 5)), Some((11, 4))));
+        assert!(!older_than(None, Some((11, 4))));
     }
 
     #[test]

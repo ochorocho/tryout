@@ -47,7 +47,7 @@ Nothing. Add a worktree and serve it:
 ddev tryout worktree add feat main --serve
 
 # Check which database the site uses: it prints db_feat
-ddev tryout exec feat vendor/drush/drush/drush.php status --field=db-name
+ddev tryout drush feat status --field=db-name
 ```
 
 ## What tryout does for you
@@ -113,6 +113,9 @@ A new site does not start empty. tryout copies the primary's database into it.
 The primary is the site DDEV serves at your project's own URL; its database is
 called `db`.
 
+- If the site's code is an older version of Drupal than the primary's, it starts
+  with an empty database instead, and tryout says so: a database of a newer
+  version would break the older code.
 - tryout only fills a new, empty database. If you unserved the site earlier and
   kept its database, you get that database back as it was.
 - `--db-from <site>` copies from another served site instead. `@primary` means
@@ -130,9 +133,16 @@ see [Databases](/guide/sites#databases).
 
 ## What to watch out for
 
-- `ddev tryout exec` runs PHP. `vendor/bin/drush` is a shell script, so call
-  Drush's PHP file instead:
-  `ddev tryout exec feat vendor/drush/drush/drush.php status`.
+- `ddev tryout drush feat status` runs Drush in the site. Drupal's own
+  repository (drupal/drupal) has no Drush: add it with
+  `ddev tryout exec feat composer require drush/drush`.
+- **A worktree on an older Drupal than the primary starts with an empty
+  database.** Drupal cannot run on a database of a newer version (an 11.x
+  database breaks 10.x code on every page), and no tool downgrades one. tryout
+  compares the versions (`core/lib/Drupal.php`, or `drupal/core` in
+  `composer.lock`) and warns. Install the site then:
+  `ddev tryout drush feat site:install standard -y`. A worktree on the same or
+  a newer version gets the copy; run `ddev tryout drush feat updatedb` after.
 - If the worktree has its own committed `settings.ddev.php`, tryout does not
   touch it and shows a warning. That site then uses the primary's database.
 - The copied database has the primary's users, so you log in with the same

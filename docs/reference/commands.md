@@ -21,7 +21,7 @@ If you run a command in the wrong mode, it stops with
 | [`status`](#status) | both | Shows an overview of the project |
 | [`help`](#help) | both | Lists the commands |
 | [`worktree`](#worktree) | both | Creates checkouts side by side and serves them as sites |
-| [`exec`](#exec) | both | Runs PHP in a site, with that site's PHP version and database |
+| [`exec`](#exec) | both | Runs a command in a site, with that site's PHP version and database |
 | [`launch`](#launch) | both | Opens a site in the browser |
 | [`delete`](#delete) | both | Wipes a site back to a fresh start |
 | [`ui`](#ui) | both | Opens the terminal UI |
@@ -52,7 +52,7 @@ primary, or reads one line from standard input.
 |---|---|
 | 0 | Done. |
 | 1 | Refused or failed. The line before says why. A line starting with `→` says what to run instead. |
-| other | `exec` returns the exit code of the command it ran, or 127 when the PHP binary is missing. |
+| other | `exec` returns the exit code of the command it ran, or 127 when the command is not found. |
 | 64 | Internal: the container side got a verb it does not know. |
 | 69 | There is no tryout build for this machine. Builds exist for macOS and Linux only. |
 
@@ -95,7 +95,7 @@ tryout help`, in tab completion, in `ddev help tryout` and in the terminal UI.
 | `modx` | — | — | `/manager/` |
 | `asterios`, `php`, `generic` | — | — | — |
 
-Where a type has no tool command, `exec` runs any PHP file in the site:
+Where a type has no tool command, `exec` runs any command in the site:
 `ddev tryout exec feat vendor/bin/sake db:build`.
 
 ## status
@@ -424,18 +424,22 @@ ddev tryout worktree use v13
 
 ## exec
 
-Runs a PHP command in a site, with that site's PHP version and database.
+Runs a command in a site: in the site's folder, with the site's PHP version
+and its own database.
 
 ```text
-ddev tryout exec <site> <arguments…>
+ddev tryout exec <site> <command> <arguments…>
 ```
 
 Mode: both.
 
-- tryout runs the site's **PHP binary** with your arguments. No shell splits the
-  arguments again.
-- It uses `php`, or `php<x.y>` when the site runs a different PHP version than
-  the project.
+- **A PHP program runs with the site's PHP.** That is `php` itself, a PHP option
+  like `-r`, a `.php` or `.phar` file, or a script whose first line names PHP —
+  `composer`, `artisan`, `bin/console`, `vendor/bin/typo3`. tryout uses `php`, or
+  `php<x.y>` when the site runs a different PHP version than the project.
+- **Anything else runs as it is**: `bash -c '…'`, a shell script like
+  `vendor/bin/drush`, any program in the web container.
+- No shell splits the arguments again.
 - It runs in the site's root directory.
 - It sets the site's database variables:
   - core mode: `TYPO3_DB_DBNAME`;
@@ -445,17 +449,18 @@ Mode: both.
 
 The exit code is the exit code of your command.
 
-Because the first argument goes to PHP, it must be a PHP script or a PHP option.
-A shell script does not work. That is why the examples below call Drush and
-Composer by their PHP files:
-
 ```bash
 ddev tryout exec v13 vendor/bin/typo3 cache:flush
 ddev tryout exec feat artisan migrate
-ddev tryout exec feat vendor/drush/drush/drush.php status   # vendor/bin/drush is a shell script
-ddev tryout exec feat /usr/local/bin/composer show
-ddev tryout exec feat -r 'echo getenv("TRYOUT_DB_NAME");'
+ddev tryout exec feat vendor/bin/drush status
+ddev tryout exec feat composer show
+ddev tryout exec feat php -r 'echo getenv("TRYOUT_DB_NAME");'
+ddev tryout exec feat bash -c 'ls -la web/sites/default'
 ```
+
+For your framework's own tool there is a shorter command, named after it, like
+`ddev tryout drush feat status` — see
+[commands per project type](#commands-per-project-type).
 
 In a terminal, tryout asks for a missing site or command.
 

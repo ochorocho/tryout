@@ -89,6 +89,9 @@ A new site does not start empty. tryout copies the primary's database into it.
 The primary is the site DDEV serves at your project's own URL; its database is
 called `db`.
 
+- If the site's code is an older version of Symfony than the primary's, it starts
+  with an empty database instead, and tryout says so: a database of a newer
+  version would break the older code.
 - tryout only fills a new, empty database. If you unserved the site earlier and
   kept its database, you get that database back as it was.
 - `--db-from <site>` copies from another served site instead. `@primary` means
@@ -106,8 +109,8 @@ see [Databases](/guide/sites#databases).
 
 ## What to watch out for
 
-- `ddev tryout exec` runs PHP, and `bin/console` is a PHP file:
-  `ddev tryout exec feat bin/console doctrine:migrations:migrate`.
+- `ddev tryout console feat doctrine:migrations:migrate` runs the Symfony
+  console in the site.
 
 ## Is it tested?
 

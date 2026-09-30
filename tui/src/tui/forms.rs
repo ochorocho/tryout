@@ -231,9 +231,9 @@ impl Form {
             FormKind::Exec(n) => (
                 format!("Run a command in {n}"),
                 vec![Field::Text {
-                    label: "Command, run with the site's own PHP",
+                    label: "Command (PHP programs run on the site's PHP)",
                     value: String::new(),
-                    hint: "a PHP file and its arguments, e.g. bin/console cache:clear — quote as in a shell",
+                    hint: "e.g. composer show or bash -c 'ls' — quote as in a shell",
                 }],
                 vec![],
             ),

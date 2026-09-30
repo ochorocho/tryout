@@ -160,13 +160,14 @@ pub fn candidates(ctx: &Ctx, argv: &[String]) -> String {
             if l.pos <= 1 {
                 sites(ctx, &mut o);
             } else if l.pos == 2 {
-                // exec runs PHP: what it can run is a PHP file.
-                o.hint(&format!("what PHP runs in {}", l.sub));
+                // PHP programs run with the site's PHP, anything else as it is.
+                o.hint(&format!("command to run in {}", l.sub));
                 if let Some(cli) = ctx.cli() {
                     o.c(cli.program, cli.about);
                 }
-                o.c("/usr/local/bin/composer", "Composer in that site");
-                o.c("-r", "a line of PHP");
+                o.c("composer", "Composer, on the site's PHP");
+                o.c("php", "the site's PHP");
+                o.c("bash", "a shell in the site");
             }
         }
         "delete" => {

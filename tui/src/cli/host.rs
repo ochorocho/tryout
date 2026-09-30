@@ -575,6 +575,24 @@ fn run_cli(ctx: &Ctx, cli: crate::core::types::Cli, args: &[String]) -> Res {
         ));
         return Err(Exit(1));
     };
+    // A tool the site does not have (Drupal's own repository has no Drush):
+    // say so, and how to add it, instead of PHP's "Could not open input file".
+    let target = site::for_name(ctx, site_name);
+    if !cli.program.starts_with('/') && !site::dir(ctx, &target).join(cli.program).exists() {
+        out::error(format!(
+            "{} is not installed in '{target}' ({} is missing)",
+            cli.verb, cli.program
+        ));
+        if cli.verb == "drush" {
+            out::error(format!(
+                "  → ddev tryout exec {target} composer require drush/drush"
+            ));
+        }
+        out::error(format!(
+            "  → or run any command there: ddev tryout exec {target} <command>"
+        ));
+        return Err(Exit(1));
+    }
     let mut a = vec![site_name.clone(), cli.program.to_string()];
     a.extend(rest.iter().cloned());
     exec(ctx, &a)
@@ -605,7 +623,7 @@ fn exec(ctx: &Ctx, args: &[String]) -> Res {
     }
     if !target.is_empty() && cmd.is_empty() && prompt::have_tty() {
         let typed = prompt::ask_text(
-            &format!("Command to run in {target} (after php)"),
+            &format!("Command to run in {target}"),
             &format!("e.g. {}", exec_example(ctx)),
         )
         .ok_or_else(|| {
@@ -623,7 +641,7 @@ fn exec(ctx: &Ctx, args: &[String]) -> Res {
             .collect();
         print(&format!(
             "\n  Examples:\n    ddev tryout exec <site> {}\n\
-\x20   ddev tryout exec <site> /usr/local/bin/composer show\n\n  Sites: primary{sites}\n",
+\x20   ddev tryout exec <site> composer show\n\n  Sites: primary{sites}\n",
             exec_example(ctx)
         ));
         return Err(Exit(1));

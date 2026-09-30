@@ -97,8 +97,8 @@ see [Databases](/guide/sites#databases).
 
 - If your worktree has its own `config/.env` that sets `DATABASE_URL`, check
   that it does not replace the value tryout sets. Not tested yet.
-- `bin/cake` is a shell script. `ddev tryout exec` runs PHP, so use CakePHP's
-  PHP entry file instead (`bin/cake.php` in a standard app). Not tested yet.
+- `ddev tryout cake feat …` runs `bin/cake.php`, CakePHP's console, in the
+  site. Not tested yet.
 
 ## Is it tested?
 

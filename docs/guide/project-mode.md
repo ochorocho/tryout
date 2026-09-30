@@ -11,7 +11,7 @@ A quick example:
 ddev tryout worktree add feature-x feature/x --serve   # serve branch feature/x as feature-x
 ddev tryout worktree add try main --serve --db-empty    # a site with an empty database
 ddev tryout worktree add --pr 42                        # serve pull request 42 as pr-42
-ddev tryout exec feature-x bin/console cache:clear      # run PHP in the feature-x site
+ddev tryout exec feature-x bin/console cache:clear      # run a command in the feature-x site
 ddev tryout launch feature-x                            # open feature-x in the browser
 ```
 
@@ -127,6 +127,15 @@ Good to know:
 
 What a site writes stays in its own database. The primary never sees it.
 
+
+::: warning Older code gets an empty database
+A database of a newer framework version breaks older code, and nothing
+downgrades a database. So when a worktree runs an older Drupal, WordPress,
+Laravel, Symfony, TYPO3, Shopware or Craft than the primary, tryout does not copy
+the primary's database. The site starts empty, and tryout tells you how to set
+it up (for example `ddev tryout drush <site> site:install standard -y`).
+:::
+
 ## Resetting, unserving and removing
 
 ```bash
@@ -167,13 +176,15 @@ ddev tryout exec feature-x artisan tinker
 ddev tryout exec feature-x -r 'echo getenv("TRYOUT_DB_NAME");'
 ```
 
-`exec` runs **PHP**, in the site's PHP version, in the site's folder, with the
-site's database settings. Everything after the site name goes to `php`. So name
-a PHP script: `bin/console …`, `artisan …`, `vendor/bin/…`.
+`exec` runs the command in the site's folder, with the site's database
+settings. A PHP program (`php`, `composer`, `artisan`, `bin/console`, a `.php`
+file) runs with the site's PHP version. Anything else, like `bash -c '…'` or
+`vendor/bin/drush`, runs as it is.
 
 ::: tip
-A shell script is not a PHP script. For Drush, use
-`vendor/drush/drush/drush.php` instead of `vendor/bin/drush`.
+Your framework's tool has a shorter command of its own: `ddev tryout drush
+feature-x status`, `ddev tryout artisan feature-x migrate`. See
+[commands per project type](/reference/commands#commands-per-project-type).
 :::
 
 ## Pull requests

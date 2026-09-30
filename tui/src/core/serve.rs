@@ -12,7 +12,10 @@ use super::out::{self, BOLD, DIM, NC, YELLOW};
 use super::{Failed, Step, composer, db, fpm, git, php, proc, site, webserver, worktree};
 
 /// Run a command in a site's context: its PHP, its composer root, its database.
-/// The binary gets the arguments as they are — no shell in between. Returns the
+/// A PHP program (`-r …`, a .php file, a script or phar whose first line names
+/// PHP, like composer or artisan) runs with the site's PHP; anything else
+/// (`bash -c …`, a shell wrapper like vendor/bin/drush) runs as it is. The
+/// program gets the arguments as they are — no shell in between. Returns the
 /// exit code.
 pub fn exec(
     ctx: &Ctx,
@@ -27,11 +30,16 @@ pub fn exec(
     } else {
         "php".into()
     };
+    let dir = site::dir(ctx, name);
+    let (bin, args) = match args.split_first() {
+        // `php …` is the site's PHP, not the image's default.
+        Some((program, rest)) if program == "php" => (bin, rest),
+        Some((program, rest)) if !runs_with_php(&dir, program) => (program.clone(), rest),
+        _ => (bin, args),
+    };
     let _ = std::io::Write::flush(&mut std::io::stdout());
     let mut c = Command::new(&bin);
-    c.args(args)
-        .current_dir(site::dir(ctx, name))
-        .env("TRYOUT_SITE", name);
+    c.args(args).current_dir(&dir).env("TRYOUT_SITE", name);
     match ctx.mode() {
         Mode::Core => {
             c.env("TYPO3_DB_DBNAME", site::database(name));
@@ -57,6 +65,33 @@ pub fn exec(
             127
         }
     }
+}
+
+/// Is `program` PHP for the site's PHP to run? A PHP flag, a .php or .phar
+/// file, or a file (in the site, or on PATH) that starts with `<?php` or a
+/// `#!` line naming php.
+fn runs_with_php(dir: &Path, program: &str) -> bool {
+    if program.starts_with('-') || program.ends_with(".php") || program.ends_with(".phar") {
+        return true;
+    }
+    // The site's own file first (artisan, craft, spark), then PATH (composer).
+    let file = if program.contains('/') || dir.join(program).is_file() {
+        Some(dir.join(program))
+    } else {
+        std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|p| p.join(program))
+                .find(|p| p.is_file())
+        })
+    };
+    let Some(Ok(mut f)) = file.map(std::fs::File::open) else {
+        return false;
+    };
+    let mut head = [0u8; 128];
+    let n = std::io::Read::read(&mut f, &mut head).unwrap_or(0);
+    let head = String::from_utf8_lossy(&head[..n]);
+    let first = head.lines().next().unwrap_or("");
+    head.starts_with("<?php") || (first.starts_with("#!") && first.contains("php"))
 }
 
 fn exec_ok(ctx: &Ctx, name: &str, args: &[&str], quiet: bool) -> bool {
@@ -549,7 +584,10 @@ fn build_project_site(ctx: &Ctx, name: &str, php: &str, dir: &Path, seed: &Seed)
     if fresh {
         let from = match seed {
             Seed::Empty => None,
-            Seed::Default => Some((Db::of_project(ctx), site::database(PRIMARY_SITE))),
+            Seed::Default if primary_fits(ctx, name, dir) => {
+                Some((Db::of_project(ctx), site::database(PRIMARY_SITE)))
+            }
+            Seed::Default => None,
             Seed::Copy { db, name } => Some((db.clone(), name.clone())),
         };
         if let Some((db, from_name)) = from
@@ -777,19 +815,47 @@ fn empty_project_database(ctx: &Ctx, name: &str) -> Step {
         out::error(format!("Failed to reset database {db_name}"));
         return Err(Failed);
     }
-    if db::copy_into(
-        ctx,
-        &Db::of_project(ctx),
-        &site::database(PRIMARY_SITE),
-        name,
-    ) {
+    if primary_fits(ctx, name, &site::dir(ctx, name))
+        && db::copy_into(
+            ctx,
+            &Db::of_project(ctx),
+            &site::database(PRIMARY_SITE),
+            name,
+        )
+    {
         out::success(format!(
             "Database {db_name} is a fresh copy of the primary's"
         ));
     } else {
         out::success(format!("Database {db_name} is empty"));
+        if let Some(hint) = super::types::install_hint(&ctx.env.project_type, name) {
+            out::info(format!("  → set the site up: {hint}"));
+        }
     }
     Ok(())
+}
+
+/// May the primary's database go into this site? Not onto older code: a
+/// database of a newer version breaks it (Drupal 10.6 code on an 11.4
+/// schema fails every page, and nothing downgrades a schema). The site then
+/// starts empty, and says how to set it up.
+fn primary_fits(ctx: &Ctx, name: &str, dir: &Path) -> bool {
+    let (t, docroot) = (&ctx.env.project_type, &ctx.env.docroot);
+    let code = super::types::code_version(t, dir, docroot);
+    let data = super::types::code_version(t, &ctx.root, docroot);
+    if !super::types::older_than(code, data) {
+        return true;
+    }
+    let (c, d) = (code.unwrap_or_default(), data.unwrap_or_default());
+    out::warn(format!(
+        "'{name}' runs {t} {}.{}, the primary {}.{}: its database would break the older code",
+        c.0, c.1, d.0, d.1
+    ));
+    out::warn(format!("'{name}' starts with an empty database instead"));
+    if let Some(hint) = super::types::install_hint(t, name) {
+        out::info(format!("  → set it up: {hint}"));
+    }
+    false
 }
 
 /// A worktree checks out what is committed; the project's local settings
@@ -952,6 +1018,66 @@ mod tests {
         );
         assert_eq!(steps[1], ["bin/console", "theme:compile"]);
         assert!(crate::core::types::after_copy("laravel", "x").is_empty());
+    }
+
+    #[test]
+    fn exec_runs_php_programs_with_the_sites_php_and_anything_else_as_it_is() {
+        let d = tempfile::tempdir().unwrap();
+        let w = |rel: &str, text: &str| {
+            let p = d.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        w("artisan", "#!/usr/bin/env php\n<?php\n");
+        w("vendor/bin/typo3", "#!/usr/bin/env php\n<?php\n");
+        w(
+            "vendor/bin/drush",
+            "#!/usr/bin/env sh\nexec \"$DRUSH_PHP\" \"$@\"\n",
+        );
+        w("public/index.php", "<?php echo 1;");
+        for php in [
+            "-r",
+            "artisan",
+            "vendor/bin/typo3",
+            "vendor/drush/drush/drush.php",
+            "x.phar",
+        ] {
+            assert!(runs_with_php(d.path(), php), "{php}");
+        }
+        // A shell wrapper, a shell, a missing file: run as they are.
+        for not in ["vendor/bin/drush", "bash", "nope/nothing"] {
+            assert!(!runs_with_php(d.path(), not), "{not}");
+        }
+    }
+
+    #[test]
+    fn older_code_never_gets_the_primarys_newer_database() {
+        let d = crate::core::ctx::tests::project_repo();
+        let c = Ctx::new(
+            d.path(),
+            DdevEnv {
+                project_type: "drupal11".into(),
+                ..DdevEnv::default()
+            },
+        );
+        let drupal = |dir: &Path, v: &str| {
+            std::fs::create_dir_all(dir.join("core/lib")).unwrap();
+            std::fs::write(
+                dir.join("core/lib/Drupal.php"),
+                format!("const VERSION = '{v}';"),
+            )
+            .unwrap();
+        };
+        // The report: the primary on 11.4, a worktree on 10.6.
+        drupal(d.path(), "11.4-dev");
+        let wt = c.core_worktree_dir("lusty-lizard");
+        drupal(&wt, "10.6.19-dev");
+        assert!(!primary_fits(&c, "lusty-lizard", &wt));
+        // The same version, or a newer one (it migrates forward): a copy.
+        drupal(&wt, "11.4.2");
+        assert!(primary_fits(&c, "lusty-lizard", &wt));
+        drupal(&wt, "11.5-dev");
+        assert!(primary_fits(&c, "lusty-lizard", &wt));
     }
 
     #[test]

@@ -95,6 +95,9 @@ A new site does not start empty. tryout copies the primary's database into it.
 The primary is the site DDEV serves at your project's own URL; its database is
 called `db`.
 
+- If the site's code is an older version of Laravel than the primary's, it starts
+  with an empty database instead, and tryout says so: a database of a newer
+  version would break the older code.
 - tryout only fills a new, empty database. If you unserved the site earlier and
   kept its database, you get that database back as it was.
 - `--db-from <site>` copies from another served site instead. `@primary` means
@@ -117,8 +120,7 @@ see [Databases](/guide/sites#databases).
 - A cached config (`bootstrap/cache/config.php`) ignores the environment. A new
   worktree has none. If you run `artisan config:cache` in a site, clear it again
   with `ddev tryout exec <site> artisan config:clear`.
-- `ddev tryout exec` runs PHP, and `artisan` is a PHP file:
-  `ddev tryout exec feat artisan migrate`.
+- `ddev tryout artisan feat migrate` runs Artisan in the site.
 
 ## Is it tested?
 
