@@ -38,7 +38,7 @@ jobs:
       matrix:
         # More runners (e.g. ubuntu-24.04-arm) are one word away: the build step
         # makes the binary for whatever architecture it runs on.
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
         ddev_version: [stable, HEAD]
         suite: [unit, install, project]
       fail-fast: false
@@ -73,7 +73,7 @@ jobs:
         ddev_version: [stable, HEAD]
       fail-fast: false
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: ddev/github-action-add-on-test@v2
@@ -97,7 +97,7 @@ jobs:
         framework: [laravel, symfony, drupal, wordpress, typo3]
       fail-fast: false
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: ddev/github-action-add-on-test@v2
@@ -123,7 +123,7 @@ jobs:
     if: >-
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
       contains(github.event.pull_request.labels.*.name, 'full-ci')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -183,7 +183,7 @@ jobs:
         ddev_version: [stable, HEAD]
       fail-fast: false
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: ddev/github-action-add-on-test@v2
