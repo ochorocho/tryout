@@ -169,7 +169,38 @@ pub fn db(ctx: &Ctx, name: &str) -> Db {
 
 /// Mark a site served, on this PHP and database server.
 pub fn write_marker(ctx: &Ctx, name: &str, php: &str, db: &Db) -> std::io::Result<()> {
+    std::fs::create_dir_all(state_dir(ctx, name))?;
     std::fs::write(marker(ctx, name), format!("php={php}\ndb={}\n", db.name()))
+}
+
+/// A project site's database, as its vhost and `exec` hand it over: the app
+/// reads `TRYOUT_DB_*` (DDEV's own settings name `db` for every worktree).
+/// SQLite's name is the file, kept in the site's state beside its marker.
+pub fn db_env(ctx: &Ctx, name: &str) -> Vec<(&'static str, String)> {
+    let db = db(ctx, name);
+    let sqlite = db.engine == super::db::Engine::Sqlite;
+    let database = if sqlite {
+        ctx.in_container(
+            &super::db::sqlite_dir(ctx, name).join(format!("{}.sqlite", database(name))),
+        )
+        .display()
+        .to_string()
+    } else {
+        database(name)
+    };
+    let mut env = vec![
+        ("TRYOUT_DB_DRIVER", db.engine.name().to_string()),
+        ("TRYOUT_DB_NAME", database),
+    ];
+    if !sqlite {
+        env.extend([
+            ("TRYOUT_DB_HOST", db.host(ctx)),
+            ("TRYOUT_DB_PORT", db.engine.port().to_string()),
+            ("TRYOUT_DB_USER", "db".to_string()),
+            ("TRYOUT_DB_PASSWORD", "db".to_string()),
+        ]);
+    }
+    env
 }
 
 /// The database servers needed besides the project's own: one extra service
@@ -187,10 +218,10 @@ pub fn extra_dbs(ctx: &Ctx) -> Vec<Db> {
     // Matched against the servers there are, not parsed: a worktree name may
     // hold dots and dashes itself.
     let kept = Db::choices().into_iter().filter(|d| {
-        let suffix = format!(".{}.settings.php", d.slug());
+        let [settings, kept] = [".settings.php", ".kept"].map(|e| format!(".{}{e}", d.slug()));
         files
             .iter()
-            .any(|f| f.starts_with('.') && f.ends_with(&suffix))
+            .any(|f| f.starts_with('.') && (f.ends_with(&settings) || f.ends_with(&kept)))
     });
     let mut v: Vec<Db> = served_names(ctx)
         .iter()
@@ -201,6 +232,13 @@ pub fn extra_dbs(ctx: &Ctx) -> Vec<Db> {
     v.sort();
     v.dedup();
     v
+}
+
+/// What `delete --all` wipes: every site, and in core mode the primary too —
+/// a project's own database is DDEV's.
+pub fn wipeable(ctx: &Ctx) -> Vec<String> {
+    let primary = (ctx.mode() == Mode::Core).then(|| PRIMARY_SITE.to_string());
+    primary.into_iter().chain(served_names(ctx)).collect()
 }
 
 /// The EXTRA served sites, sorted; never the primary, which the glob also sees.
@@ -249,6 +287,61 @@ mod tests {
             vendor(&c, "x"),
             PathBuf::from("/p/TYPO3-Instances/x/vendor")
         );
+    }
+
+    #[test]
+    fn a_project_site_is_handed_its_own_database_in_the_environment() {
+        let d = crate::core::ctx::tests::project_repo();
+        let c = Ctx::new(
+            d.path(),
+            DdevEnv {
+                database: "mariadb:11.8".into(),
+                ..Default::default()
+            },
+        );
+        let env = |name: &str| -> Vec<(String, String)> {
+            db_env(&c, name)
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect()
+        };
+        let pairs = |p: &[(&str, &str)]| -> Vec<(String, String)> {
+            p.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        // Served on the project's server: its own database there.
+        write_marker(&c, "feat-x", "8.4", &Db::of_project(&c)).unwrap();
+        assert_eq!(
+            env("feat-x"),
+            pairs(&[
+                ("TRYOUT_DB_DRIVER", "mariadb"),
+                ("TRYOUT_DB_NAME", "db_feat_x"),
+                ("TRYOUT_DB_HOST", "db"),
+                ("TRYOUT_DB_PORT", "3306"),
+                ("TRYOUT_DB_USER", "db"),
+                ("TRYOUT_DB_PASSWORD", "db"),
+            ])
+        );
+        // On another server: that server's host and port.
+        write_marker(&c, "pg", "8.4", &Db::parse("postgres:16").unwrap()).unwrap();
+        let pg = env("pg");
+        assert!(pg.contains(&("TRYOUT_DB_HOST".into(), "tryout-postgres-16".into())));
+        assert!(pg.contains(&("TRYOUT_DB_PORT".into(), "5432".into())));
+        // SQLite: a file in the site's state, out of the worktree; no server.
+        write_marker(&c, "lite", "8.4", &Db::parse("sqlite").unwrap()).unwrap();
+        assert_eq!(
+            env("lite"),
+            pairs(&[
+                ("TRYOUT_DB_DRIVER", "sqlite"),
+                (
+                    "TRYOUT_DB_NAME",
+                    "/var/www/html/.ddev/tryout-sites/lite/sqlite/db_lite.sqlite"
+                ),
+            ])
+        );
+        // `delete --all` never takes the project's own database.
+        assert_eq!(wipeable(&c), ["feat-x", "lite", "pg"]);
     }
 
     #[test]

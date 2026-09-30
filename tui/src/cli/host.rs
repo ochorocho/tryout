@@ -4,12 +4,27 @@
 use crate::core::ctx::Ctx;
 use crate::core::ctx::PRIMARY_SITE;
 use crate::core::db::Db;
+use crate::core::kind::Mode;
 use crate::core::out::{self, DIM, NC, RED, YELLOW, print};
 use crate::core::prompt::{self, explain_missing};
 use crate::core::{ddev, gerrit, serve, site, status, webserver, worktree};
 
 use super::verbs::{self, Verb};
 use super::{Exit, Res, help, reject_args, require_core, require_served};
+
+/// Some verbs only mean something for some kinds of project (`patch` needs a
+/// review system, `cs` TYPO3 Core's, `worktree use` the Composer overlay).
+fn available(ctx: &Ctx, verb: &str) -> Res {
+    if ctx.kind().supports(verb) {
+        return Ok(());
+    }
+    out::error(format!(
+        "`{verb}` is not available for {}",
+        ctx.kind().label()
+    ));
+    out::error("  → ddev tryout help   lists what is");
+    Err(Exit(1))
+}
 
 pub fn run(ctx: &Ctx, args: &[String]) -> Res {
     let (action, rest) = match args.split_first() {
@@ -21,17 +36,7 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
         print(&help::main());
         return Err(Exit(1));
     };
-    // Some verbs only mean something for some kinds of project (`patch` needs
-    // a review system, `cs` TYPO3 Core's).
-    if !ctx.kind().supports(spec.name) {
-        out::error(format!(
-            "`{}` is not available for {}",
-            spec.name,
-            ctx.kind().label()
-        ));
-        out::error("  → ddev tryout help   lists what is");
-        return Err(Exit(1));
-    }
+    available(ctx, spec.name)?;
     match spec.verb {
         Verb::Status => status(ctx, rest),
         Verb::Help => {
@@ -497,15 +502,22 @@ fn delete(ctx: &Ctx, args: &[String]) -> Res {
         target = site::for_name(ctx, &target);
     }
     let sites: Vec<String> = if target == "--all" {
-        std::iter::once(PRIMARY_SITE.to_string())
-            .chain(site::served_names(ctx))
-            .collect()
+        site::wipeable(ctx)
     } else if !site::is_primary(&target) {
         require_served(ctx, &target)?;
         vec![target.clone()]
     } else {
         vec![PRIMARY_SITE.to_string()]
     };
+    if sites.iter().any(|s| site::is_primary(s)) && ctx.mode() == Mode::Project {
+        // Refused before anyone is asked to confirm it.
+        let _ = serve::delete_site(ctx, PRIMARY_SITE);
+        return Err(Exit(1));
+    }
+    if sites.is_empty() {
+        out::info("No served sites to wipe.");
+        return Ok(());
+    }
     if !yes {
         print(&serve::delete_warning(ctx, &target, &sites));
         match prompt::confirm("Are you sure?") {
@@ -688,6 +700,7 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
         Some((s, r)) => (s.as_str(), r),
         None => ("list", &[][..]),
     };
+    available(ctx, &format!("worktree {sub}"))?;
     match sub {
         "list" | "branches" => {
             require_core(ctx)?;

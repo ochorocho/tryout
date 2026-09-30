@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::ctx::Ctx;
-use super::kind::ProjectKind;
+use super::kind::{Mode, ProjectKind};
 use super::out::{self, DIM, NC};
 use super::{Failed, Step, fail, git, proc, vsort};
 
@@ -178,6 +178,25 @@ pub fn change_summary(dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_project_worktree_starts_from_a_local_branch_when_there_is_no_origin() {
+        let d = crate::core::ctx::tests::project_repo();
+        assert_eq!(
+            project_base(d.path(), "feature").ok().as_deref(),
+            Some("feature")
+        );
+        assert!(project_base(d.path(), "nope").is_err());
+        // origin's copy wins when there is one.
+        assert!(git::ok(
+            d.path(),
+            &["update-ref", "refs/remotes/origin/feature", "HEAD"]
+        ));
+        assert_eq!(
+            project_base(d.path(), "feature").ok().as_deref(),
+            Some("origin/feature")
+        );
+    }
     use crate::core::ctx::{DdevEnv, tests::core_repo};
     use std::process::Command;
 
@@ -855,39 +874,54 @@ pub fn add(ctx: &Ctx, name: &str, branch: &str) -> Step {
     }
     let main = main_dir(ctx).unwrap_or_else(|| ctx.root.clone());
     ensure_relative_paths(ctx);
-    out::info("Fetching origin...");
-    if !proc::git(&main, &["fetch", "origin"]) {
-        return Err(fail(["Fetch failed"]));
-    }
-    if !git::ok(
-        &main,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("origin/{branch}"),
-        ],
-    ) {
-        return Err(fail(&[
-            format!("Branch '{branch}' does not exist on origin"),
-            "  → ddev tryout checkout   (lists available branches)".into(),
-        ]));
-    }
-    out::info(format!("Creating worktree '{name}' at origin/{branch}..."));
+    let base = match ctx.mode() {
+        Mode::Core => {
+            out::info("Fetching origin...");
+            if !proc::git(&main, &["fetch", "origin"]) {
+                return Err(fail(["Fetch failed"]));
+            }
+            let base = format!("origin/{branch}");
+            if !git::ok(&main, &["rev-parse", "--verify", "--quiet", &base]) {
+                return Err(fail(&[
+                    format!("Branch '{branch}' does not exist on origin"),
+                    "  → ddev tryout checkout   (lists available branches)".into(),
+                ]));
+            }
+            base
+        }
+        Mode::Project => project_base(&main, branch)?,
+    };
+    out::info(format!("Creating worktree '{name}' at {base}..."));
     if !proc::git(
         &main,
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            &dir.to_string_lossy(),
-            &format!("origin/{branch}"),
-        ],
+        &["worktree", "add", "--detach", &dir.to_string_lossy(), &base],
     ) {
         return Err(Failed);
     }
     out::success(format!("Worktree '{name}' created"));
     Ok(())
+}
+
+/// Where a project's worktree starts: origin's branch when there is one (a
+/// fetch that fails — no remote, no key in the container — only costs
+/// freshness), else the local branch.
+fn project_base(main: &Path, branch: &str) -> Result<String, Failed> {
+    if git::ok(main, &["remote", "get-url", "origin"]) {
+        out::info("Fetching origin...");
+        if !proc::git(main, &["fetch", "origin"]) {
+            out::warn("Fetch failed — using the branches already here");
+        }
+    }
+    [format!("origin/{branch}"), format!("refs/heads/{branch}")]
+        .into_iter()
+        .find(|r| git::ok(main, &["rev-parse", "--verify", "--quiet", r]))
+        .map(|r| r.strip_prefix("refs/heads/").unwrap_or(&r).to_string())
+        .ok_or_else(|| {
+            fail(&[
+                format!("No branch '{branch}' here or on origin"),
+                "  → git branch --all   (lists them)".into(),
+            ])
+        })
 }
 
 /// Point the primary instance's overlay at a checkout (the root for its own

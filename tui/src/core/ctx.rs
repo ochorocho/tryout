@@ -98,10 +98,10 @@ impl Ctx {
         *self.mode.get_or_init(|| kind::detect_mode(&self.root))
     }
 
-    /// What differs for this kind of project. Only TYPO3 Core so far: project
-    /// mode is recognised, not yet served differently.
+    /// What differs for this kind of project: TYPO3 Core in core mode, a
+    /// generic project of the user's own otherwise.
     pub fn kind(&self) -> &'static dyn ProjectKind {
-        &kind::TYPO3_CORE
+        kind::for_mode(self.mode())
     }
 
     pub fn core_dir(&self) -> &Path {
@@ -227,7 +227,8 @@ impl Ctx {
     }
 
     /// Local branches of origin, version-sorted — what completion and the
-    /// pickers offer; never touches the network.
+    /// pickers offer; never touches the network. A project's own local
+    /// branches count too: it may have no origin at all.
     pub fn local_core_branches(&self) -> Vec<String> {
         let mut v: Vec<String> = git::lines(
             &self.root,
@@ -240,6 +241,14 @@ impl Ctx {
         .into_iter()
         .filter(|b| b != "HEAD")
         .collect();
+        if self.mode() == Mode::Project {
+            v.extend(git::lines(
+                &self.root,
+                &["for-each-ref", "--format=%(refname:strip=2)", "refs/heads"],
+            ));
+            v.sort();
+            v.dedup();
+        }
         vsort::sort(&mut v);
         v
     }
@@ -319,6 +328,37 @@ pub mod tests {
             "refs/remotes/origin/main",
         ]);
         d
+    }
+
+    /// A project of the user's own: one commit on main, a local `feature`
+    /// branch, no remote. Project mode.
+    pub fn project_repo() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let g = |args: &[&str]| {
+            let s = Command::new("git")
+                .args(["-c", "init.defaultBranch=main", "-c", "user.name=t"])
+                .args(["-c", "user.email=t@t", "-C"])
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(s.status.success(), "{args:?}");
+        };
+        g(&["init", "-q"]);
+        std::fs::create_dir_all(root.join("public")).unwrap();
+        std::fs::write(root.join("public/index.php"), "<?php echo 'hi';\n").unwrap();
+        g(&["add", "-A"]);
+        g(&["commit", "-qm", "init"]);
+        g(&["branch", "feature"]);
+        d
+    }
+
+    #[test]
+    fn a_project_offers_its_local_branches_when_it_has_no_origin() {
+        let d = project_repo();
+        let c = Ctx::new(d.path(), DdevEnv::default());
+        assert_eq!(c.local_core_branches(), ["feature", "main"]);
     }
 
     #[test]

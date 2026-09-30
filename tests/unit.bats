@@ -156,6 +156,104 @@ fake_install() {
   assert_success
 }
 
+# Run every action of one install.yaml list (post_install_actions or
+# removal_actions) the way DDEV does: each on its own, in .ddev/, under
+# `set -eu -o pipefail`.
+run_actions() {
+  local list="$1" n=0 f
+  rm -rf "${FAKEROOT}/actions" && mkdir -p "${FAKEROOT}/actions"
+  sed -n "/^${list}:/,/^[a-z_]*:\$/p" "${DIR}/install.yaml" | sed '1d' | awk -v d="${FAKEROOT}/actions" '
+    /^  - \|$/ { n++; next }
+    /^[a-z_]*:$/ { exit }
+    n { sub(/^    /, ""); print > (d "/" sprintf("%02d", n) ".sh") }'
+  for f in "${FAKEROOT}"/actions/*.sh; do
+    (cd "${FAKEROOT}/proj/.ddev" && bash -c "set -eu -o pipefail
+$(cat "${f}")") || { echo "failed: $(sed -n 1p "${f}")"; return 1; }
+  done
+}
+
+# A project root as `ddev config` leaves it, with the payload installed.
+fake_project() {
+  mkdir -p "${FAKEROOT}/proj/.ddev"
+  cp -R "${DIR}/tryout" "${FAKEROOT}/proj/.ddev/tryout"
+  cp "${DIR}/config.tryout.yaml" "${FAKEROOT}/proj/.ddev/"
+  cp -R "${DIR}/commands" "${FAKEROOT}/proj/.ddev/commands"
+  git -C "${FAKEROOT}/proj" init -q
+}
+
+@test "install leaves a project of your own as it was" {
+  set -eu -o pipefail
+  fake_project
+  git -C "${FAKEROOT}/proj" remote add origin git@github.com:acme/shop.git
+  printf '{"name":"acme/shop"}\n' > "${FAKEROOT}/proj/composer.json"
+  TRYOUT_BIN=/nonexistent run run_actions post_install_actions
+  assert_success
+  assert_output --partial "Not a TYPO3 Core checkout"
+  assert_output --partial "worktree add"
+  refute_output --partial "clones TYPO3 Core"
+  run cat "${FAKEROOT}/proj/.ddev/tryout/.mode"
+  assert_output "project"
+  # No clone, no Core layout, no Core environment, no patch list.
+  assert_dir_not_exist "${FAKEROOT}/proj/TYPO3-Instances"
+  assert_dir_not_exist "${FAKEROOT}/proj/packages"
+  assert_file_not_exist "${FAKEROOT}/proj/.ddev/config.tryout-core.yaml"
+  assert_file_not_exist "${FAKEROOT}/proj/.ddev/config.tryout-patches.yaml"
+  run git -C "${FAKEROOT}/proj" remote
+  assert_output "origin"
+  # Its committed .ddev/ stays visible; only tryout's own files are excluded.
+  run grep -xF /.ddev/ "${FAKEROOT}/proj/.git/info/exclude"
+  assert_failure
+  run grep -xF '/.ddev/nginx_full/tryout-*' "${FAKEROOT}/proj/.git/info/exclude"
+  assert_success
+
+  run run_actions removal_actions
+  assert_success
+  run grep -F tryout "${FAKEROOT}/proj/.git/info/exclude"
+  assert_failure
+  run grep -xF /worktrees/ "${FAKEROOT}/proj/.git/info/exclude"
+  assert_failure
+}
+
+@test "install sets up a TYPO3 Core checkout, and the binary decides the mode" {
+  set -eu -o pipefail
+  fake_project
+  mkdir -p "${FAKEROOT}/proj/typo3/sysext/core"
+  echo '{}' > "${FAKEROOT}/proj/typo3/sysext/core/composer.json"
+  run run_actions post_install_actions
+  assert_success
+  run cat "${FAKEROOT}/proj/.ddev/tryout/.mode"
+  assert_output "core"
+  assert_dir_exist "${FAKEROOT}/proj/TYPO3-Instances/primary/config/system"
+  assert_file_exist "${FAKEROOT}/proj/TYPO3-Instances/primary/composer.tryout.json"
+  assert_file_exist "${FAKEROOT}/proj/.ddev/config.tryout-patches.yaml"
+  run grep -xF '  - COMPOSER=composer.tryout.json' "${FAKEROOT}/proj/.ddev/config.tryout-core.yaml"
+  assert_success
+  run grep -xF /.ddev/ "${FAKEROOT}/proj/.git/info/exclude"
+  assert_success
+
+  # A binary that says "project" wins over what the shell would decide.
+  rm -rf "${FAKEROOT}/proj"
+  fake_project
+  mkdir -p "${FAKEROOT}/proj/typo3/sysext/core"
+  echo '{}' > "${FAKEROOT}/proj/typo3/sysext/core/composer.json"
+  printf '#!/bin/sh\necho project\n' > "${FAKEROOT}/fake-tryout"
+  chmod +x "${FAKEROOT}/fake-tryout"
+  TRYOUT_BIN="${FAKEROOT}/fake-tryout" run run_actions post_install_actions
+  assert_success
+  run cat "${FAKEROOT}/proj/.ddev/tryout/.mode"
+  assert_output "project"
+
+  # Removal takes the Core environment only while it is ours.
+  rm -rf "${FAKEROOT}/proj"
+  fake_project
+  git -C "${FAKEROOT}/proj" remote add origin https://github.com/typo3/typo3.git
+  run run_actions post_install_actions
+  assert_file_exist "${FAKEROOT}/proj/.ddev/config.tryout-core.yaml"
+  run run_actions removal_actions
+  assert_success
+  assert_file_not_exist "${FAKEROOT}/proj/.ddev/config.tryout-core.yaml"
+}
+
 @test "install puts every binary on a fresh file, so macOS does not kill it" {
   # `ddev add-on get` overwrites a binary in place; macOS caches the code
   # signature per file and kills a binary changed under it ("signal: killed").
@@ -308,10 +406,10 @@ fake_install() {
   # Composer (2.9+) refuses packages with known advisories while RESOLVING. Older
   # and dev Cores pin such versions — 13.3 pins enshrined/svg-sanitize ^0.20.0 —
   # so serving one failed outright. tryout exists to run those Cores locally.
-  run grep -xF '  - COMPOSER_POLICY_ADVISORIES_BLOCK=0' "${DIR}/config.tryout.yaml"
+  run grep -xF '  - COMPOSER_POLICY_ADVISORIES_BLOCK=0' "${DIR}/tryout/config.tryout-core.yaml"
   assert_success
   # Only the advisories policy. The blanket switches also stop blocking malware.
-  run bash -c "grep -v '^[[:space:]]*#' '${DIR}/config.tryout.yaml' \
+  run bash -c "grep -v '^[[:space:]]*#' '${DIR}/tryout/config.tryout-core.yaml' \
     | grep -E 'COMPOSER_NO_(SECURITY_)?BLOCKING|COMPOSER_POLICY_MALWARE_BLOCK'"
   assert_failure
 }
@@ -339,7 +437,7 @@ fake_install() {
 @test "an instance's own settings.php decides its database, not the environment" {
   set -eu -o pipefail
   command -v php >/dev/null 2>&1 || skip 'php not available'
-  # config.tryout.yaml sets TYPO3_DB_DBNAME=db for the WHOLE container, so taking
+  # config.tryout-core.yaml sets TYPO3_DB_DBNAME=db for the WHOLE container, so taking
   # the environment first meant every instance reached without a vhost — every CLI
   # command — silently used the PRIMARY's database while its own settings.php said
   # otherwise. Served sites only looked right because their vhost injects the

@@ -44,3 +44,22 @@ another worktree is covered without editing anything here.
 The repository has no build step and no Node tooling; `package.json`, `node_modules`
 and a browser download are a large dependency for one class of check. Keeping this
 directory self-contained means someone who never runs it pays nothing.
+
+## Project mode
+
+`project.spec.ts` covers tryout on a project of your own: the fixture app from
+`tests/fixture-app.sh`, two worktrees on different branches, each served. It
+checks every served worktree URL answers from its own checkout (its branch's
+`VERSION`), reached its own database and had `composer install` run.
+
+```bash
+mkdir ~/tmp/tryout-app && cd ~/tmp/tryout-app
+ddev config --project-type=php --docroot=public
+bash <tryout checkout>/tests/fixture-app.sh
+ddev add-on get <tryout checkout> && ddev start -y
+ddev tryout worktree add one feature --serve
+ddev tryout worktree add two main --serve --db sqlite
+
+cd <tryout checkout>/tests/e2e
+TRYOUT_APP_PROJECT=~/tmp/tryout-app npx playwright test project.spec.ts
+```

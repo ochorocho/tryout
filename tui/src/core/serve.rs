@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 
 use super::ctx::Ctx;
 use super::db::Db;
+use super::kind::Mode;
 use super::out::{self, BOLD, DIM, NC, YELLOW};
 use super::{Failed, Step, composer, db, fpm, git, php, proc, site, webserver, worktree};
 
@@ -29,8 +30,17 @@ pub fn exec(
     let mut c = Command::new(&bin);
     c.args(args)
         .current_dir(site::dir(ctx, name))
-        .env("TYPO3_DB_DBNAME", site::database(name))
         .env("TRYOUT_SITE", name);
+    match ctx.mode() {
+        Mode::Core => {
+            c.env("TYPO3_DB_DBNAME", site::database(name));
+        }
+        // The primary is DDEV's own site, on DDEV's own settings.
+        Mode::Project if !site::is_primary(name) => {
+            c.envs(site::db_env(ctx, name));
+        }
+        Mode::Project => {}
+    }
     for (k, v) in extra_env {
         c.env(k, v);
     }
@@ -93,7 +103,8 @@ pub fn check_php_for_core(ctx: &Ctx, dir: &Path, php_version: &str, site_name: &
         format!("site '{site_name}' runs")
     };
     out::error(format!(
-        "TYPO3 Core{branch} requires PHP {constraint}, but {who} PHP {php_version}"
+        "{}{branch} requires PHP {constraint}, but {who} PHP {php_version}",
+        ctx.kind().label()
     ));
     let best = php::matching(&constraint, &php::available_versions())
         .pop()
@@ -107,7 +118,11 @@ pub fn check_php_for_core(ctx: &Ctx, dir: &Path, php_version: &str, site_name: &
             "  → ddev tryout worktree serve {site_name} --php {best}"
         ));
     }
-    out::error("  → or switch Core to a branch this PHP can run: ddev tryout checkout <branch>");
+    if ctx.kind().supports("checkout") {
+        out::error(
+            "  → or switch Core to a branch this PHP can run: ddev tryout checkout <branch>",
+        );
+    }
     Err(Failed)
 }
 
@@ -231,13 +246,18 @@ pub fn run_rebuild_commands(ctx: &Ctx, name: &str) -> bool {
 /// must get the MySQL settings back, not the Postgres ones
 /// (`.<name>.<type>-<version>.settings.php`). The project's own server keeps
 /// the plain name every earlier version wrote. Read while the site's marker
-/// exists — it says the server.
+/// exists — it says the server. A project's app has no settings of ours to
+/// keep: its `.kept` note only says which server holds the database.
 pub fn saved_settings(ctx: &Ctx, name: &str) -> std::path::PathBuf {
     let db = site::db(ctx, name);
+    let ext = match ctx.mode() {
+        Mode::Core => "settings.php",
+        Mode::Project => "kept",
+    };
     let file = if db == Db::of_project(ctx) {
-        format!(".{name}.settings.php")
+        format!(".{name}.{ext}")
     } else {
-        format!(".{name}.{}.settings.php", db.slug())
+        format!(".{name}.{}.{ext}", db.slug())
     };
     ctx.instances_dir().join(file)
 }
@@ -432,7 +452,8 @@ pub fn serve_since(
     let php = if php_version.is_empty() {
         let p = best_php(ctx, name);
         out::info(format!(
-            "PHP {p} (highest this Core accepts; --php overrides)"
+            "PHP {p} (highest {} accepts; --php overrides)",
+            ctx.kind().label()
         ));
         p
     } else {
@@ -440,8 +461,10 @@ pub fn serve_since(
     };
     check_php_for_core(ctx, &core, &php, name)?;
     let dir = site::dir(ctx, name);
-    let _ = std::fs::create_dir_all(dir.join("config/system"));
-    let _ = std::fs::create_dir_all(dir.join("var"));
+    if ctx.mode() == Mode::Core {
+        let _ = std::fs::create_dir_all(dir.join("config/system"));
+        let _ = std::fs::create_dir_all(dir.join("var"));
+    }
 
     let current = site::db(ctx, name);
     let server = db.unwrap_or_else(|| current.clone());
@@ -464,7 +487,10 @@ pub fn serve_since(
     // The marker IS "served"; it only stands if we get to the end.
     let marker = site::marker(ctx, name);
     let _ = site::write_marker(ctx, name, &php, &server);
-    let result = build_site(ctx, name, &php, &core, &dir);
+    let result = match ctx.mode() {
+        Mode::Core => build_site(ctx, name, &php, &core, &dir),
+        Mode::Project => build_project_site(ctx, name, &php, &dir),
+    };
     if result.is_err() {
         let _ = std::fs::remove_file(&marker);
         return result;
@@ -487,10 +513,48 @@ pub fn serve_since(
             site::hostname(ctx, name)
         ));
     }
-    out::print_line(&format!(
-        "  {DIM}then: https://{}/typo3/  (admin / Password.1){NC}",
-        site::hostname(ctx, name)
-    ));
+    match ctx.kind().backend_path() {
+        Some(path) => out::print_line(&format!(
+            "  {DIM}then: https://{}{path}  (admin / Password.1){NC}",
+            site::hostname(ctx, name)
+        )),
+        None => out::print_line(&format!(
+            "  {DIM}then: https://{}/{NC}",
+            site::hostname(ctx, name)
+        )),
+    }
+    Ok(())
+}
+
+/// A project's worktree is served as it is: its database, its own `composer
+/// install` on the site's PHP, its vhost. What the app needs to reach its
+/// database is in the vhost's environment (`site::db_env`).
+fn build_project_site(ctx: &Ctx, name: &str, php: &str, dir: &Path) -> Step {
+    db::ensure_site_database(ctx, name)?;
+    if dir.join("composer.json").is_file() {
+        out::info(format!(
+            "Installing dependencies for {name} on PHP {php} (this takes a moment)..."
+        ));
+        // Through `exec`: its scripts (post-install hooks) see the site's
+        // database, not the primary's.
+        if !exec_ok(
+            ctx,
+            name,
+            &["/usr/local/bin/composer", "install", "--no-interaction"],
+            false,
+        ) {
+            out::error(format!("composer install failed for {name}"));
+            return Err(Failed);
+        }
+    }
+    if let Err(e) = webserver::write_vhost(ctx, name, php) {
+        out::error(format!("Could not write the vhost for {name}: {e}"));
+        return Err(Failed);
+    }
+    if let Err(e) = webserver::write_worktree_config(ctx) {
+        out::error(format!("Could not write .ddev/config.worktrees.yaml: {e}"));
+        return Err(Failed);
+    }
     Ok(())
 }
 
@@ -556,6 +620,9 @@ pub fn unserve(ctx: &Ctx, name: &str, keep_db: bool) -> Step {
         out::error(format!("Site '{name}' is not served"));
         return Err(Failed);
     }
+    if ctx.mode() == Mode::Project {
+        return unserve_project(ctx, name, keep_db);
+    }
     let saved = saved_settings(ctx, name);
     let settings = site::dir(ctx, name).join("config/system/settings.php");
     if keep_db && settings.is_file() {
@@ -599,8 +666,43 @@ pub fn unserve(ctx: &Ctx, name: &str, keep_db: bool) -> Step {
         let _ = std::fs::remove_file(&saved);
         let _ = std::fs::remove_dir_all(saved_sqlite(ctx, name));
     }
-    let _ = std::fs::remove_file(webserver::vhost_file(ctx, name));
     let _ = std::fs::remove_dir_all(site::dir(ctx, name));
+    stop_serving(ctx, name);
+    Ok(())
+}
+
+/// A project site's worktree is the user's: only tryout's marker goes, and
+/// the database, kept or dropped.
+fn unserve_project(ctx: &Ctx, name: &str, keep_db: bool) -> Step {
+    let note = saved_settings(ctx, name);
+    if keep_db {
+        let _ = std::fs::create_dir_all(ctx.instances_dir());
+        if let Err(e) = std::fs::write(&note, format!("{}\n", site::db(ctx, name).name())) {
+            out::error(format!("Could not keep {}: {e}", note.display()));
+            return Err(Failed);
+        }
+    } else {
+        let db_name = site::database(name);
+        out::info(format!("Dropping database {db_name}..."));
+        if !db::drop(ctx, name) {
+            out::error(format!(
+                "Could not drop database {db_name} — nothing was removed"
+            ));
+            return Err(Failed);
+        }
+        let _ = std::fs::remove_file(&note);
+        let _ = std::fs::remove_dir_all(db::sqlite_dir(ctx, name));
+    }
+    let _ = std::fs::remove_file(site::marker(ctx, name));
+    // Empty now, unless a SQLite database waits in it.
+    let _ = std::fs::remove_dir(site::state_dir(ctx, name));
+    stop_serving(ctx, name);
+    Ok(())
+}
+
+/// The vhost and hostname go; the webserver stops answering for the site.
+fn stop_serving(ctx: &Ctx, name: &str) {
+    let _ = std::fs::remove_file(webserver::vhost_file(ctx, name));
     if let Err(e) = webserver::write_worktree_config(ctx) {
         out::warn(format!(
             "Could not rewrite .ddev/config.worktrees.yaml: {e}"
@@ -614,6 +716,27 @@ pub fn unserve(ctx: &Ctx, name: &str, keep_db: bool) -> Step {
     } else {
         out::info("Its hostname is released when DDEV restarts.");
     }
+}
+
+/// A project site's reset: its database, empty. The app sets itself up again
+/// (migrations, installer) as it did the first time.
+fn empty_project_database(ctx: &Ctx, name: &str) -> Step {
+    // The project's own database is DDEV's: `ddev snapshot` and `ddev
+    // import-db` look after it.
+    if site::is_primary(name) {
+        out::error("The primary's database is the project's own — tryout leaves it alone");
+        out::error(
+            "  → ddev snapshot, then ddev import-db   or name a served site: ddev tryout delete <site>",
+        );
+        return Err(Failed);
+    }
+    let db_name = site::database(name);
+    out::info(format!("Recreating database {db_name}..."));
+    if !db::recreate(ctx, name) || db::ensure_site_database(ctx, name).is_err() {
+        out::error(format!("Failed to reset database {db_name}"));
+        return Err(Failed);
+    }
+    out::success(format!("Database {db_name} is empty again"));
     Ok(())
 }
 
@@ -622,6 +745,13 @@ pub fn delete_warning(ctx: &Ctx, target: &str, sites: &[String]) -> String {
     let mut s = format!("\n{YELLOW}{BOLD}Warning:{NC} this destroys data for:\n");
     for n in sites {
         let label = if site::is_primary(n) { "primary" } else { n };
+        if ctx.mode() == Mode::Project {
+            s.push_str(&format!(
+                "  {BOLD}{label}{NC} — database {}\n",
+                site::database(n)
+            ));
+            continue;
+        }
         s.push_str(&format!(
             "  {BOLD}{label}{NC} — database {}, {}/fileadmin, settings.php\n",
             site::database(n),
@@ -640,6 +770,9 @@ pub fn delete_warning(ctx: &Ctx, target: &str, sites: &[String]) -> String {
 /// Wipe one site back to a fresh install: its database, fileadmin and
 /// settings.php, then setup.
 pub fn delete_site(ctx: &Ctx, name: &str) -> Step {
+    if ctx.mode() == Mode::Project {
+        return empty_project_database(ctx, name);
+    }
     let db_name = site::database(name);
     let docroot = site::docroot(ctx, name);
     out::info(format!("[1/4] Recreating database {db_name}..."));
@@ -686,6 +819,37 @@ pub fn delete_site(ctx: &Ctx, name: &str) -> Step {
 mod tests {
     use super::*;
     use crate::core::ctx::DdevEnv;
+
+    #[test]
+    fn unserving_a_project_site_keeps_the_users_worktree() {
+        let d = crate::core::ctx::tests::project_repo();
+        let c = Ctx::new(
+            d.path(),
+            DdevEnv {
+                database: "mariadb:11.8".into(),
+                sitename: "shop".into(),
+                ..DdevEnv::default()
+            },
+        );
+        let wt = c.core_worktree_dir("feat");
+        std::fs::create_dir_all(wt.join("public")).unwrap();
+        site::write_marker(&c, "feat", "8.4", &Db::parse("postgres:16").unwrap()).unwrap();
+        assert!(site::is_served(&c, "feat"));
+
+        unserve(&c, "feat", true).unwrap();
+        assert!(!site::is_served(&c, "feat"));
+        assert!(wt.join("public").is_dir(), "the worktree is the user's");
+        // The kept database still holds its server.
+        assert_eq!(site::extra_dbs(&c), [Db::parse("postgres:16").unwrap()]);
+        assert!(c.instances_dir().join(".feat.postgres-16.kept").is_file());
+    }
+
+    #[test]
+    fn a_projects_own_database_is_never_wiped() {
+        let d = crate::core::ctx::tests::project_repo();
+        let c = Ctx::new(d.path(), DdevEnv::default());
+        assert!(delete_site(&c, "@primary").is_err());
+    }
 
     #[test]
     fn setup_gets_the_driver_host_and_port_of_the_sites_database() {

@@ -14,22 +14,15 @@ pub fn body(ctx: &Ctx, patches: &str) -> Vec<String> {
     let mut line = |s: String| l.push(format!("{TEXT}{s}{NC}"));
     let core = &ctx.root;
 
-    // Which of the two tryout works in. Project mode is recognised, not yet
-    // served differently — say so rather than pretend.
+    // Which of the two tryout works in.
     match ctx.mode() {
         Mode::Core => line(format!("  Mode:      {}", Mode::Core.label())),
         Mode::Project => {
-            line(format!(
-                "  Mode:      {warn} project ({})",
-                project_type(ctx)
-            ));
-            line(format!(
-                "             {DIM}tryout serves TYPO3 Core checkouts only so far"
-            ));
+            line(format!("  Mode:      project ({})", project_type(ctx)));
         }
     }
 
-    if !ctx.has_core() {
+    if ctx.mode() == Mode::Core && !ctx.has_core() {
         line(format!("  Core:      {fail} not cloned"));
         line(format!("             {DIM}→ ddev tryout download"));
         return l;
@@ -46,7 +39,11 @@ pub fn body(ctx: &Ctx, patches: &str) -> Vec<String> {
     } else {
         ("dirty", &warn)
     };
-    line(format!("  Core:      {icon} {branch} ({head}) — {state}"));
+    let what = match ctx.mode() {
+        Mode::Core => "Core:     ",
+        Mode::Project => "Repo:     ",
+    };
+    line(format!("  {what} {icon} {branch} ({head}) — {state}"));
     if !date.is_empty() {
         line(format!("             {DIM}{date}"));
     }
@@ -64,7 +61,7 @@ pub fn body(ctx: &Ctx, patches: &str) -> Vec<String> {
                 r.name, r.branch, r.head
             ));
         }
-        if worktree::vendor_core_mismatch(ctx) {
+        if ctx.mode() == Mode::Core && worktree::vendor_core_mismatch(ctx) {
             line(format!(
                 "             {warn} vendor/ was built from a different Core"
             ));
@@ -72,6 +69,22 @@ pub fn body(ctx: &Ctx, patches: &str) -> Vec<String> {
                 "             {DIM}→ ddev tryout worktree use {active}"
             ));
         }
+    }
+
+    // What follows is Core's: its patches, packages, TYPO3 and Gerrit.
+    if ctx.mode() == Mode::Project {
+        let served = super::site::served_names(ctx);
+        if served.is_empty() {
+            line(format!("  Served:    {DIM}only the project itself"));
+            line(format!(
+                "             {DIM}→ ddev tryout worktree serve <name>"
+            ));
+        } else {
+            line(format!("  Served:    {ok} {}", served.join(", ")));
+        }
+        line(format!("  Site:      {BOLD}{}", ctx.env.primary_url));
+        line(format!("  Database:  {}", database_line(ctx)));
+        return l;
     }
 
     let upstream = format!("origin/{}", ctx.branch());
@@ -240,7 +253,7 @@ mod tests {
         assert!(lines.contains("Mode:      TYPO3 Core"), "{lines}");
         assert!(lines.contains("not cloned"), "{lines}");
 
-        // A repository of the user's own: project mode, said as not served yet.
+        // A repository of the user's own: project mode, nothing of Core's.
         let own = tempfile::tempdir().unwrap();
         git(own.path(), &["init", "-q"]);
         git(
@@ -253,9 +266,10 @@ mod tests {
         };
         let lines = body(&Ctx::new(own.path(), env), "").join("\n");
         assert!(lines.contains("project (laravel)"), "{lines}");
-        assert!(
-            lines.contains("TYPO3 Core checkouts only so far"),
-            "{lines}"
-        );
+        assert!(lines.contains("Repo:"), "{lines}");
+        assert!(lines.contains("only the project itself"), "{lines}");
+        for core_only in ["not cloned", "Patches:", "Contrib:", "TYPO3:"] {
+            assert!(!lines.contains(core_only), "{core_only}: {lines}");
+        }
     }
 }

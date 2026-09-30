@@ -94,7 +94,23 @@ with a tiny fixture app built in the test (`composer.json` + `public/index.php`
 printing its worktree and `getenv` database name) — install, serve two
 worktrees, each answers with its own name and database, unserve, remove. E2E:
 Playwright opens both URLs and reads the marker text.
-**Status**: Not Started
+**Status**: Complete locally (unit, unit.bats, install suite, project.bats green); CI pending
+**Done so far**: install asks the binary (`__mode`, a shell fallback without
+one) and records `.ddev/tryout/.mode`; every Core action (clone, patch list,
+instance dirs, overlay, `additional.php`) is skipped in project mode, the
+TYPO3/Composer environment moved to `config.tryout-core.yaml`, written in core
+mode only; excludes per kind (a project's `.ddev/` stays visible). Post-start
+in project mode only notes PHP versions and keeps excludes/relative paths. A
+project site is its worktree; its marker and SQLite file wait in
+`.ddev/tryout-sites/<name>/`; serve = database + `composer install` (through
+`exec`, so scripts see the site's database) + vhost with `TRYOUT_DB_*`
+(driver, name, host, port, user, password), which `exec` sets too. Unserve
+keeps the worktree (a `.kept` note holds the server); `delete` empties a
+site's database and refuses the project's own. `worktree add` starts from
+origin's branch or a local one. `status`, verbs (`worktree use` included) and
+TUI menus follow the kind. Tests: unit (vhost, env, unserve, base, menus,
+install excludes in sync), unit.bats running the install/removal actions in
+both modes, `tests/project.bats` (suite `project` in CI), `project.spec.ts`.
 
 ## Stage 3: Databases for project sites
 **Goal**: A served site gets a database that makes sense for an app:

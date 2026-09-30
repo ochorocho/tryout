@@ -240,9 +240,13 @@ impl Db {
     }
 }
 
-/// Where a site's SQLite database lives: TYPO3 keeps it in the site's var/.
+/// Where a site's SQLite database lives: TYPO3 keeps it in the site's var/;
+/// a project site's waits in its state, out of the user's worktree.
 pub fn sqlite_dir(ctx: &Ctx, name: &str) -> PathBuf {
-    site::dir(ctx, name).join("var/sqlite")
+    match ctx.mode() {
+        super::kind::Mode::Core => site::dir(ctx, name).join("var/sqlite"),
+        super::kind::Mode::Project => site::state_dir(ctx, name).join("sqlite"),
+    }
 }
 
 /// The site's SQLite file, when there is one with something in it.
@@ -348,11 +352,16 @@ fn ok(o: Option<Output>) -> bool {
 }
 
 /// Create a served site's database and grant the DDEV user access to it. A
-/// SQLite one is created by TYPO3's setup itself.
+/// SQLite one is created by whoever opens it first (TYPO3's setup, the app);
+/// only its directory is made here.
 pub fn ensure_site_database(ctx: &Ctx, name: &str) -> Step {
     let dbname = site::database(name);
     let db = site::db(ctx, name);
-    if dbname == "db" || db.engine == Engine::Sqlite {
+    if db.engine == Engine::Sqlite {
+        let _ = std::fs::create_dir_all(sqlite_dir(ctx, name));
+        return Ok(());
+    }
+    if dbname == "db" {
         return Ok(());
     }
     out::info(format!("Ensuring database {dbname} ({})...", db.label()));

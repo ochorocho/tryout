@@ -58,14 +58,13 @@ install an unreleased version — a branch, a commit, or a working checkout — 
 way you install a release.
 
 **From a local checkout** — what you want when developing the add-on itself. No
-commit, push or release is needed; DDEV copies the working tree as it is. A
-checkout has no binaries (only releases carry them), so build them once first —
-`tui/scripts/stage-bins.sh` puts all three into `tryout/bin/` (it needs Rust,
-`lipo` and `cargo-zigbuild`, so run it on a Mac):
+commit, push or release is needed; DDEV copies the working tree as it is. The
+binaries are committed in `tryout/bin/`, so a checkout installs as it is; after
+changing the Rust source, rebuild them with `tui/scripts/stage-bins.sh` (it
+needs Rust, `lipo` and `cargo-zigbuild`, so run it on a Mac):
 
 ```bash
 git clone https://github.com/bmack/tryout.git ~/src/tryout
-~/src/tryout/tui/scripts/stage-bins.sh
 
 mkdir my-typo3-site && cd my-typo3-site
 ddev config --project-type=typo3 --docroot=TYPO3-Instances/primary/public --php-version=8.5

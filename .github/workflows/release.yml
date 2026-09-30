@@ -2,9 +2,10 @@ name: release
 # Releases the add-on. `ddev add-on get <owner>/tryout` installs the source
 # tarball of the latest release, and the tryout binaries are part of the
 # payload (tryout/bin/, picked per machine by tryout/tryout) — so they have to be
-# IN the tagged tree. main never carries them (tryout/bin/ is gitignored): this
-# builds all three, commits them onto a release-only commit on top of the chosen
-# ref, tags that commit, and publishes the release with the binaries attached too.
+# IN the tagged tree. The branches carry committed builds too, but a release
+# must not trust them to match its source: this builds all three afresh, commits
+# them onto a release-only commit on top of the chosen ref, tags that commit, and
+# publishes the release with the binaries attached too.
 #
 # Run it from the Actions tab with the version to release, e.g. v1.4.0.
 on:
@@ -94,7 +95,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -f tryout/bin
-          git commit -m "[RELEASE] ${VERSION} — with the tryout binaries"
+          # --allow-empty: the fresh builds may equal the committed ones.
+          git commit --allow-empty -m "[RELEASE] ${VERSION} — with the tryout binaries"
           git tag "${VERSION}"
           git push origin "refs/tags/${VERSION}"
       - name: Publish

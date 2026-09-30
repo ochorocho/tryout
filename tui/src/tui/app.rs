@@ -580,10 +580,13 @@ impl App {
     /// The menu for a worktree — the same from the keyboard and a right-click:
     /// its own commands, then the project-wide ones.
     fn menu_items(&self, w: &Worktree) -> Vec<Entry> {
-        actions::join([
-            actions::for_worktree(w, &self.project_db()),
-            actions::project(),
-        ])
+        actions::for_kind(
+            actions::join([
+                actions::for_worktree(w, &self.project_db()),
+                actions::project(),
+            ]),
+            self.kind(),
+        )
     }
 
     fn open_menu(&mut self) {
@@ -1219,6 +1222,11 @@ impl App {
             return Effect::None;
         }
         self.open_form(FormKind::NewWorktree)
+    }
+
+    /// TYPO3 Core or a project of the user's own: what the menus offer.
+    pub fn kind(&self) -> &'static dyn crate::core::kind::ProjectKind {
+        crate::core::kind::for_mode(crate::core::kind::detect_mode(&self.root))
     }
 
     /// The project's own database server: the primary's, as the list reports it.

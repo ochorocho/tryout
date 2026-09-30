@@ -74,7 +74,41 @@ post_install_actions:
     fi
 
   - |
+    #ddev-description:Tell a TYPO3 Core checkout from a project of your own
+    # Core mode: the root is (or is about to become) a TYPO3 Core clone. Project
+    # mode: a repository of the user's own, which the install leaves as it is.
+    # The binary decides; without one (a source checkout before stage-bins.sh),
+    # the same rule in shell: no repository, Core's sysexts or a TYPO3 origin.
+    mode="$(tryout/tryout __mode .. 2>/dev/null || true)"
+    if [ "$mode" != core ] && [ "$mode" != project ]; then
+      mode=project
+      if [ ! -e ../.git ] || [ -f ../typo3/sysext/core/composer.json ]; then
+        mode=core
+      else
+        case "$(git -C .. remote get-url origin 2>/dev/null | tr 'A-Z' 'a-z')" in
+          *typo3/typo3*|*packages/typo3.cms*) mode=core ;;
+        esac
+      fi
+    fi
+    printf '%s\n' "$mode" > tryout/.mode
+    if [ "$mode" = project ]; then
+      echo "Not a TYPO3 Core checkout: tryout serves this project's own worktrees."
+    fi
+
+  - |
+    #ddev-description:Set the TYPO3 and Composer environment (TYPO3 Core only)
+    # A project keeps its own: COMPOSER=composer.tryout.json would point its
+    # `ddev composer` at a file it does not have. Ours is replaced on update; one
+    # whose marker was removed is the user's.
+    if [ "$(cat tryout/.mode 2>/dev/null)" = core ]; then
+      if [ ! -f config.tryout-core.yaml ] || grep -q '#ddev-generated' config.tryout-core.yaml; then
+        cp tryout/config.tryout-core.yaml config.tryout-core.yaml
+      fi
+    fi
+
+  - |
     #ddev-description:Install the Gerrit patch list
+    [ "$(cat tryout/.mode 2>/dev/null)" = core ] || exit 0
     # Not a project_files entry: it holds the user's patch list, so it is created
     # once and never overwritten by an update.
     if [ ! -f config.tryout-patches.yaml ]; then
@@ -86,6 +120,7 @@ post_install_actions:
 
   - |
     #ddev-description:Create the packages/ and instance directories
+    [ "$(cat tryout/.mode 2>/dev/null)" = core ] || exit 0
     # Before the overlay is copied in, which lands inside the primary instance.
     # Deliberately absent from removal_actions: packages/ holds the user's own
     # extensions, so uninstalling the add-on must not take them with it.
@@ -93,6 +128,7 @@ post_install_actions:
 
   - |
     #ddev-description:Install the Composer overlay
+    [ "$(cat tryout/.mode 2>/dev/null)" = core ] || exit 0
     # Never clobber an existing overlay — it carries the generated require block
     # plus whatever the user added to it.
     if [ ! -f ../TYPO3-Instances/primary/composer.tryout.json ]; then
@@ -101,6 +137,7 @@ post_install_actions:
 
   - |
     #ddev-description:Install config/system/additional.php
+    [ "$(cat tryout/.mode 2>/dev/null)" = core ] || exit 0
     # Copy if absent, or if ours is still there unmodified. A hand-edited file
     # (marker removed) is left alone.
     if [ ! -f ../TYPO3-Instances/primary/config/system/additional.php ] || grep -q '#ddev-generated' ../TYPO3-Instances/primary/config/system/additional.php; then
@@ -111,6 +148,7 @@ post_install_actions:
 
   - |
     #ddev-description:Clone TYPO3 Core into the project root
+    [ "$(cat tryout/.mode 2>/dev/null)" = core ] || exit 0
     # On the HOST, deliberately. DDEV's mutagen config ignores "/.git" at the
     # project root (it bind-mounts a host .git instead of syncing one), so a clone
     # made inside the container never reaches the host — the files arrive, the
@@ -144,9 +182,17 @@ post_install_actions:
     if [ -d ../.git ]; then
       mkdir -p ../.git/info
       touch ../.git/info/exclude
-      for entry in /.ddev/ /worktrees/ /TYPO3-Instances/ /packages/; do
+      # A project's own .ddev/ is usually committed: only tryout's files go.
+      if [ "$(cat tryout/.mode 2>/dev/null)" = core ]; then
+        entries="/.ddev/ /worktrees/ /TYPO3-Instances/ /packages/"
+      else
+        entries="/worktrees/ /.ddev/tryout-sites/ /.ddev/config.worktrees.yaml /.ddev/docker-compose.tryout-db.yaml /.ddev/nginx_full/tryout-* /.ddev/apache/tryout-* /.ddev/tryout/.state/ /.ddev/tryout/.version /.ddev/tryout/.mode"
+      fi
+      set -f
+      for entry in $entries; do
         grep -qxF "$entry" ../.git/info/exclude || printf '%s\n' "$entry" >> ../.git/info/exclude
       done
+      set +f
     fi
 
   - |
@@ -193,10 +239,16 @@ post_install_actions:
   - |
     #ddev-description:Report next steps
     printf '\n  \033[32m✓\033[0m tryout installed.\n\n'
-    printf '  Next: \033[36mddev start\033[0m — clones TYPO3 Core, installs dependencies\n'
-    printf '        and sets up TYPO3 (several minutes on first run).\n\n'
-    printf '  Then: \033[36mddev tryout status\033[0m\n'
-    printf '        \033[36mddev tryout cs\033[0m      to prepare for Gerrit contribution\n\n'
+    if [ "$(cat tryout/.mode 2>/dev/null)" = core ]; then
+      printf '  Next: \033[36mddev start\033[0m — clones TYPO3 Core, installs dependencies\n'
+      printf '        and sets up TYPO3 (several minutes on first run).\n\n'
+      printf '  Then: \033[36mddev tryout status\033[0m\n'
+      printf '        \033[36mddev tryout cs\033[0m      to prepare for Gerrit contribution\n\n'
+    else
+      printf '  Next: \033[36mddev restart\033[0m\n'
+      printf '  Then: \033[36mddev tryout worktree add <name> --serve\033[0m\n'
+      printf '        \033[36mddev tryout ui\033[0m     the terminal UI\n\n'
+    fi
 
 removal_actions:
   - |
@@ -225,19 +277,38 @@ removal_actions:
     rm -f ../TYPO3-Instances/.*.settings.php 2>/dev/null || true
 
   - |
-    #ddev-description:Remove the generated git excludes
-    # Only our own lines, and only from info/exclude — the repo's tracked
-    # .gitignore is Core's and was never touched.
-    if [ -f ../.git/info/exclude ]; then
-      for entry in /.ddev/ /worktrees/ /TYPO3-Instances/ /packages/; do
-        grep -vxF "$entry" ../.git/info/exclude > ../.git/info/exclude.tmp 2>/dev/null \
-          && mv ../.git/info/exclude.tmp ../.git/info/exclude
-      done
+    #ddev-description:Remove a project's served-site state
+    # Project mode keeps the markers in .ddev/tryout-sites/<name>/; the
+    # worktrees themselves stay, like the instance trees above.
+    rm -f tryout-sites/*/.tryout-site 2>/dev/null || true
+    rmdir tryout-sites/* tryout-sites 2>/dev/null || true
+
+  - |
+    #ddev-description:Remove the TYPO3 and Composer environment
+    if [ -f config.tryout-core.yaml ] && grep -q '#ddev-generated' config.tryout-core.yaml; then
+      rm -f config.tryout-core.yaml
     fi
 
   - |
-    #ddev-description:Remove the payload version stamp
-    rm -f tryout/.version
+    #ddev-description:Remove the generated git excludes
+    # Only our own lines, and only from info/exclude — the repo's tracked
+    # .gitignore was never touched. Both modes' lists: whichever was written.
+    if [ -f ../.git/info/exclude ]; then
+      set -f
+      for entry in /.ddev/ /worktrees/ /TYPO3-Instances/ /packages/ \
+                   /.ddev/tryout-sites/ /.ddev/config.worktrees.yaml /.ddev/docker-compose.tryout-db.yaml \
+                   /.ddev/nginx_full/tryout-* /.ddev/apache/tryout-* /.ddev/tryout/.state/ \
+                   /.ddev/tryout/.version /.ddev/tryout/.mode; do
+        # grep -v exits 1 once nothing is left, which DDEV's `set -e` would stop on.
+        { grep -vxF "$entry" ../.git/info/exclude || true; } > ../.git/info/exclude.tmp
+        mv ../.git/info/exclude.tmp ../.git/info/exclude
+      done
+      set +f
+    fi
+
+  - |
+    #ddev-description:Remove the payload version stamp and mode
+    rm -f tryout/.version tryout/.mode
 
   - |
     #ddev-description:Remove what tryout left for the host

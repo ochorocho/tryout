@@ -4,6 +4,7 @@
 //! leaves the PHP versions the image provides where the host can read them.
 
 use super::ctx::{Ctx, PRIMARY_SITE};
+use super::kind::Mode;
 use super::out::{self, BOLD, NC};
 use super::{Failed, Step, patch, php, proc, serve, worktree};
 
@@ -13,6 +14,9 @@ pub fn state_dir(ctx: &Ctx) -> std::path::PathBuf {
 }
 
 pub fn run(ctx: &Ctx) -> Step {
+    if ctx.mode() == Mode::Project {
+        return run_for_project(ctx);
+    }
     out::print(&format!(
         "\n{BOLD}TYPO3 tryout — Post-Start Setup{NC}\n═══════════════════════════════════════\n\n"
     ));
@@ -35,14 +39,7 @@ pub fn run(ctx: &Ctx) -> Step {
         worktree::ensure_relative_paths(ctx);
     }
 
-    // The host reads worktree state itself, but only the container knows which
-    // PHP versions the image has: the TUI's PHP menus come from this.
-    let state = state_dir(ctx);
-    let _ = std::fs::create_dir_all(&state);
-    let _ = std::fs::write(
-        state.join("php-versions"),
-        php::available_versions().join(" ") + "\n",
-    );
+    note_php_versions(ctx);
 
     let patches = patch::configured();
     if patches.is_empty() {
@@ -98,4 +95,25 @@ pub fn run(ctx: &Ctx) -> Step {
         ctx.env.primary_url
     ));
     Ok(())
+}
+
+/// A project of the user's own is DDEV's to start: its checkout, its
+/// dependencies and its setup are the project's business. tryout only notes
+/// what the web image provides and keeps its own files out of git status.
+fn run_for_project(ctx: &Ctx) -> Step {
+    note_php_versions(ctx);
+    worktree::ensure_excludes(ctx);
+    worktree::ensure_relative_paths(ctx);
+    Ok(())
+}
+
+/// The host reads worktree state itself, but only the container knows which
+/// PHP versions the image has: the TUI's PHP menus come from this.
+fn note_php_versions(ctx: &Ctx) {
+    let state = state_dir(ctx);
+    let _ = std::fs::create_dir_all(&state);
+    let _ = std::fs::write(
+        state.join("php-versions"),
+        php::available_versions().join(" ") + "\n",
+    );
 }

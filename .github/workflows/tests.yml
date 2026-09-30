@@ -40,7 +40,7 @@ jobs:
         # makes the binary for whatever architecture it runs on.
         os: [ubuntu-latest]
         ddev_version: [stable, HEAD]
-        suite: [unit, install]
+        suite: [unit, install, project]
       fail-fast: false
 
     runs-on: ${{ matrix.os }}
@@ -124,6 +124,20 @@ jobs:
           ddev tryout worktree add v13 13.4
           ddev tryout worktree serve v13   # restarts DDEV for the new hostname
           echo "TRYOUT_PROJECT=$PROJECT" >> "$GITHUB_ENV"
+
+      - name: Provision a project of its own with two served worktrees
+        run: |
+          set -e
+          APP="$RUNNER_TEMP/tryout-app"
+          mkdir -p "$APP" && cd "$APP"
+          ddev config --project-name=tryout-app --project-tld=ddev.site \
+            --project-type=php --docroot=public
+          bash "$GITHUB_WORKSPACE/tests/fixture-app.sh"
+          ddev add-on get "$GITHUB_WORKSPACE"
+          ddev start -y
+          ddev tryout worktree add one feature --serve
+          ddev tryout worktree add two main --serve --db sqlite
+          echo "TRYOUT_APP_PROJECT=$APP" >> "$GITHUB_ENV"
 
       - name: Run the browser suite
         working-directory: tests/e2e

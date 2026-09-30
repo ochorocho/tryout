@@ -4,31 +4,11 @@
 ##
 ## Project-level settings (name, type, docroot, php_version, database) are
 ## deliberately NOT set here — they belong in your own .ddev/config.yaml,
-## created by `ddev config`.
-
-web_environment:
-  - TYPO3_CONTEXT=Development
-  - TYPO3_DB_HOST=db
-  - TYPO3_DB_PORT=3306
-  - TYPO3_DB_DBNAME=db
-  - TYPO3_DB_USERNAME=db
-  - TYPO3_DB_PASSWORD=db
-  - TYPO3_SETUP_ADMIN_USERNAME=admin
-  - TYPO3_SETUP_ADMIN_PASSWORD=Password.1
-  - TYPO3_SETUP_ADMIN_EMAIL=admin@example.com
-  # Composer runs against the tryout overlay, never your own composer.json.
-  # See .ddev/tryout/composer.tryout.json.
-  - COMPOSER=composer.tryout.json
-  # Composer refuses packages with known advisories while resolving. Older and
-  # dev Cores pin such versions (13.3: enshrined/svg-sanitize ^0.20.0), so they
-  # could not be installed at all — and running them is what tryout is for. This
-  # lifts the advisories policy only: malware stays blocked, and `composer audit`
-  # still reports every advisory. Not COMPOSER_NO_SECURITY_BLOCKING — that one
-  # lifts all blocking, malware included.
-  - COMPOSER_POLICY_ADVISORIES_BLOCK=0
+## created by `ddev config`. On a TYPO3 Core checkout the install adds
+## config.tryout-core.yaml with the TYPO3 and Composer environment.
 
 hooks:
   post-start:
-    # Runs inside the web container: the clone, the patches, composer and the
-    # TYPO3 setup all use the container's own tools.
+    # Runs inside the web container: on a Core checkout the clone, the patches,
+    # composer and the TYPO3 setup; on a project, only tryout's own state.
     - exec: .ddev/tryout/tryout __post-start

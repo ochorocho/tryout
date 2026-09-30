@@ -3,6 +3,7 @@
 //! on whichever Core is primary at the moment it runs, not the one you selected.
 
 use crate::core::db::{Db, Engine};
+use crate::core::kind::ProjectKind;
 use crate::tui::forms::FormKind;
 use crate::tui::worktrees::Worktree;
 
@@ -383,6 +384,38 @@ pub fn project() -> Vec<Entry> {
     ]
 }
 
+/// What this kind of project can do: a project has no Core to update, patch
+/// or reset, no overlay and no backend of tryout's knowing, and its "fresh
+/// install" is an empty database. Separators left doubled are dropped.
+pub fn for_kind(entries: Vec<Entry>, kind: &dyn ProjectKind) -> Vec<Entry> {
+    let supported = |a: &Action| {
+        let verb = match a.args.as_slice() {
+            [w, sub, ..] if w == "worktree" => format!("{w} {sub}"),
+            [v, ..] => v.clone(),
+            [] => String::new(),
+        };
+        kind.supports(&verb)
+            && (kind.backend_path().is_some() || !a.args.iter().any(|x| x == "--backend"))
+    };
+    let mut out: Vec<Entry> = Vec::new();
+    for e in entries {
+        match e {
+            Entry::Action(a) if !supported(&a) => {}
+            Entry::Action(mut a) if kind.setup_command("").is_empty() && a.args[0] == "delete" => {
+                a.label = "Empty its database…".into();
+                a.hint = "the app sets itself up again".into();
+                out.push(Entry::Action(a));
+            }
+            Entry::Separator if matches!(out.last(), None | Some(Entry::Separator)) => {}
+            e => out.push(e),
+        }
+    }
+    if matches!(out.last(), Some(Entry::Separator)) {
+        out.pop();
+    }
+    out
+}
+
 /// Groups in order, a separator between the non-empty ones.
 pub fn join<const N: usize>(groups: [Vec<Entry>; N]) -> Vec<Entry> {
     let mut out = Vec::new();
@@ -403,6 +436,56 @@ mod tests {
     /// The fixture's project server.
     fn maria() -> Db {
         Db::parse("mariadb:11.8").unwrap()
+    }
+
+    #[test]
+    fn a_project_is_offered_only_what_it_can_do() {
+        use crate::core::kind::{GENERIC_PROJECT, TYPO3_CORE};
+        let menu = |w: &Worktree, kind: &dyn ProjectKind| {
+            for_kind(join([for_worktree(w, &maria()), project()]), kind)
+        };
+        let lines = |entries: &[Entry]| -> Vec<String> {
+            entries
+                .iter()
+                .filter_map(|e| match e {
+                    Entry::Action(a) => Some(a.args.join(" ")),
+                    _ => None,
+                })
+                .collect()
+        };
+        for w in &fixture() {
+            let entries = menu(w, &GENERIC_PROJECT);
+            for line in lines(&entries) {
+                for core_only in [
+                    "download",
+                    "checkout",
+                    "patch",
+                    "reset",
+                    "composer",
+                    "--backend",
+                ] {
+                    assert!(!line.contains(core_only), "{line}");
+                }
+                assert!(!line.starts_with("worktree use"), "{line}");
+            }
+            // No separator at either end, none doubled.
+            assert!(!matches!(entries.first(), Some(Entry::Separator)));
+            assert!(!matches!(entries.last(), Some(Entry::Separator)));
+            assert!(
+                !entries
+                    .windows(2)
+                    .any(|p| matches!(p, [Entry::Separator, Entry::Separator]))
+            );
+            // Core keeps everything it had.
+            let all = join([for_worktree(w, &maria()), project()]);
+            assert_eq!(menu(w, &TYPO3_CORE), all);
+        }
+        let served = fixture()
+            .into_iter()
+            .find(|w| w.served() && !w.primary)
+            .unwrap();
+        let entries = menu(&served, &GENERIC_PROJECT);
+        assert!(entries.iter().any(|e| e.label() == "Empty its database…"));
     }
 
     fn claim(line: &str) -> Claim {

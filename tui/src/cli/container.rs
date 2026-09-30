@@ -4,6 +4,7 @@
 
 use crate::core::ctx::{Ctx, PRIMARY_SITE};
 use crate::core::db::{Db, Engine};
+use crate::core::kind::Mode;
 use crate::core::out::{self, BOLD, CYAN, DIM, GREEN, NC, TEXT, YELLOW};
 use crate::core::{
     Step, git, patch, php, proc, prompt, serve, site, status, vsort, webserver, worktree,
@@ -582,9 +583,7 @@ fn delete(ctx: &Ctx, args: &[String]) -> Res {
         }
     }
     let sites: Vec<String> = if target == "--all" {
-        std::iter::once(PRIMARY_SITE.to_string())
-            .chain(site::served_names(ctx))
-            .collect()
+        site::wipeable(ctx)
     } else if !target.is_empty() {
         require_served(ctx, &target)?;
         vec![target.clone()]
@@ -602,6 +601,10 @@ fn delete(ctx: &Ctx, args: &[String]) -> Res {
         step(serve::delete_site(ctx, s))?;
     }
     print("\n");
+    if ctx.mode() == Mode::Project {
+        out::success("Emptied — each app sets itself up again, as it did the first time.");
+        return Ok(());
+    }
     out::success("Fresh setup complete!");
     for s in &sites {
         print(&format!("  {BOLD}{}/typo3/{NC}\n", site::hostname(ctx, s)));

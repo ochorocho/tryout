@@ -39,6 +39,22 @@ pub fn main(args: Vec<String>) -> i32 {
                 1
             }
         }
+        // What the install asks before it touches anything: `core` or `project`.
+        Some("__mode") => {
+            let root = args
+                .get(1)
+                .map(PathBuf::from)
+                .or_else(approot)
+                .unwrap_or_else(|| PathBuf::from("."));
+            println!(
+                "{}",
+                match crate::core::kind::detect_mode(&root) {
+                    crate::core::kind::Mode::Core => "core",
+                    crate::core::kind::Mode::Project => "project",
+                }
+            );
+            0
+        }
         Some("__complete") => {
             complete::run(&args[1..]);
             0

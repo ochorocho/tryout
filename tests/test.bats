@@ -82,7 +82,7 @@ teardown() { load teardown.sh; }
 # Configuration the add-on contributes
 # ─────────────────────────────────────────────────────────────────────
 
-@test "config.tryout.yaml sets the TYPO3 environment in the container" {
+@test "config.tryout-core.yaml sets the TYPO3 environment in the container" {
   set -eu -o pipefail
   run ddev add-on get "${DIR}"
   assert_success
@@ -218,7 +218,10 @@ JSON
   # info/exclude is local to the clone and never committed, so none of this can
   # reach a patch. It also lives in the shared .git, which is what makes one write
   # cover every worktree.
+  # A Core checkout not cloned by the install: TYPO3's origin makes it core mode
+  # (an unknown repository would be a project of the user's own).
   git -C "${TESTDIR}" init -q
+  git -C "${TESTDIR}" remote add origin https://github.com/typo3/typo3.git
   run ddev add-on get "${DIR}"
   assert_success
 
@@ -348,6 +351,7 @@ JSON
   assert_file_not_exist "${TESTDIR}/.ddev/commands/host/tryout"
   assert_file_not_exist "${TESTDIR}/.ddev/commands/host/autocomplete/tryout"
   assert_file_not_exist "${TESTDIR}/.ddev/config.tryout.yaml"
+  assert_file_not_exist "${TESTDIR}/.ddev/config.tryout-core.yaml"
   assert_file_not_exist "${TESTDIR}/.ddev/config.tryout-patches.yaml"
   assert_file_not_exist "${TESTDIR}/.ddev/web-build/Dockerfile.tryout"
   assert_file_not_exist "${TESTDIR}/.ddev/tryout/.version"

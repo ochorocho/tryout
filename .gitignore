@@ -2,13 +2,12 @@
 # commands/, tryout/, config.tryout*.yaml, web-build/) is copied into a
 # project's .ddev/ by `ddev add-on get`; nothing below is part of it.
 #
+# tryout/bin/ is tracked: `ddev add-on get` of a branch or checkout installs
+# working binaries without a Rust toolchain (tui/scripts/stage-bins.sh rebuilds).
+#
 # A tryout project's root is the TYPO3 Core clone itself, so this checkout is
 # never one: try changes in a scratch project (see README → Contributing), and
 # the test suites build theirs under ~/tmp.
-
-# Release binaries: built by tui/scripts/stage-bins.sh, committed only on a
-# release commit by the release workflow.
-/tryout/bin/
 
 # Local tooling
 /.mcp.json

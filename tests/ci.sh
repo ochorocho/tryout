@@ -16,6 +16,11 @@ case "${1:-}" in
     tui/scripts/build-linux.sh
     bats tests/test.bats --filter-tags '!release'
     ;;
+  project)
+    # Project mode: a plain PHP app of the test's own, no Core clone.
+    tui/scripts/build-linux.sh
+    bats tests/project.bats
+    ;;
   lifecycle)
     tui/scripts/build-linux.sh
     bats tests/lifecycle.bats
@@ -24,7 +29,7 @@ case "${1:-}" in
     bats tests/test.bats --filter-tags release
     ;;
   *)
-    echo "Usage: tests/ci.sh unit|install|lifecycle|release" >&2
+    echo "Usage: tests/ci.sh unit|install|project|lifecycle|release" >&2
     exit 2
     ;;
 esac
