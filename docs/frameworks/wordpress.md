@@ -7,6 +7,28 @@ DDEV writes `<docroot>/wp-config-ddev.php`, and `wp-config.php` loads it. DDEV
 only defines a constant there if it is not defined yet, so whoever defines it
 first wins. tryout uses that.
 
+## Set it up from scratch
+
+Start with a fresh copy of the framework's starter project. tryout needs your project to be a git repository, and a clone is one. Its `origin` is the framework's own repository, so `--pr` would open that repository's pull requests.
+
+```bash
+# Get the starter project and set up DDEV
+git clone https://github.com/WordPress/WordPress.git wordpress-tryout
+cd wordpress-tryout
+ddev config --project-type=wordpress
+
+# Install tryout and restart DDEV
+ddev add-on get https://github.com/ochorocho/tryout/tarball/feature/ddev-addon-ddev-subfolder
+ddev restart
+
+# Install WordPress
+ddev wp core install --url=https://wordpress-tryout.ddev.site --title=tryout --admin_user=admin --admin_password=admin --admin_email=admin@example.com
+```
+
+The steps after `ddev restart` are the framework's own first-time setup, not tryout's. They are not tested by tryout's CI. If they changed, follow the [framework's installation guide](https://developer.wordpress.org/cli/commands/core/install/).
+
+The `add-on get` line installs tryout from its development branch. Once tryout is released, use `ddev add-on get bmack/tryout` instead.
+
 ## What you need to do
 
 Nothing. Add a worktree and serve it:

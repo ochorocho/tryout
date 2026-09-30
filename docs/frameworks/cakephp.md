@@ -6,6 +6,28 @@ Yes, through **environment variables**. A CakePHP app reads its database from
 `DATABASE_URL` in `config/app_local.php` (`env('DATABASE_URL')`). tryout sets
 `DATABASE_URL` and the site's full base URL for each served worktree.
 
+## Set it up from scratch
+
+Start with a fresh copy of the framework's starter project. tryout needs your project to be a git repository, and a clone is one. Its `origin` is the framework's own repository, so `--pr` would open that repository's pull requests.
+
+```bash
+# Get the starter project and set up DDEV
+git clone https://github.com/cakephp/app.git cakephp-tryout
+cd cakephp-tryout
+ddev config --project-type=cakephp --docroot=webroot
+
+# Install tryout and restart DDEV
+ddev add-on get https://github.com/ochorocho/tryout/tarball/feature/ddev-addon-ddev-subfolder
+ddev restart
+
+# Install the dependencies
+ddev composer install
+```
+
+The steps after `ddev restart` are the framework's own first-time setup, not tryout's. They are not tested by tryout's CI. If they changed, follow the [framework's installation guide](https://book.cakephp.org/5/en/installation.html).
+
+The `add-on get` line installs tryout from its development branch. Once tryout is released, use `ddev add-on get bmack/tryout` instead.
+
 ## What you need to do
 
 Usually nothing. Add a worktree and serve it:

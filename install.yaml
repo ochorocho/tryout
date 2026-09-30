@@ -86,8 +86,11 @@ post_install_actions:
       if [ ! -e ../.git ] || [ -f ../typo3/sysext/core/composer.json ]; then
         mode=core
       else
-        case "$(git -C .. remote get-url origin 2>/dev/null | tr 'A-Z' 'a-z')" in
-          *typo3/typo3*|*packages/typo3.cms*) mode=core ;;
+        # Core's own repository only (not TYPO3.CMS.BaseDistribution).
+        origin="$(git -C .. remote get-url origin 2>/dev/null | tr 'A-Z' 'a-z')"
+        origin="${origin%/}"; origin="${origin%.git}"
+        case "$origin" in
+          *typo3/typo3|*packages/typo3.cms) mode=core ;;
         esac
       fi
     fi

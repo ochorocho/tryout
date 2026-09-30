@@ -20,6 +20,24 @@ my-typo3-site/
 
 More details are in [architecture](/reference/architecture).
 
+## Set it up from scratch
+
+Clone TYPO3 Core, point DDEV at it and install tryout:
+
+```bash
+# Get TYPO3 Core and set up DDEV
+git clone https://github.com/TYPO3/TYPO3.git typo3-tryout-test
+cd typo3-tryout-test
+ddev config --project-type=typo3 --php-version=8.5
+
+# Install tryout and restart DDEV: this sets up TYPO3
+ddev add-on get https://github.com/ochorocho/tryout/tarball/feature/ddev-addon-ddev-subfolder
+ddev restart
+```
+
+When it is done, `ddev tryout status` shows the site and its login.
+The `add-on get` line installs tryout from its development branch. Once tryout is released, use `ddev add-on get bmack/tryout` instead.
+
 ## How a TYPO3 site is built
 
 A site does not contain its own copy of TYPO3 Core. It uses the code from the

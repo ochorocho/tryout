@@ -9,6 +9,26 @@ Yes, through **environment variables**. tryout cannot know how your app finds
 its database. So it gives each served worktree a set of variables, and your app
 reads them.
 
+## Set it up from scratch
+
+Start from your own project's repository. tryout needs the project to be a git
+repository; a clone is one.
+
+```bash
+# Get your project and set up DDEV
+git clone <your repository> my-project
+cd my-project
+ddev config --project-type=php --docroot=public
+
+# Install tryout and restart DDEV
+ddev add-on get https://github.com/ochorocho/tryout/tarball/feature/ddev-addon-ddev-subfolder
+ddev restart
+```
+
+Use `--project-type=generic` instead if your project runs its own web server setup.
+
+The `add-on get` line installs tryout from its development branch. Once tryout is released, use `ddev add-on get bmack/tryout` instead.
+
 ## What you need to do
 
 Read the database settings from the environment in your app's configuration,

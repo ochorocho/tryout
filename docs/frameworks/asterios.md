@@ -6,6 +6,26 @@ Yes, through **environment variables**. Asterios reads Laravel-style `DB_*`
 variables from `.env`, which DDEV writes. A real environment variable wins over
 `.env`, and tryout sets these variables for each served worktree.
 
+## Set it up from scratch
+
+Start from your own project's repository. tryout needs the project to be a git
+repository; a clone is one.
+
+```bash
+# Get your project and set up DDEV
+git clone <your repository> my-project
+cd my-project
+ddev config --project-type=asterios --docroot=public
+
+# Install tryout and restart DDEV
+ddev add-on get https://github.com/ochorocho/tryout/tarball/feature/ddev-addon-ddev-subfolder
+ddev restart
+```
+
+Then install your app the way you always do (`ddev composer install`, migrations).
+
+The `add-on get` line installs tryout from its development branch. Once tryout is released, use `ddev add-on get bmack/tryout` instead.
+
 ## What you need to do
 
 Nothing. Add a worktree and serve it:

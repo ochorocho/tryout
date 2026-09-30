@@ -11,6 +11,32 @@ Yes. Drupal is supported through a **settings file**. DDEV writes the file
 `.gitignore` next to them), so a new worktree has neither of them. tryout
 writes them for each served worktree.
 
+## Set it up from scratch
+
+Start with a fresh copy of the framework's starter project. tryout needs your project to be a git repository, and a clone is one. Its `origin` is the framework's own repository, so `--pr` would open that repository's pull requests.
+
+```bash
+# Get the starter project and set up DDEV
+git clone https://github.com/drupal/recommended-project.git drupal-tryout
+cd drupal-tryout
+ddev config --project-type=drupal11 --docroot=web
+
+# Install tryout and restart DDEV
+ddev add-on get https://github.com/ochorocho/tryout/tarball/feature/ddev-addon-ddev-subfolder
+ddev restart
+
+# Install the dependencies and Drush
+ddev composer install
+ddev composer require drush/drush
+
+# Install Drupal
+ddev drush site:install -y --account-name=admin --account-pass=admin
+```
+
+The steps after `ddev restart` are the framework's own first-time setup, not tryout's. They are not tested by tryout's CI. If they changed, follow the [framework's installation guide](https://www.drupal.org/docs/getting-started/installing-drupal).
+
+The `add-on get` line installs tryout from its development branch. Once tryout is released, use `ddev add-on get bmack/tryout` instead.
+
 ## What you need to do
 
 Nothing. Add a worktree and serve it:

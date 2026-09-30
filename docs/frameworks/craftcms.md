@@ -7,6 +7,31 @@ variables into the web container. tryout sets the same variables for each
 served worktree. They win over the container's values, both for web requests
 and in `ddev tryout exec`.
 
+## Set it up from scratch
+
+Start with a fresh copy of the framework's starter project. tryout needs your project to be a git repository, and a clone is one. Its `origin` is the framework's own repository, so `--pr` would open that repository's pull requests.
+
+```bash
+# Get the starter project and set up DDEV
+git clone https://github.com/craftcms/craft.git craft-tryout
+cd craft-tryout
+ddev config --project-type=craftcms --docroot=web
+
+# Install tryout and restart DDEV
+ddev add-on get https://github.com/ochorocho/tryout/tarball/feature/ddev-addon-ddev-subfolder
+ddev restart
+
+# Install the dependencies
+ddev composer install
+
+# Install Craft (it asks for an admin account and the site URL)
+ddev craft install
+```
+
+The steps after `ddev restart` are the framework's own first-time setup, not tryout's. They are not tested by tryout's CI. If they changed, follow the [framework's installation guide](https://craftcms.com/docs/5.x/install.html).
+
+The `add-on get` line installs tryout from its development branch. Once tryout is released, use `ddev add-on get bmack/tryout` instead.
+
 ## What you need to do
 
 Nothing. Add a worktree and serve it:

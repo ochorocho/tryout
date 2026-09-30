@@ -7,6 +7,32 @@ Yes. Symfony is supported through **environment variables**. Symfony reads
 always wins. tryout sets `DATABASE_URL` for each served worktree, so Doctrine
 connects to the site's own database.
 
+## Set it up from scratch
+
+Start with a fresh copy of the framework's starter project. tryout needs your project to be a git repository, and a clone is one. Its `origin` is the framework's own repository, so `--pr` would open that repository's pull requests.
+
+```bash
+# Get the starter project and set up DDEV
+git clone https://github.com/symfony/demo.git symfony-tryout
+cd symfony-tryout
+ddev config --project-type=symfony --docroot=public
+
+# Install tryout and restart DDEV
+ddev add-on get https://github.com/ochorocho/tryout/tarball/feature/ddev-addon-ddev-subfolder
+ddev restart
+
+# Install the dependencies
+ddev composer install
+
+# Create the tables and load the demo data (DDEV points .env.local at its database)
+ddev exec bin/console doctrine:schema:create
+ddev exec bin/console doctrine:fixtures:load --no-interaction
+```
+
+The steps after `ddev restart` are the framework's own first-time setup, not tryout's. They are not tested by tryout's CI. If they changed, follow the [framework's installation guide](https://github.com/symfony/demo).
+
+The `add-on get` line installs tryout from its development branch. Once tryout is released, use `ddev add-on get bmack/tryout` instead.
+
 ## What you need to do
 
 Nothing. Add a worktree and serve it:

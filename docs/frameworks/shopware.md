@@ -6,6 +6,31 @@ Yes, through **environment variables**. Shopware reads `DATABASE_URL` and
 `APP_URL` from `.env.local`, but a real environment variable always wins. tryout
 sets both for each served worktree.
 
+## Set it up from scratch
+
+Start with a fresh copy of the framework's starter project. tryout needs your project to be a git repository, and a clone is one. Its `origin` is the framework's own repository, so `--pr` would open that repository's pull requests.
+
+```bash
+# Get the starter project and set up DDEV
+git clone https://github.com/shopware/production.git shopware-tryout
+cd shopware-tryout
+ddev config --project-type=shopware6 --docroot=public
+
+# Install tryout and restart DDEV
+ddev add-on get https://github.com/ochorocho/tryout/tarball/feature/ddev-addon-ddev-subfolder
+ddev restart
+
+# Install the dependencies
+ddev composer install
+
+# Install Shopware with a basic setup
+ddev exec bin/console system:install --basic-setup
+```
+
+The steps after `ddev restart` are the framework's own first-time setup, not tryout's. They are not tested by tryout's CI. If they changed, follow the [framework's installation guide](https://developer.shopware.com/docs/guides/installation/).
+
+The `add-on get` line installs tryout from its development branch. Once tryout is released, use `ddev add-on get bmack/tryout` instead.
+
 ## What you need to do
 
 Nothing. Add a worktree and serve it:

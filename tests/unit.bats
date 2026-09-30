@@ -184,7 +184,7 @@ fake_project() {
 @test "install leaves a project of your own as it was" {
   set -eu -o pipefail
   fake_project
-  git -C "${FAKEROOT}/proj" remote add origin git@github.com:acme/shop.git
+  git -C "${FAKEROOT}/proj" remote add origin https://github.com/TYPO3/TYPO3.CMS.BaseDistribution.git
   printf '{"name":"acme/shop"}\n' > "${FAKEROOT}/proj/composer.json"
   TRYOUT_BIN=/nonexistent run run_actions post_install_actions
   assert_success

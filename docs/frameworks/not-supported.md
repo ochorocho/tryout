@@ -11,6 +11,35 @@ at the site's own database:
 | `maho` | `app/etc/local.xml` |
 | `modx` | `core/config/config.inc.php` |
 
+## Set one up from scratch
+
+These are the starter repositories. tryout serves their worktrees; you point
+each site's config at its own database yourself (see below).
+
+| Type | Repository | `ddev config` |
+|---|---|---|
+| `joomla` | `https://github.com/joomla/joomla-cms.git` | `--project-type=joomla` |
+| `magento` | `https://github.com/OpenMage/magento-lts.git` | `--project-type=magento` |
+| `magento2` | `https://github.com/magento/magento2.git` | `--project-type=magento2 --docroot=pub` |
+| `maho` | `https://github.com/MahoCommerce/maho.git` | `--project-type=maho --docroot=public` |
+| `modx` | `https://github.com/modxcms/revolution.git` | `--project-type=modx` |
+
+```bash
+# For example Joomla
+git clone https://github.com/joomla/joomla-cms.git joomla-tryout
+cd joomla-tryout
+ddev config --project-type=joomla
+
+# Install tryout and restart DDEV
+ddev add-on get https://github.com/ochorocho/tryout/tarball/feature/ddev-addon-ddev-subfolder
+ddev restart
+```
+
+Then install the application with its own installer. These setups are not
+tested by tryout's CI.
+
+The `add-on get` line installs tryout from its development branch. Once tryout is released, use `ddev add-on get bmack/tryout` instead.
+
 ## What works
 
 Everything that does not depend on the app's own configuration:

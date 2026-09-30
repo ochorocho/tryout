@@ -37,8 +37,7 @@ pub fn detect_mode(root: &Path) -> Mode {
         return Mode::Core;
     }
     let origin = super::git::out(root, &["remote", "get-url", "origin"]).unwrap_or_default();
-    let origin = origin.to_lowercase();
-    if origin.contains("typo3/typo3") || origin.contains("packages/typo3.cms") {
+    if is_core_origin(&origin) {
         Mode::Core
     } else {
         Mode::Project
@@ -52,6 +51,15 @@ pub fn for_mode(mode: Mode) -> &'static dyn ProjectKind {
         Mode::Core => &TYPO3_CORE,
         Mode::Project => &GENERIC_PROJECT,
     }
+}
+
+/// TYPO3 Core's own repository, on GitHub or Gerrit — and not one whose name
+/// only starts like it (the site distribution, TYPO3.CMS.BaseDistribution).
+fn is_core_origin(url: &str) -> bool {
+    let u = url.trim().to_lowercase();
+    let u = u.trim_end_matches('/');
+    let u = u.strip_suffix(".git").unwrap_or(u);
+    u.ends_with("typo3/typo3") || u.ends_with("packages/typo3.cms")
 }
 
 /// What tryout needs to know about a kind of project.
@@ -282,6 +290,25 @@ mod tests {
             &["remote", "add", "origin", "git@github.com:acme/shop.git"],
         );
         assert_eq!(detect_mode(own.path()), Mode::Project);
+
+        // Core's repository by any of its addresses; its site distribution is
+        // a project like any other.
+        for core in [
+            "https://github.com/typo3/typo3.git",
+            "git@github.com:TYPO3/TYPO3.git",
+            "https://github.com/TYPO3/TYPO3",
+            "https://review.typo3.org/Packages/TYPO3.CMS",
+            "ssh://jdoe@review.typo3.org:29418/Packages/TYPO3.CMS.git",
+        ] {
+            assert!(is_core_origin(core), "{core}");
+        }
+        for project in [
+            "https://github.com/TYPO3/TYPO3.CMS.BaseDistribution.git",
+            "https://github.com/typo3/typo3-extension.git",
+            "git@github.com:acme/typo3.git",
+        ] {
+            assert!(!is_core_origin(project), "{project}");
+        }
     }
 
     #[test]
