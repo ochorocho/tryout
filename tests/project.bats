@@ -261,6 +261,14 @@ page() {
 
   run page "feat.${PROJNAME}.ddev.site"
   assert_output --partial "Laravel"
+
+  # status finds a database that ran migrations the code does not have.
+  run ddev tryout status
+  refute_output --partial "Schema:"
+  sql db_feat "INSERT INTO migrations (migration, batch) VALUES ('2099_01_01_000000_from_the_future', 9)"
+  run ddev tryout status
+  assert_output --partial "Schema:"
+  assert_output --partial "from_the_future"
 }
 
 # bats test_tags=project,db,symfony
@@ -352,6 +360,13 @@ page() {
   assert_output --partial "--backend for /user/login"
   refute_output --partial "patch [<id>]"
   refute_output --partial "checkout <branch>"
+
+  # status finds a database of a newer Drupal than the code.
+  run ddev tryout status
+  refute_output --partial "Schema:"
+  sql db_feat "UPDATE key_value SET value='i:99999;' WHERE collection='system.schema' AND name='system'"
+  run ddev tryout status
+  assert_output --partial "feat: its database is at Drupal schema 99999"
   run ddev drush status --field=db-name
   assert_output "db"
   run page "feat.${PROJNAME}.ddev.site/user/login"

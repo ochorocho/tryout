@@ -19,6 +19,7 @@ pub mod poststart;
 pub mod proc;
 pub mod prompt;
 pub mod review;
+pub mod schema;
 pub mod serve;
 pub mod site;
 pub mod status;

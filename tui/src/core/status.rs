@@ -102,6 +102,25 @@ pub fn body(ctx: &Ctx, patches: &str) -> Vec<String> {
         }
         line(format!("  Site:      {BOLD}{}", ctx.env.primary_url));
         line(format!("  Database:  {}", database_line(ctx)));
+        // A database from a newer version of the framework breaks the code
+        // (the container asks the databases; the host has no client).
+        if ctx.in_container {
+            let sites =
+                std::iter::once(super::ctx::PRIMARY_SITE.to_string()).chain(served.iter().cloned());
+            for name in sites {
+                if let Some(why) = super::schema::mismatch(ctx, &name) {
+                    let label = if super::site::is_primary(&name) {
+                        "primary"
+                    } else {
+                        &name
+                    };
+                    line(format!("  Schema:    {warn} {label}: {why}"));
+                    line(format!(
+                        "             {DIM}newer than the code — pages will fail. → ddev tryout delete {label}"
+                    ));
+                }
+            }
+        }
         return l;
     }
 

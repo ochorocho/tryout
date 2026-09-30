@@ -134,6 +134,10 @@ downgrades a database. So when a worktree runs an older Drupal, WordPress,
 Laravel, Symfony, TYPO3, Shopware or Craft than the primary, tryout does not copy
 the primary's database. The site starts empty, and tryout tells you how to set
 it up (for example `ddev tryout drush <site> site:install standard -y`).
+
+If a site has such a database anyway (you switched its worktree to an older
+branch, or copied a database by hand), `ddev tryout status` shows a **Schema**
+warning for it.
 :::
 
 ## Resetting, unserving and removing

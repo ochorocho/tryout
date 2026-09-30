@@ -317,7 +317,10 @@ pub fn site_sql(ctx: &Ctx, site_name: &str, sql: &str) -> Option<Output> {
         Engine::Postgres => psql(&host, &name, sql),
         Engine::Mariadb | Engine::Mysql => proc::capture(
             "mysql",
-            &["-h", &host, "-uroot", "-proot", "-D", &name, "-e", sql],
+            // Rows only: no header, tab-separated.
+            &[
+                "-h", &host, "-uroot", "-proot", "-N", "-B", "-D", &name, "-e", sql,
+            ],
             None,
         ),
         Engine::Sqlite => {

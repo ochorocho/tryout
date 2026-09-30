@@ -120,6 +120,14 @@ It shows:
   TYPO3 setup and the contribution setup.
 - **Site:** the URL of the primary site.
 - **Database:** the database servers in use, and which sites run on each.
+- **Schema** (project mode, only when something is wrong): a site whose
+  database comes from a newer version of its framework than its code. Its
+  pages will fail. tryout checks Drupal (`system.schema` against the code's
+  `system_update_N`), WordPress (`db_version` against `$wp_db_version`),
+  Laravel (the `migrations` table against `database/migrations/`) and Symfony
+  (`doctrine_migration_versions` against `migrations/`). The fix is
+  `ddev tryout delete <site>`: a fresh copy, or an empty database for older
+  code.
 
 It also warns you when the project runs an older copy of the add-on than the one
 you installed from. This check runs on your computer and works while DDEV is
