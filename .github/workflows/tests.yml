@@ -29,6 +29,25 @@ permissions:
   contents: read
 
 jobs:
+  # The tryout binary, built once for every job below: compiling it is the same
+  # minute in each of them. The jobs install the add-on with this build (the
+  # source of this commit), not with the committed one.
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: tui
+          key: musl
+      - run: tui/scripts/build-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tryout-linux
+          path: tryout/bin/tryout-linux-*
+          if-no-files-found: error
+          retention-days: 1
+
   # Fast suites: pure helpers, then install/config/removal. Every test in the
   # install suite costs a full DDEV project lifecycle, so the slow tests that
   # clone TYPO3 Core are sharded into their own job below.
@@ -44,15 +63,25 @@ jobs:
       fail-fast: false
 
     runs-on: ${{ matrix.os }}
+    needs: build
+    env:
+      # tests/ci.sh installs the binary the build job made, instead of building.
+      TRYOUT_PREBUILT: "1"
 
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tryout-linux
+          path: tryout/bin
+      - run: chmod +x tryout/bin/tryout-linux-*
       - uses: ddev/github-action-add-on-test@v2
         with:
           ddev_version: ${{ matrix.ddev_version }}
           token: ${{ secrets.GITHUB_TOKEN }}
           debug_enabled: ${{ github.event.inputs.debug_enabled }}
-          addon_repository: ${{ env.GITHUB_REPOSITORY }}
-          addon_ref: ${{ env.GITHUB_REF }}
+          # Checked out above, with the binary in tryout/bin/.
+          disable_checkout_action: "true"
           # The action runs test_command as plain words (no shell), so each
           # suite is a case in tests/ci.sh. `install` leaves the release test
           # out; the nightly job below covers it.
@@ -74,15 +103,24 @@ jobs:
       fail-fast: false
 
     runs-on: ubuntu-24.04
+    needs: build
+    env:
+      # tests/ci.sh installs the binary the build job made, instead of building.
+      TRYOUT_PREBUILT: "1"
 
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tryout-linux
+          path: tryout/bin
+      - run: chmod +x tryout/bin/tryout-linux-*
       - uses: ddev/github-action-add-on-test@v2
         with:
           ddev_version: ${{ matrix.ddev_version }}
           token: ${{ secrets.GITHUB_TOKEN }}
           debug_enabled: ${{ github.event.inputs.debug_enabled }}
-          addon_repository: ${{ env.GITHUB_REPOSITORY }}
-          addon_ref: ${{ env.GITHUB_REF }}
+          disable_checkout_action: "true"
           test_command: bash tests/ci.sh lifecycle
 
   # Project mode per framework: each installs a real app with its own tools
@@ -98,15 +136,24 @@ jobs:
       fail-fast: false
 
     runs-on: ubuntu-24.04
+    needs: build
+    env:
+      # tests/ci.sh installs the binary the build job made, instead of building.
+      TRYOUT_PREBUILT: "1"
 
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tryout-linux
+          path: tryout/bin
+      - run: chmod +x tryout/bin/tryout-linux-*
       - uses: ddev/github-action-add-on-test@v2
         with:
           ddev_version: stable
           token: ${{ secrets.GITHUB_TOKEN }}
           debug_enabled: ${{ github.event.inputs.debug_enabled }}
-          addon_repository: ${{ env.GITHUB_REPOSITORY }}
-          addon_ref: ${{ env.GITHUB_REF }}
+          disable_checkout_action: "true"
           test_command: bash tests/ci.sh project-${{ matrix.framework }}
 
   # Browser tests: does each served worktree URL really render a frontend and log
@@ -124,9 +171,15 @@ jobs:
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
       contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-24.04
+    needs: build
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tryout-linux
+          path: tryout/bin
+      - run: chmod +x tryout/bin/tryout-linux-*
 
       - name: Install DDEV
         run: |
@@ -140,7 +193,6 @@ jobs:
           mkdir -p "$PROJECT" && cd "$PROJECT"
           ddev config --project-name=tryout-e2e --project-tld=ddev.site \
             --project-type=typo3 --docroot=TYPO3-Instances/primary/public --php-version=8.5
-          "$GITHUB_WORKSPACE/tui/scripts/build-linux.sh"
           ddev add-on get "$GITHUB_WORKSPACE"
           ddev start -y
           # A 13.4 secondary: renders a styleguide frontend and logs in, so the

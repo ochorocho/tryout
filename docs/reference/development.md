@@ -92,7 +92,7 @@ Good to know about the suites:
 
 | Workflow | Jobs |
 |---|---|
-| `tests.yml` | On every push and pull request: `unit`, `install` and `project`, on DDEV stable and HEAD. Every night, when started by hand, or on a pull request with the label **full-ci**: also `lifecycle` (stable, HEAD), `frameworks` (laravel, symfony, drupal, wordpress, typo3, shopware), `browser e2e` and `install-from-release`. |
+| `tests.yml` | On every push and pull request: `unit`, `install` and `project`, on DDEV stable and HEAD. Every night, when started by hand, or on a pull request with the label **full-ci**: also `lifecycle` (stable, HEAD), `frameworks` (laravel, symfony, drupal, wordpress, typo3, shopware), `browser e2e` and `install-from-release`. A `build` job compiles the Linux binary once (with a build cache); every job that installs the add-on downloads it into `tryout/bin/` instead of compiling it again. |
 | `tui.yml` | `cargo fmt`, `clippy` and the Rust tests on Linux and macOS, when something under `tui/` changes |
 | `publish.yml` | Builds this documentation and publishes it on GitHub Pages |
 | `release.yml` | Started by hand: builds the three binaries, commits them on a separate release commit, tags that commit and publishes the release |

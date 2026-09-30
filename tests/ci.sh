@@ -7,28 +7,37 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# The binary is part of the payload: CI's build job made it once
+# (TRYOUT_PREBUILT=1, already in tryout/bin/); anywhere else, build it here.
+build() {
+  if [ -n "${TRYOUT_PREBUILT:-}" ] && ls tryout/bin/tryout-linux-* >/dev/null 2>&1; then
+    echo "Using the prebuilt $(ls tryout/bin/tryout-linux-*)"
+    return
+  fi
+  tui/scripts/build-linux.sh
+}
+
 case "${1:-}" in
   unit)
     bats tests/unit.bats
     ;;
   install)
-    # The binary is part of the payload: build it before installing.
-    tui/scripts/build-linux.sh
+    build
     bats tests/test.bats --filter-tags '!release'
     ;;
   project)
     # Project mode: a plain PHP app of the test's own, no Core clone.
-    tui/scripts/build-linux.sh
+    build
     bats tests/project.bats --filter-tags 'project,!db'
     ;;
   project-*)
     # One framework's journey (project-laravel, project-drupal, …): its
     # installer, its database, its own settings — minutes each.
-    tui/scripts/build-linux.sh
+    build
     bats tests/project.bats --filter-tags "project,${1#project-}"
     ;;
   lifecycle)
-    tui/scripts/build-linux.sh
+    build
     bats tests/lifecycle.bats
     ;;
   release)
