@@ -425,6 +425,17 @@ pub fn for_kind(entries: Vec<Entry>, kind: &dyn ProjectKind) -> Vec<Entry> {
                 a.hint = "a fresh copy of the primary's".into();
                 out.push(Entry::Action(a));
             }
+            // TYPO3's version notes are Core's business.
+            Entry::Sub {
+                label,
+                hint,
+                mut items,
+            } if kind.seeds_databases() => {
+                for a in &mut items {
+                    a.hint = a.hint.replace(" · TYPO3 lists ≤ 10.x", "");
+                }
+                out.push(Entry::Sub { label, hint, items });
+            }
             Entry::Separator if matches!(out.last(), None | Some(Entry::Separator)) => {}
             e => out.push(e),
         }
@@ -506,6 +517,27 @@ mod tests {
             .unwrap();
         let entries = menu(&served, &GENERIC_PROJECT);
         assert!(entries.iter().any(|e| e.label() == "Reset its database…"));
+
+        // Pull requests: a project's; TYPO3 Core has Gerrit.
+        let pr = |kind: &dyn ProjectKind| {
+            lines(&for_kind(project(), kind))
+                .iter()
+                .any(|l| l.contains("--pr"))
+        };
+        assert!(pr(&GENERIC_PROJECT) && !pr(&TYPO3_CORE));
+
+        // TYPO3's database notes are not a project's.
+        let unserved = fixture().into_iter().find(|w| !w.served()).unwrap();
+        let hints: Vec<String> = menu(&unserved, &GENERIC_PROJECT)
+            .into_iter()
+            .filter_map(|e| match e {
+                Entry::Sub { items, .. } => Some(items),
+                _ => None,
+            })
+            .flatten()
+            .map(|a| a.hint)
+            .collect();
+        assert!(hints.iter().all(|h| !h.contains("TYPO3")), "{hints:?}");
     }
 
     fn claim(line: &str) -> Claim {

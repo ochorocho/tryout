@@ -233,9 +233,10 @@ impl Db {
         } else {
             "its own server, started for it".to_string()
         };
+        // What TYPO3 supports matters only where TYPO3 is what runs.
         match self.typo3_note() {
-            Some(note) => format!("{what} · {note}"),
-            None => what,
+            Some(note) if ctx.mode() == super::kind::Mode::Core => format!("{what} · {note}"),
+            _ => what,
         }
     }
 }
