@@ -89,7 +89,7 @@ addon_start() {
   assert_success
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard4
 @test "ddev start provisions a working TYPO3 from the Core git repository" {
   set -eu -o pipefail
   echo "# full lifecycle in ${TESTDIR} — clones TYPO3 Core, takes several minutes" >&3
@@ -130,7 +130,7 @@ addon_start() {
   refute_output --partial "not cloned"
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard2
 @test "checkout switches the Core branch and regenerates the overlay" {
   set -eu -o pipefail
   addon_start
@@ -158,7 +158,7 @@ addon_start() {
   assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard1
 @test "a Gerrit patch is applied and reported, and reset drops it" {
   set -eu -o pipefail
   addon_start
@@ -185,7 +185,7 @@ addon_start() {
   assert_output --partial "none applied"
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard1
 @test "an unresolvable Gerrit change fails without touching the checkout" {
   set -eu -o pipefail
   addon_start
@@ -197,7 +197,7 @@ addon_start() {
   assert_output "0"
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard2
 @test "a served worktree gets its own URL, PHP version and database" {
   set -eu -o pipefail
   addon_start
@@ -264,7 +264,7 @@ addon_start() {
   assert_backend_loads "https://v13.${PROJNAME}.ddev.site/typo3/"
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard4
 @test "several worktrees are served side by side, each on its own database" {
   set -eu -o pipefail
   addon_start
@@ -321,7 +321,7 @@ addon_start() {
   assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard2
 @test "TRYOUT_PATCHES from the patch list is applied on start" {
   set -eu -o pipefail
   run ddev add-on get "${DIR}"
@@ -341,7 +341,7 @@ addon_start() {
   assert_output --partial "1 applied"
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard3
 @test "an existing project keeps its own dependencies alongside Core" {
   set -eu -o pipefail
   # The user's own composer.json lives beside the instance overlay, which merges
@@ -366,7 +366,7 @@ JSON
   assert_failure
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard3
 @test "the whole layout survives add, use, serve and a restart" {
   set -eu -o pipefail
   # EVERY bug the layout change produced needed a real project to surface: a glob
@@ -468,7 +468,7 @@ table_count() {
     "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$1';" 2>/dev/null | tr -dc '0-9'
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard3
 @test "journey: the primary is inspected, patched, updated, rebuilt and wiped" {
   set -eu -o pipefail
   addon_start
@@ -527,7 +527,7 @@ table_count() {
   assert_backend_loads "https://${PROJNAME}.ddev.site/typo3/"
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard2
 @test "journey: a served worktree is switched, reset, renamed, opened, wiped and removed" {
   set -eu -o pipefail
   addon_start
@@ -588,7 +588,7 @@ table_count() {
   refute_output --partial "worktrees/lts"
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard4
 @test "journey: contribution is set up, diagnosed and taken back out" {
   set -eu -o pipefail
   addon_start
@@ -634,7 +634,7 @@ pg() {
   ddev exec env PGPASSWORD=db psql -h db -U db -d "$1" -tAc "$2"
 }
 
-# bats test_tags=lifecycle,postgres
+# bats test_tags=lifecycle,postgres,shard3
 @test "on Postgres, sites get their own database, and a kept one is restored" {
   set -eu -o pipefail
   run ddev config --database=postgres:16
@@ -691,7 +691,7 @@ pg_on() { # <host> <database> <sql>
   ddev exec env PGPASSWORD=db psql -h "$1" -U db -d "$2" -tAc "$3"
 }
 
-# bats test_tags=lifecycle,postgres
+# bats test_tags=lifecycle,postgres,shard1
 @test "a site on the other engine gets its own database server, gone with its last database" {
   set -eu -o pipefail
   addon_start # a MariaDB project
@@ -773,7 +773,7 @@ pg_on() { # <host> <database> <sql>
   refute_output --partial "restored"
 }
 
-# bats test_tags=lifecycle,db
+# bats test_tags=lifecycle,db,shard4
 @test "sites on SQLite and MySQL, and a site switched from one type to another" {
   set -eu -o pipefail
   addon_start # a MariaDB project
@@ -841,7 +841,7 @@ pg_on() { # <host> <database> <sql>
   refute_output --partial "ddev-${PROJNAME}-tryout-"
 }
 
-# bats test_tags=lifecycle
+# bats test_tags=lifecycle,shard1
 @test "serving works when DDEV has to write the hostname into /etc/hosts" {
   set -eu -o pipefail
   # With use_dns_when_possible off, DDEV never trusts DNS for *.ddev.site: every

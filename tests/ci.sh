@@ -40,11 +40,17 @@ case "${1:-}" in
     build
     bats tests/lifecycle.bats
     ;;
+  lifecycle-*)
+    # A quarter of the journeys (lifecycle-shard1 … shard4): each test is
+    # tagged with one shard, balanced by how long it takes.
+    build
+    bats tests/lifecycle.bats --filter-tags "lifecycle,${1#lifecycle-}"
+    ;;
   release)
     bats tests/test.bats --filter-tags release
     ;;
   *)
-    echo "Usage: tests/ci.sh unit|install|project|project-<framework>|lifecycle|release" >&2
+    echo "Usage: tests/ci.sh unit|install|project|project-<framework>|lifecycle[-shardN]|release" >&2
     exit 2
     ;;
 esac

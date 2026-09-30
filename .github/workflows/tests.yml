@@ -100,6 +100,9 @@ jobs:
     strategy:
       matrix:
         ddev_version: [stable, HEAD]
+        # The 16 journeys in four parallel jobs of about 15 minutes each:
+        # tests/lifecycle.bats tags each test with its shard.
+        shard: [shard1, shard2, shard3, shard4]
       fail-fast: false
 
     runs-on: ubuntu-24.04
@@ -121,7 +124,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           debug_enabled: ${{ github.event.inputs.debug_enabled }}
           disable_checkout_action: "true"
-          test_command: bash tests/ci.sh lifecycle
+          test_command: bash tests/ci.sh lifecycle-${{ matrix.shard }}
 
   # Project mode per framework: each installs a real app with its own tools
   # (composer create-project, drush, wp-cli, typo3 setup) and serves worktrees

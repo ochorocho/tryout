@@ -546,3 +546,17 @@ fake_project() {
   done
   [ ${#missing[@]} -eq 0 ] || fail "no end-to-end test runs: ${missing[*]}"
 }
+
+@test "every lifecycle journey runs in exactly one CI shard" {
+  # CI runs tests/lifecycle.bats as four parallel jobs, one per shard tag; a
+  # journey without a shard would never run there, one with two would run twice.
+  local total sum=0 s n
+  total="$(bats --count "${DIR}/tests/lifecycle.bats")"
+  for s in shard1 shard2 shard3 shard4; do
+    n="$(bats --count --filter-tags "lifecycle,${s}" "${DIR}/tests/lifecycle.bats")"
+    sum=$((sum + n))
+  done
+  [ "${sum}" -eq "${total}" ] || fail "shards cover ${sum} of ${total} journeys"
+  run grep -cE '^# bats test_tags=.*shard[0-9].*shard[0-9]' "${DIR}/tests/lifecycle.bats"
+  assert_output "0"
+}
