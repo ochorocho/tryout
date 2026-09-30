@@ -66,7 +66,7 @@ change; `mode` is detected (root repository is TYPO3 Core → core) and shown by
 repo, no repo); the trait's `typo3-core` answers equal today's constants
 (golden generator tests unchanged). Bats: existing unit/install/lifecycle suites
 green. E2E: existing browser suite green.
-**Status**: In Progress
+**Status**: Complete — every suite green in CI (run 36663002091), lifecycle included
 **Done so far**: `core::kind` with `Mode` (detected from the root: no repo or
 Core's sysexts or a TYPO3 origin → core; anything else → project) and the
 `ProjectKind` trait, `Typo3Core` its one implementation. Routed through it:
