@@ -10,16 +10,18 @@ All of `ddev tryout`, in one program: the command line on the host (`tryout
 - `src/cli/` — argument parsing and the verbs, host and container side.
 - `src/tui/` — the terminal UI and its session server.
 
-The terminal UI: the Core worktrees on the left, and on
+The terminal UI: the worktrees on the left (of your own project, or of TYPO3
+Core), and on
 the right that worktree's tabs — as many shells as you open, kept running while
 you look at another worktree. Below the worktrees, an agents pane lists every tab
 running a coding agent and whether it needs you. Every tryout command for a
 worktree is behind `a` or a right-click: the TUI asks its questions itself — a
-form, a branch list, a list of open Gerrit changes, a confirmation that names
+form, a branch list, a list of open Gerrit changes or pull requests, a confirmation that names
 what goes — and runs it as a job in the **Activity** panel.
 
-The source in `tui/` is not shipped; its builds are, in `tryout/bin/` of a
-release (see *Releasing*).
+The source in `tui/` is not shipped; its builds are, committed in `tryout/bin/`
+(see *Releasing*). After changing the source, rebuild them with
+`scripts/stage-bins.sh` and commit them with it.
 
 ```bash
 cargo test                                            # everything, in seconds
@@ -176,7 +178,7 @@ lipo -create -output tryout-macos-universal \
 
 Verified: the universal file runs natively on arm64 and under Rosetta; the arm64
 ELF runs unchanged in DDEV's (Debian) web container, the x86_64 one in Alpine.
-Sizes are ~2.5 MB (universal) and ~1 MB per Linux binary.
+Sizes are about 6 MB (universal) and 3 MB per Linux binary.
 
 ## Releasing
 
@@ -185,8 +187,9 @@ Sizes are ~2.5 MB (universal) and ~1 MB per Linux binary.
 checks each carries `#ddev-generated` (DDEV manages only files that do), commits
 them into `tryout/bin/` on a release-only commit, tags that commit and publishes
 the release with the binaries and their `.sha256` attached. `ddev add-on get`
-installs the tagged tree, so the binaries have to be in it; main stays free of
-them (`tryout/bin/` is gitignored).
+installs the tagged tree, so the binaries have to be in it. Branches carry
+committed builds too (so `ddev add-on get` of a branch needs no Rust), but a
+release does not trust them to match its source and builds afresh.
 
 Bump `tryout/VERSION` whenever what a user sees changes: `ddev tryout status`
 compares it with the stamp an install recorded.

@@ -41,8 +41,8 @@ another worktree is covered without editing anything here.
 
 ## Why it is not in the default suite
 
-The repository has no build step and no Node tooling; `package.json`, `node_modules`
-and a browser download are a large dependency for one class of check. Keeping this
+The add-on itself needs no Node tooling (the docs site in `docs/` has its own);
+`node_modules` and a browser download are a large dependency for one class of check. Keeping this
 directory self-contained means someone who never runs it pays nothing.
 
 ## Project mode

@@ -33,7 +33,7 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
     };
     let Some(spec) = verbs::find(action) else {
         out::error(format!("Unknown command: {action}"));
-        print(&help::main());
+        print(&help::main(ctx.kind()));
         return Err(Exit(1));
     };
     available(ctx, spec.name)?;
@@ -41,7 +41,7 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Res {
         Verb::Status => status(ctx, rest),
         Verb::Help => {
             reject_args("help", rest)?;
-            print(&help::main());
+            print(&help::main(ctx.kind()));
             Ok(())
         }
         Verb::Launch => launch(ctx, rest),
@@ -585,7 +585,7 @@ fn exec(ctx: &Ctx, args: &[String]) -> Res {
             .collect();
         print(&format!(
             "\n  Examples:\n    ddev tryout exec v13 vendor/bin/typo3 cache:flush\n\
-\x20   ddev tryout exec v13 composer show typo3/cms-core\n\n  Sites: primary{sites}\n"
+\x20   ddev tryout exec v13 /usr/local/bin/composer show typo3/cms-core\n\n  Sites: primary{sites}\n"
         ));
         return Err(Exit(1));
     }
@@ -710,7 +710,7 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
             delegate(ctx, &a)
         }
         "help" | "-h" | "--help" => {
-            print(&help::worktree());
+            print(&help::worktree(ctx.kind()));
             Ok(())
         }
         "add" => worktree_add(ctx, rest),
@@ -795,7 +795,7 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
         }
         _ => {
             out::error(format!("Unknown worktree command: {sub}"));
-            print(&help::worktree());
+            print(&help::worktree(ctx.kind()));
             Err(Exit(1))
         }
     }

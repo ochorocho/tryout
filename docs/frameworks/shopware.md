@@ -1,0 +1,73 @@
+# Shopware 6
+
+## Is it supported?
+
+Yes, through **environment variables**. Shopware reads `DATABASE_URL` and
+`APP_URL` from `.env.local`, but a real environment variable always wins. tryout
+sets both for each served worktree.
+
+## What you need to do
+
+Nothing. Add a worktree and serve it:
+
+```bash
+# Create worktrees/feat from the branch main and serve it
+# at https://feat.<project>.ddev.site
+ddev tryout worktree add feat main --serve
+
+# bin/console is a PHP file, so it runs through exec
+ddev tryout exec feat bin/console cache:clear
+```
+
+## What tryout does for you
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | `mysql://db:db@db:3306/db_<site>?serverVersion=…&charset=utf8mb4` |
+| `APP_URL` | `https://<site>.<project>.ddev.site` |
+
+Every site also gets tryout's own variables (see
+[PHP and generic](/frameworks/php)).
+
+**Copied into the worktree:** `.env.local` and `.env` from your project, if the
+worktree has none.
+
+**After a copy:** Shopware keeps the storefront's domain in the database. So
+after tryout copies the primary's database into a new site, it runs this in the
+site, after `composer install`:
+
+```bash
+bin/console sales-channel:update:domain <site>.<project>.ddev.site
+```
+
+If that command fails, the site is still served, and tryout warns you that the
+storefront may still link to the primary's URL.
+
+## What happens to the database
+
+A new site does not start empty. tryout copies the primary's database into it.
+The primary is the site DDEV serves at your project's own URL; its database is
+called `db`.
+
+- tryout only fills a new, empty database. If you unserved the site earlier and
+  kept its database, you get that database back as it was.
+- `--db-from <site>` copies from another served site instead. `@primary` means
+  the primary.
+- `--db-empty` gives the site an empty database. Use it when the app installs
+  itself.
+- `ddev tryout delete <site>` throws the site's database away and copies the
+  primary's again.
+
+A copy only works between servers of the same family: MariaDB and MySQL copy
+into each other, PostgreSQL copies into PostgreSQL. Nothing is copied into
+SQLite, or from MariaDB/MySQL to PostgreSQL. In that case the site starts empty,
+and tryout tells you so. To serve a site on another database type or version,
+see [Databases](/guide/sites#databases).
+
+## What to watch out for
+
+- Shopware needs MariaDB or MySQL.
+
+## Is it tested?
+
+Not yet. There is no CI job that installs Shopware.

@@ -59,8 +59,9 @@ post_install_actions:
 
   - |
     #ddev-description:Check there is a tryout build for this machine
-    # A release carries one per platform in tryout/bin/. A plain checkout of the
-    # source has none until tui/scripts/stage-bins.sh builds them.
+    # The repository carries one per platform in tryout/bin/, releases and
+    # branches alike; a checkout whose builds were deleted needs
+    # tui/scripts/stage-bins.sh to make them again.
     case "$(uname -s 2>/dev/null)-$(uname -m 2>/dev/null)" in
       Darwin-*)                bin=tryout-macos-universal ;;
       Linux-x86_64|Linux-amd64) bin=tryout-linux-x86_64 ;;

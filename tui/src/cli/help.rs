@@ -2,30 +2,53 @@
 
 use crate::core::out::{BOLD, DIM, NC};
 
+use crate::core::kind::ProjectKind;
+
 use super::verbs::VERBS;
 
-pub fn main() -> String {
-    let mut s = format!("\n{BOLD}ddev tryout{NC} — TYPO3 development toolkit\n\nCommands:\n");
-    for v in VERBS {
+/// Where the documentation lives.
+pub const DOCS: &str = "https://bmack.github.io/tryout/";
+
+/// The commands this kind of project has; TYPO3 Core's own notes only for it.
+pub fn main(kind: &dyn ProjectKind) -> String {
+    let what = if kind.opens_pull_requests() {
+        "every branch of your project, served side by side"
+    } else {
+        "TYPO3 Core development toolkit"
+    };
+    let mut s = format!("\n{BOLD}ddev tryout{NC} — {what}\n\nCommands:\n");
+    for v in VERBS.iter().filter(|v| kind.supports(v.name)) {
         let pad = " ".repeat(26usize.saturating_sub(v.usage.chars().count()));
         s.push_str(&format!("  {BOLD}{}{NC}{pad}{}\n", v.usage, v.help));
     }
     s.push_str(&format!(
-        "\n  {DIM}worktree has its own help: ddev tryout worktree help{NC}\n\n\
-Custom extensions:\n  Place extensions in packages/ and run:\n    ddev composer require vendor/my-extension:@dev\n\n\
-Gerrit patches (auto-apply on start):\n  Edit .ddev/config.tryout-patches.yaml:\n    TRYOUT_PATCHES=56947,12345\n\n"
+        "\n  {DIM}worktree has its own help: ddev tryout worktree help{NC}\n\n"
     ));
+    if kind.opens_pull_requests() {
+        s.push_str("A pull request as its own site:\n    ddev tryout worktree add --pr 42\n\n");
+    } else {
+        s.push_str(
+            "Custom extensions:\n  Place extensions in packages/ and run:\n    ddev composer require vendor/my-extension:@dev\n\n\
+Gerrit patches (auto-apply on start):\n  Edit .ddev/config.tryout-patches.yaml:\n    TRYOUT_PATCHES=56947,12345\n\n",
+        );
+    }
+    s.push_str(&format!("Documentation: {DOCS}\n\n"));
     s
 }
 
-pub fn worktree() -> String {
+pub fn worktree(kind: &dyn ProjectKind) -> String {
     let row = |cmd: &str, text: &str| {
         format!(
             "  {BOLD}{cmd}{NC}{}{text}\n",
             " ".repeat(24 - cmd.chars().count())
         )
     };
-    let mut s = format!("\n{BOLD}ddev tryout worktree{NC} — side-by-side Core checkouts\n\n");
+    let what = if kind.opens_pull_requests() {
+        "side-by-side checkouts of your project"
+    } else {
+        "side-by-side Core checkouts"
+    };
+    let mut s = format!("\n{BOLD}ddev tryout worktree{NC} — {what}\n\n");
     for (c, t) in [
         (
             "add <name> [<branch>]",
@@ -54,6 +77,10 @@ pub fn worktree() -> String {
             "The branches a new worktree can be based on",
         ),
     ] {
+        // `use` rewrites Core's overlay: a project has none.
+        if c.starts_with("use ") && !kind.supports("worktree use") {
+            continue;
+        }
         s.push_str(&row(c, t));
     }
     s.push_str(
@@ -68,9 +95,6 @@ pub fn worktree() -> String {
 \x20        --yes       (remove: skip the confirmation)\n\
 \x20        --drop-db   (unserve: also drop the site's database)\n\
 \x20        --no-restart (add --serve/serve/unserve/rename/remove: skip the restart)\n\
-\n  Two ways to run several Cores:\n\
-\x20   use    — one site at the project URL, switch which Core it serves\n\
-\x20   serve  — every worktree live at once on <name>.<project>.ddev.site\n\
 \n  Adding or removing a served site restarts DDEV automatically, so\n\
 \x20 it can register the hostname and issue its TLS certificate.\n\
 \x20 Re-serving one that already exists (a --php change, say) applies\n\
@@ -84,6 +108,14 @@ pub fn worktree() -> String {
 \n  All worktrees share one git object store, so ddev tryout cs hooks and\n\
 \x20 Gerrit config are set up once and apply to every one of them.\n\n",
     );
+    if kind.supports("worktree use") {
+        s.push_str(
+            "  Two ways to run several Cores:\n\
+\x20   use    — one site at the project URL, switch which Core it serves\n\
+\x20   serve  — every worktree live at once on <name>.<project>.ddev.site\n\n",
+        );
+    }
+    s.push_str(&format!("  Documentation: {DOCS}reference/commands\n\n"));
     s
 }
 
@@ -109,4 +141,28 @@ Username resolution order:\n\
 \x20 3. git config: tryout.gerritUser (cached from previous setup)\n\
 \x20 4. prompt      (interactive)\n\n"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::kind::{GENERIC_PROJECT, TYPO3_CORE};
+
+    #[test]
+    fn help_offers_what_this_kind_of_project_has() {
+        let core = main(&TYPO3_CORE);
+        assert!(core.contains("TYPO3 Core development toolkit"));
+        assert!(core.contains("Gerrit patches") && core.contains(DOCS));
+
+        let project = main(&GENERIC_PROJECT);
+        assert!(project.contains("every branch of your project"));
+        assert!(project.contains("--pr 42") && project.contains(DOCS));
+        for core_only in ["Gerrit", "packages/", "ddev tryout cs", "ddev tryout patch"] {
+            assert!(!project.contains(core_only), "{core_only}");
+        }
+
+        let wt = worktree(&GENERIC_PROJECT);
+        assert!(!wt.contains("use <name>") && !wt.contains("Two ways"));
+        assert!(worktree(&TYPO3_CORE).contains("use <name>"));
+    }
 }

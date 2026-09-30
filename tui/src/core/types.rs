@@ -354,18 +354,27 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_states_every_types_support() {
-        let readme = include_str!("../../../README.md");
+    fn the_docs_state_every_types_support_and_link_a_page_for_it() {
+        let page = include_str!("../../../docs/frameworks/index.md");
+        let pages = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs");
         for (t, s, _) in MATRIX {
             let label = match s {
                 Support::Env => "environment",
                 Support::Settings => "settings file",
                 Support::ServeOnly => "served only",
             };
-            assert!(
-                readme.contains(&format!("| `{t}` | {label} |")),
-                "README lacks {t} as {label}"
-            );
+            let row = page
+                .lines()
+                .find(|l| l.starts_with(&format!("| `{t}` | {label} |")))
+                .unwrap_or_else(|| panic!("docs/frameworks/index.md lacks {t} as {label}"));
+            // Its row links the page that explains it, and that page exists.
+            let link = row
+                .split("](/")
+                .nth(1)
+                .and_then(|r| r.split(')').next())
+                .unwrap_or_else(|| panic!("{t}: no page linked"));
+            let file = pages.join(format!("{}.md", link.split('#').next().unwrap()));
+            assert!(file.is_file(), "{t}: {} is missing", file.display());
         }
     }
 

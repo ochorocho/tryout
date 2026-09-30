@@ -24,3 +24,8 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# The docs site: dependencies and build output (docs/package-lock.json is tracked).
+/docs/node_modules/
+/docs/.vitepress/dist/
+/docs/.vitepress/cache/
