@@ -94,7 +94,7 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'full-ci')
     strategy:
       matrix:
-        framework: [laravel, symfony, drupal, wordpress, typo3]
+        framework: [laravel, symfony, drupal, wordpress, typo3, shopware]
       fail-fast: false
 
     runs-on: ubuntu-24.04

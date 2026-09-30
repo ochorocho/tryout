@@ -31,6 +31,14 @@ sql() {
   ddev exec mysql -uroot -proot -N "$1" -e "$2"
 }
 
+# The HTTP status a site answers with, like `page`.
+status_of() {
+  local host="${1%%/*}" path="/"
+  [ "${host}" = "$1" ] || path="/${1#*/}"
+  ddev exec curl -sk -o /dev/null -w '%{http_code}' --max-time 60 \
+    -H "Host: ${host}" -H "X-Forwarded-Proto: https" "https://127.0.0.1${path}"
+}
+
 # A started DDEV project of a type, empty.
 new_project() {
   local type="$1" docroot="$2"
@@ -273,6 +281,42 @@ page() {
   run ddev tryout exec feat bin/console dbal:run-sql "SELECT CONCAT(DATABASE(), ' ', v) AS x FROM seed"
   assert_success
   assert_output --partial "db_feat from-primary"
+}
+
+# bats test_tags=project,db,shopware
+@test "a Shopware shop's worktrees get their own database, domain and theme" {
+  set -eu -o pipefail
+  new_project shopware6 public
+  run ddev composer create-project -n shopware/production
+  assert_success
+  # Committed before tryout is installed: a repository of its own is what
+  # makes this a project. The template's .gitignore keeps vendor/, var/,
+  # .env.local and install.lock out.
+  commit_all
+  run ddev add-on get "${DIR}"
+  assert_success
+  # The restart writes DDEV's .env.local; the shop installs against it.
+  run ddev restart -y
+  assert_success
+  run ddev exec bin/console system:install --basic-setup --no-interaction
+  assert_success
+
+  run ddev tryout worktree add feat main --serve
+  assert_success
+  assert_output --partial "sales-channel:update:domain feat.${PROJNAME}.ddev.site"
+  assert_file_exist "${TESTDIR}/worktrees/feat/install.lock"
+
+  # The copy moved to the site's own domain; the primary kept its own.
+  run sql db_feat "SELECT url FROM sales_channel_domain"
+  assert_output --partial "https://feat.${PROJNAME}.ddev.site"
+  run sql db "SELECT url FROM sales_channel_domain"
+  refute_output --partial "feat."
+
+  # The administration and the storefront answer on the site's own host.
+  run page "feat.${PROJNAME}.ddev.site/admin"
+  assert_output --partial "Shopware"
+  run status_of "feat.${PROJNAME}.ddev.site/"
+  assert_output "200"
 }
 
 # bats test_tags=project,db,drupal

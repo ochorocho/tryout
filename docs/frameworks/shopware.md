@@ -54,18 +54,28 @@ ddev tryout exec feat bin/console cache:clear
 Every site also gets tryout's own variables (see
 [PHP and generic](/frameworks/php)).
 
-**Copied into the worktree:** `.env.local` and `.env` from your project, if the
-worktree has none.
+**Copied into the worktree**, if the worktree does not have them yet. Git
+ignores these files, so a new worktree has none of them:
 
-**After a copy:** Shopware keeps the storefront's domain in the database. So
-after tryout copies the primary's database into a new site, it runs this in the
-site, after `composer install`:
+- `.env.local` and `.env`: your project's settings.
+- `install.lock`: without it, Shopware sends every request to its installer.
+- `config/jwt/private.pem` and `config/jwt/public.pem`: the keys the
+  administration signs its logins with.
+
+**After a copy:** Shopware keeps the storefront's domain in the database, and
+its compiled theme in `public/theme/`, which git ignores. So after tryout copies
+the primary's database into a new site, it runs this in the site, after
+`composer install`:
 
 ```bash
+# Move the storefront to the site's own address
 bin/console sales-channel:update:domain <site>.<project>.ddev.site
+
+# Build the storefront theme for this worktree
+bin/console theme:compile
 ```
 
-If that command fails, the site is still served, and tryout warns you that the
+If one of them fails, the site is still served, and tryout warns you that the
 storefront may still link to the primary's URL.
 
 ## What happens to the database
@@ -95,4 +105,8 @@ see [Databases](/guide/sites#databases).
 
 ## Is it tested?
 
-Not yet. There is no CI job that installs Shopware.
+Yes. A CI job (`frameworks (shopware)`) creates a shop with
+`composer create-project shopware/production` and `system:install
+--basic-setup`, then serves a worktree. It checks that the site's database is a
+copy with the site's own domain, that the primary keeps its own domain, and that
+the administration and the storefront answer at the site's address.

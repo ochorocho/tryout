@@ -63,7 +63,7 @@ one check fails on purpose.
 | unit | `bats tests/unit.bats` | The shell scripts, the `install.yaml` steps in both modes, and the config. One test checks that every command and flag is used in a test against real DDEV. Takes seconds. |
 | install | `bats tests/test.bats --filter-tags '!release'` | Install, config, the Composer overlay, protected files, removal |
 | project | `bats tests/project.bats --filter-tags 'project,!db'` | Project mode with a small test app (`tests/fixture-app.sh`): install leaves it alone, two served worktrees, database copies, `--pr` |
-| frameworks | `bats tests/project.bats --filter-tags project,laravel` (also `symfony`, `drupal`, `wordpress`, `typo3`) | Installs one framework with its own tools, and checks that each worktree uses its own database |
+| frameworks | `bats tests/project.bats --filter-tags project,laravel` (also `symfony`, `drupal`, `wordpress`, `typo3`, `shopware`) | Installs one framework with its own tools, and checks that each worktree uses its own database |
 | lifecycle | `bats tests/lifecycle.bats` | Clones TYPO3 Core and runs every command from start to end, including sites on Postgres, MySQL and SQLite |
 | e2e | `cd tests/e2e && TRYOUT_PROJECT=… npx playwright test` | Frontend and backend login in a real browser. `project.spec.ts` uses `TRYOUT_APP_PROJECT`. |
 
@@ -92,7 +92,7 @@ Good to know about the suites:
 
 | Workflow | Jobs |
 |---|---|
-| `tests.yml` | On every push and pull request: `unit`, `install` and `project`, on DDEV stable and HEAD. Every night, when started by hand, or on a pull request with the label **full-ci**: also `lifecycle` (stable, HEAD), `frameworks` (laravel, symfony, drupal, wordpress, typo3), `browser e2e` and `install-from-release`. |
+| `tests.yml` | On every push and pull request: `unit`, `install` and `project`, on DDEV stable and HEAD. Every night, when started by hand, or on a pull request with the label **full-ci**: also `lifecycle` (stable, HEAD), `frameworks` (laravel, symfony, drupal, wordpress, typo3, shopware), `browser e2e` and `install-from-release`. |
 | `tui.yml` | `cargo fmt`, `clippy` and the Rust tests on Linux and macOS, when something under `tui/` changes |
 | `publish.yml` | Builds this documentation and publishes it on GitHub Pages |
 | `release.yml` | Started by hand: builds the three binaries, commits them on a separate release commit, tags that commit and publishes the release |

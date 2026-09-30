@@ -250,14 +250,30 @@ if (getenv('TRYOUT_DB_NAME')) {
 
 /// What runs in a site after its database was copied from another: the
 /// types that keep their own URL in the database move it to the site's host.
-pub fn after_copy(project_type: &str, host: &str) -> Option<Vec<String>> {
+pub fn after_copy(project_type: &str, host: &str) -> Vec<Vec<String>> {
+    let cmd = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match project_type {
-        "shopware6" => Some(
-            ["bin/console", "sales-channel:update:domain", host]
-                .map(String::from)
-                .to_vec(),
-        ),
-        _ => None,
+        // The storefront's domain lives in the database; its compiled theme
+        // in public/theme, which git ignores.
+        "shopware6" => vec![
+            cmd(&["bin/console", "sales-channel:update:domain", host]),
+            cmd(&["bin/console", "theme:compile"]),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// What else of the project's local (gitignored) state a worktree of a type
+/// needs to run, copied where it has none: Shopware refuses to run without
+/// its install.lock and signs the admin's tokens with the JWT keys.
+pub fn local_files(project_type: &str) -> &'static [&'static str] {
+    match project_type {
+        "shopware6" => &[
+            "install.lock",
+            "config/jwt/private.pem",
+            "config/jwt/public.pem",
+        ],
+        _ => &[],
     }
 }
 

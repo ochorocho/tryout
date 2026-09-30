@@ -539,7 +539,7 @@ fn build_project_site(ctx: &Ctx, name: &str, php: &str, dir: &Path, seed: &Seed)
     let fresh = !db::has_tables(ctx, name);
     // A copied database still names the primary's URL where the app keeps it
     // there; its fix runs the app, so after composer.
-    let mut after_copy = None;
+    let mut after_copy = Vec::new();
     db::ensure_site_database(ctx, name)?;
     if fresh {
         let from = match seed {
@@ -572,9 +572,9 @@ fn build_project_site(ctx: &Ctx, name: &str, php: &str, dir: &Path, seed: &Seed)
             return Err(Failed);
         }
     }
-    if let Some(args) = after_copy {
+    for args in after_copy {
         out::info(format!(
-            "Moving the copied URL to '{name}': {}",
+            "Fitting the copied database to '{name}': {}",
             args.join(" ")
         ));
         if exec(ctx, name, &args, &[], false) != 0 {
@@ -792,10 +792,14 @@ fn empty_project_database(ctx: &Ctx, name: &str) -> Step {
 /// copy of the primary's goes in where the worktree has none; the site's own
 /// database still wins, from the environment.
 fn copy_local_config(ctx: &Ctx, dir: &Path) {
-    for f in [".env", ".env.local"] {
+    let extra = super::types::local_files(&ctx.env.project_type);
+    for f in [".env", ".env.local"].iter().chain(extra) {
         let (from, to) = (ctx.root.join(f), dir.join(f));
-        if from.is_file() && !to.exists() && std::fs::copy(&from, &to).is_ok() {
-            out::info(format!("Copied the project's {f} into the worktree"));
+        if from.is_file() && !to.exists() {
+            let _ = to.parent().map(std::fs::create_dir_all);
+            if std::fs::copy(&from, &to).is_ok() {
+                out::info(format!("Copied the project's {f} into the worktree"));
+            }
         }
     }
 }
@@ -902,6 +906,47 @@ mod tests {
         // The kept database still holds its server.
         assert_eq!(site::extra_dbs(&c), [Db::parse("postgres:16").unwrap()]);
         assert!(c.instances_dir().join(".feat.postgres-16.kept").is_file());
+    }
+
+    #[test]
+    fn a_shopware_worktree_gets_what_the_shop_needs_to_run() {
+        let d = crate::core::ctx::tests::project_repo();
+        let c = Ctx::new(
+            d.path(),
+            DdevEnv {
+                project_type: "shopware6".into(),
+                ..DdevEnv::default()
+            },
+        );
+        for f in [".env.local", "install.lock", "config/jwt/private.pem"] {
+            let p = d.path().join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, f).unwrap();
+        }
+        let wt = c.core_worktree_dir("feat");
+        std::fs::create_dir_all(&wt).unwrap();
+        // One the worktree has of its own stays as it is.
+        std::fs::write(wt.join("install.lock"), "its own").unwrap();
+        copy_local_config(&c, &wt);
+        assert!(wt.join(".env.local").is_file());
+        assert!(wt.join("config/jwt/private.pem").is_file());
+        assert_eq!(
+            std::fs::read_to_string(wt.join("install.lock")).unwrap(),
+            "its own"
+        );
+
+        // After a copy: its domain moves to the site, its theme is built.
+        let steps = crate::core::types::after_copy("shopware6", "feat.shop.ddev.site");
+        assert_eq!(
+            steps[0],
+            [
+                "bin/console",
+                "sales-channel:update:domain",
+                "feat.shop.ddev.site"
+            ]
+        );
+        assert_eq!(steps[1], ["bin/console", "theme:compile"]);
+        assert!(crate::core::types::after_copy("laravel", "x").is_empty());
     }
 
     #[test]
