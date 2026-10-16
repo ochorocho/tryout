@@ -54,9 +54,19 @@ ddev add-on get bmack/tryout   # also clones TYPO3 Core
 ddev start                         # installs and sets up TYPO3
 ```
 
-`ddev add-on get` clones the TYPO3 Core repository into the project folder. If
-it cannot (for example without network), the first `ddev start` clones it
-instead.
+`ddev add-on get` clones the TYPO3 Core repository into the project folder, on
+your computer. If it cannot (for example without network), the install says
+`Core clone failed`. Then fix the cause and run `ddev add-on get` again, or run
+`ddev tryout download` after `ddev start`.
+
+::: warning A clone from inside the container has no .git on your computer
+When the clone happens inside the web container (`ddev tryout download`, or the
+first `ddev start`), DDEV's Mutagen sync copies the files but not the `.git`
+folder at the project root. Your editor and `git status` on your computer then
+see no repository, and `ddev tryout status` and tab completion cannot read the
+branch. The clone at install time avoids this, so the install is the better
+place for it.
+:::
 
 The install also creates:
 
@@ -88,14 +98,18 @@ ddev add-on remove tryout          # remove the add-on
 ```
 
 DDEV copies the add-on into your project once. It does not update itself. An
-older copy keeps working, with the commands it had. `ddev tryout status` tells
-you when your copy is older than the one you installed from:
+older copy keeps working, with the commands it had. `ddev tryout status` warns
+you when the files in `.ddev/tryout/` and the program that runs are not from
+the same version, for example after a half-finished update:
 
 ```text
   ! This project runs an older copy of the tryout add-on
     the command and its tab-completion offer the previous feature set
     → ddev add-on get <path-to-tryout> && ddev restart
 ```
+
+It cannot tell you that a newer tryout exists. Check the
+[releases](https://github.com/bmack/tryout/releases) for that.
 
 An update replaces every file that carries a `#ddev-generated` line. If you
 remove that line from a file, the file is yours and updates leave it alone.
@@ -107,10 +121,21 @@ Removing the add-on deletes:
 - its files (the overlay and `additional.php` only if you did not change them),
 - the lines it added to `.git/info/exclude`,
 - the markers of served sites and the generated web server files,
-- the extra database servers and their data.
+- the extra database servers and their data volumes
+  (`ddev-<project>-tryout-<type>-<version>`).
 
-It keeps `packages/`, the worktrees, the TYPO3 instance folders, a patch list you
-filled in, and your project's own database.
+It keeps:
+
+- `packages/`, the worktrees and the TYPO3 instance folders,
+- a patch list you filled in,
+- your project's own database, including the `db_<name>` databases of sites
+  on it, kept or not,
+- SQLite databases kept by `unserve` (`TYPO3-Instances/.<name>.sqlite/` in
+  core mode, `.ddev/tryout-sites/` in project mode) and the `.kept` notes next
+  to them.
+
+Stop serving a site with `ddev tryout worktree unserve <name> --drop-db` before
+you remove the add-on if you want its database gone too.
 
 ## Install from a branch, a commit or a local folder
 

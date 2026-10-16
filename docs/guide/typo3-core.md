@@ -89,12 +89,22 @@ TYPO3 works with a `main`-based workflow. Submit your fix against `main`, even i
 it is for an older version. The TYPO3 team backports it.
 :::
 
-To choose the branch for new clones, set it in `.ddev/config.local.yaml`:
+### Choosing the branch
+
+The install clones `main`. To clone another branch, write `TRYOUT_BRANCH` into a
+`.ddev/config.tryout*.yaml` file **before** `ddev add-on get`, for example into
+`.ddev/config.tryout-branch.yaml`:
 
 ```yaml
 web_environment:
   - TRYOUT_BRANCH=13.4
 ```
+
+The install reads this variable only from files named `config.tryout*.yaml`.
+A `config.local.yaml` or a variable in your shell does not reach the clone.
+After the install, the variable keeps its meaning: the branch in it takes
+priority over the branch of the project root, for example in `download` and
+`checkout`.
 
 ## Updating and resetting
 

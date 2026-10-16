@@ -129,9 +129,11 @@ It shows:
   `ddev tryout delete <site>`: a fresh copy, or an empty database for older
   code.
 
-It also warns you when the project runs an older copy of the add-on than the one
-you installed from. This check runs on your computer and works while DDEV is
-stopped.
+It also warns you when the add-on's files in `.ddev/tryout/` do not match the
+program that runs: the number in `.ddev/tryout/.version` (written at install)
+differs from the one built into the binary. That happens after a half-finished
+update, or when you run your own build with `TRYOUT_BIN`. This check runs on
+your computer and works while DDEV is stopped.
 
 ## help
 
@@ -144,7 +146,8 @@ ddev tryout launch --help
 ddev tryout cs help
 ```
 
-Mode: both.
+Mode: both. `-h` and `--help` work the same as `help` for `worktree`, `launch`
+and `cs`.
 
 ## worktree
 
@@ -184,7 +187,8 @@ ddev tryout worktree list [--plain|--json]
 With `--plain`:
 
 - `STATE` is `clean` or `dirty`.
-- `PHP`, `DB` and `URL` are `-` when the worktree serves no site.
+- `PHP` and `DB` are `-` when the worktree serves no site. `URL` is then empty,
+  so the row has six columns.
 - The primary's row is marked with `← primary`.
 
 With `--json`, each object has these keys:
@@ -199,6 +203,9 @@ subject php_versions changes db_engine
 - `patches` is the number of commits on top of `base`.
 - `changes` lists the Gerrit change numbers among those commits.
 - `php_versions` lists the PHP versions the site could run on.
+- `db_engine` is the site's database server as `<type>:<version>`, for example
+  `mariadb:10.11` or `postgres:16`. It is `null` when the worktree serves no
+  site.
 
 The terminal UI and the browser tests read both formats. New fields may be added,
 but existing ones are never renamed or removed.
@@ -271,12 +278,16 @@ In core mode, `--pr` is refused, and tryout points you to `patch`. See
 Gives a worktree its own site at `https://<name>.<project>.ddev.site`.
 
 ```text
-ddev tryout worktree serve <name> [--php <x.y>] [--db <type>[:<version>]] [--switch]
-                                  [--db-from <site>|--db-empty] [--no-restart]
+ddev tryout worktree serve [<name>] [--php <x.y>] [--db <type>[:<version>]] [--switch]
+                                    [--db-from <site>|--db-empty] [--no-restart]
 ```
 
 Mode: both. The site gets its own PHP, its own web server configuration and its
 own database.
+
+The first word that is not a flag is the name. Without a name, tryout asks in a
+terminal, so `worktree serve --php 8.3` asks which worktree to serve. The same
+goes for `unserve`, `remove` and `use`.
 
 | Flag | Meaning |
 |---|---|
@@ -341,12 +352,22 @@ Serving a site again, for example to change the PHP version, only reloads the we
 server. With `--no-restart`, or with `TRYOUT_NO_RESTART=1`, tryout skips the
 restart and you run `ddev restart` later.
 
+There is one exception. When `--db` names a server that is not running yet,
+the site cannot be set up before that server starts. With `--no-restart`,
+tryout then writes the server's compose file, stops with exit code 1 and tells
+you to run `ddev restart` and the command again.
+
+**If serving fails**, for example because `composer install` or `typo3 setup`
+stops with an error, tryout takes back what it did: the site's marker, its web
+server file and its hostname. A site that was already served before stays
+served as it was.
+
 ### worktree unserve
 
 Stops serving a site. The worktree stays.
 
 ```text
-ddev tryout worktree unserve <name> [--drop-db] [--no-restart]
+ddev tryout worktree unserve [<name>] [--drop-db] [--no-restart]
 ```
 
 What happens to the files:
@@ -363,7 +384,7 @@ What happens to the files:
 | `--drop-db` | Delete the database too. This happens first, while tryout still knows which server holds it. |
 | `--no-restart` | Do not restart DDEV. |
 
-Put the flags after the name.
+The flags work in any order. Without a name, tryout asks in a terminal.
 
 ```bash
 ddev tryout worktree unserve v13 --drop-db
@@ -374,7 +395,7 @@ ddev tryout worktree unserve v13 --drop-db
 Deletes a worktree and its directory.
 
 ```text
-ddev tryout worktree remove|rm <name> [--force] [--yes] [--no-restart]
+ddev tryout worktree remove|rm [<name>] [--force] [--yes] [--no-restart]
 ```
 
 If the worktree is served, tryout stops serving it first and deletes its
@@ -403,12 +424,19 @@ ddev tryout worktree remove v13 --yes
 Renames a worktree. Its branch stays the same.
 
 ```text
-ddev tryout worktree rename <old> <new>
+ddev tryout worktree rename [<old>] [<new>] [--no-restart]
 ```
 
 A served site moves with the worktree: tryout stops serving it (keeping its
 database) and serves it again under the new name. In project mode, the new site's
-database starts as a copy of the old one.
+database starts as a copy of the old one. The new hostname needs a DDEV
+restart, which tryout does for you.
+
+| Flag | Meaning |
+|---|---|
+| `--no-restart` | Do not restart DDEV. |
+
+In a terminal, tryout asks for a missing name.
 
 ```bash
 ddev tryout worktree rename v13 v13-cache
@@ -419,10 +447,10 @@ ddev tryout worktree rename v13 v13-cache
 Makes a worktree the TYPO3 Core behind the primary site.
 
 ```text
-ddev tryout worktree use <name>
+ddev tryout worktree use [<name>]
 ```
 
-Mode: core. tryout points the primary's Composer overlay at the worktree's system
+Mode: core. In a terminal, tryout asks for a missing name. tryout points the primary's Composer overlay at the worktree's system
 extensions and rebuilds `vendor/`. To switch back to the project root, run
 `worktree use` with the root's branch name.
 
@@ -489,7 +517,7 @@ A worktree that is not served has no URL, and `launch` tells you so.
 
 | Flag | Meaning |
 |---|---|
-| `--backend`, `-b` | Open the admin area instead (`/typo3/` for TYPO3 Core). A project of your own has none, so this is refused there. |
+| `--backend`, `-b` | Open the admin area instead: `/typo3/` for TYPO3, `/user/login` for Drupal, `/wp-admin/` for WordPress, and so on. The table under [commands per project type](#commands-per-project-type) lists every path. A type without an admin path (Laravel, Symfony, `php` …) refuses with exit code 1. |
 
 ```bash
 ddev tryout launch v13 --backend
@@ -535,7 +563,9 @@ ddev tryout ui stop
 ```
 
 Mode: both. It runs on your computer and needs a terminal. It connects to the
-project's terminal UI session, and starts the session if needed.
+project's terminal UI session, and starts the session if needed. The session
+runs the build it started with; when you attach with a newer build, the UI
+offers a restart.
 
 - `q` leaves the UI. The session keeps running.
 - `Q`, or `ddev tryout ui stop`, ends the session.
@@ -548,6 +578,7 @@ Clones TYPO3 Core, or updates it.
 
 ```text
 ddev tryout download [<site>] [--reset|-r]
+ddev tryout download --site <site> [--reset|-r]
 ```
 
 Mode: core.
@@ -559,6 +590,10 @@ Mode: core.
 | Flag | Meaning |
 |---|---|
 | `--reset`, `-r` | Reset the site's Core to `origin/<base>` instead of updating it. Applied patches and local changes are lost. |
+| `--site <site>` | The site to update. The same as naming it without the flag. |
+
+A flag tryout does not know stops the command with the usage line. This goes
+for `reset` and `patch` too.
 
 A worktree is always detached, so it can only be updated with `--reset`. Without
 it, `download` refuses.
@@ -623,16 +658,20 @@ then rebuilds the site once.
 
 | How you call it | What happens |
 |---|---|
-| `patch <change>…` | Applies these changes. |
-| `patch`, with a patch list configured | Applies the changes in `TRYOUT_PATCHES`. |
+| `patch <change>…` | Applies these changes, in this order, and rebuilds once. |
+| `patch`, with a patch list in `.ddev/config.tryout-patches.yaml` | Applies the changes in that list. |
 | `patch`, with no list, in a terminal | Shows the open changes for the site's branch. You pick some, and tryout offers to add them to the patch list. |
+| `patch`, with no list, without a terminal | Prints `No patches configured.` and changes nothing. |
+
+A change is a number. When the word after the numbers is not a number, it is
+the site: `patch 56947 91003 v13`. `--site` wins over that word.
 
 | Flag | Meaning |
 |---|---|
 | `--site <site>` | The site to patch. Default: the primary. |
 | `--list` | Print up to 50 open changes, tab-separated: number, subject, owner, votes. |
 | `--json` | With `--list`: print a JSON array of `{"number","subject","owner","scores"}`. |
-| `--all-branches` | With `--list`: list changes on every branch, not only the site's. |
+| `--all-branches` | List or offer changes on every branch, not only the site's. It works with `--list` and with the picker. |
 
 Good to know:
 
@@ -643,6 +682,7 @@ Good to know:
 
 ```bash
 ddev tryout patch 91234 --site v13
+ddev tryout patch 56947 91003
 ```
 
 See [Gerrit patches](/guide/gerrit).
@@ -653,6 +693,7 @@ Resets a site's TYPO3 Core to its branch and rebuilds.
 
 ```text
 ddev tryout reset [<site>]
+ddev tryout reset --site <site>
 ```
 
 Mode: core. tryout resets the Core to `origin/<base>`. Applied patches and local
@@ -713,6 +754,9 @@ completion.
 | `__post-start` | The DDEV post-start hook in `config.tryout.yaml` |
 | `__fpm <x.y>` | The PHP-FPM process for one PHP version, in `config.worktrees.yaml` |
 | `__mode [<root>]` | `install.yaml`. Prints `core` or `project`. |
+| `__host-command [<root>]` | `install.yaml` and post-start. Writes `.ddev/commands/host/tryout`, the `ddev tryout` shim, with the help text for the project's type. A shim without its `#ddev-generated` line is yours and is left alone. |
 | `__complete …` | Tab completion |
-| `__version` | Prints the version. It also keeps the `#ddev-generated` marker in the binary. |
+| `__version` | Prints the program's own version (`0.5.0 #ddev-generated`), not the payload version from `tryout/VERSION`. It also keeps the `#ddev-generated` marker in the binary. |
 | `ctr <verb> …` | The host side, to run a command inside the web container (`ddev exec --raw`) |
+| `ui <root>`, `ui stop <root>` | The `ui` verb with a project path: the terminal UI itself, without going through DDEV |
+| `ui server <root>` | The terminal UI's session server, started by `ui <root>` |

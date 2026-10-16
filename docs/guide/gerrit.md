@@ -30,9 +30,11 @@ When `patch <id>` fails, it exits with code 1.
 
 ## Browsing open changes
 
-Run `patch` without a change number. If a site besides the primary is served,
-tryout first asks which site to patch. Then it lists the 50 newest open changes
-**on that site's branch**. A 13.4 site gets 13.4's changes:
+Run `patch` without a change number. If your [patch list](#auto-applying-patches)
+has changes in it, tryout applies that list and does not ask. With an empty
+list, it browses: if a site besides the primary is served, tryout first asks
+which site to patch. Then it lists the 50 newest open changes **on that site's
+branch**. A 13.4 site gets 13.4's changes:
 
 ```text
 ? Apply which changes?
@@ -50,10 +52,12 @@ whether to add them to your patch list, so they are applied again on the next
 
 More options:
 
-- `--all-branches` lists changes on every branch.
+- `--all-branches` lists changes on every branch, in the picker and with
+  `--list`.
 - `--list` prints the list and does not ask. `--list --json` prints only JSON.
 - Without a terminal (during `ddev start`, or in a script), a plain `patch`
-  applies the changes in your patch list.
+  applies the changes in your patch list. With an empty list it prints
+  `No patches configured.` and changes nothing.
 
 To see more than the newest 50 changes, use **Apply Gerrit patch…** in the
 [terminal UI](/guide/terminal-ui#applying-gerrit-changes). It searches Gerrit

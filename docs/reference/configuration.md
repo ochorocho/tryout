@@ -14,7 +14,7 @@ keep your changes, delete that line: the file is then yours.
 | `.ddev/config.yaml` | both | you (`ddev config`) | Project name, type, docroot, PHP and database. tryout never writes it. |
 | `.ddev/config.tryout.yaml` | both | the add-on (shipped) | The post-start hook `exec: .ddev/tryout/tryout __post-start`, and nothing else |
 | `.ddev/config.tryout-core.yaml` | core | install, from `tryout/config.tryout-core.yaml` | The TYPO3 and Composer environment (below) |
-| `.ddev/config.tryout-patches.yaml` | core | install, once | `TRYOUT_PATCHES=`, your Gerrit patch list |
+| `.ddev/config.tryout-patches.yaml` | core | install, once, from `tryout/patches.yaml` | `TRYOUT_PATCHES=`, your Gerrit patch list |
 | `.ddev/config.worktrees.yaml` | both | `worktree serve` / `unserve` | Served sites' hostnames and extra PHP-FPM daemons |
 | `.ddev/docker-compose.tryout-db.yaml` | both | `worktree serve --db`, on the host | Extra database servers |
 | `.ddev/config.local.yaml` | both | you | Your personal overrides. DDEV reads all `config.*.yaml` files in alphabetical order. |
@@ -56,6 +56,10 @@ This file is yours. It has no `#ddev-generated` line, so an update never
 overwrites it. Uninstalling removes it only if the list is still empty.
 `ddev tryout patch` can add changes to it for you. Your changes take effect on
 the next `ddev restart`, or when you run `ddev tryout patch`.
+
+Inside the web container the list is the variable `TRYOUT_PATCHES`. On your
+computer, `ddev tryout patch` reads the file itself, so a bare `patch` applies
+the list without a restart in between.
 
 ### config.worktrees.yaml
 
@@ -110,14 +114,23 @@ If there is no `db=` line, the site uses the project's own database server.
 | Path | What it is |
 |---|---|
 | `.ddev/tryout/tryout` | The launcher. It picks the right binary for your machine, uses `TRYOUT_BIN` when set, and makes the binary executable again if that got lost. |
-| `.ddev/tryout/bin/tryout-{macos-universal,linux-x86_64,linux-aarch64}` | The binaries |
-| `.ddev/tryout/VERSION` | The payload version |
-| `.ddev/tryout/.version` | The version at install time. `status` compares the two. |
+| `.ddev/tryout/bin/tryout-{macos-universal,linux-x86_64,linux-aarch64}` | The binaries. If none fits your machine, the install only warns; the launcher then exits with code 69. |
+| `.ddev/tryout/VERSION` | The payload version, a number. The binary carries the same number. |
+| `.ddev/tryout/.version` | The number from `VERSION`, written at install. `status` compares it with the number in the binary that runs, and warns when they differ. A missing file is never reported. |
 | `.ddev/tryout/.mode` | `core` or `project`, decided at install |
 | `.ddev/tryout/.state/php-versions` | The PHP versions the web image has, written by post-start for the host |
-| `.ddev/commands/host/tryout` | The `ddev tryout` shim |
+| `.ddev/tryout/additional.php` | Core mode: the template for `config/system/additional.php` |
+| `.ddev/tryout/composer.tryout.json` | Core mode: the template for the Composer overlay |
+| `.ddev/tryout/config.tryout-core.yaml` | Core mode: the template for `.ddev/config.tryout-core.yaml` |
+| `.ddev/tryout/patches.yaml` | Core mode: the template for `.ddev/config.tryout-patches.yaml` |
+| `.ddev/tryout/gitmessage.txt` | Core mode: the commit message template `cs setup` installs |
+| `.ddev/commands/host/tryout` | The `ddev tryout` shim. tryout writes it at install and on every start, with the help text for your project's type. Remove its `#ddev-generated` line and it is yours. |
 | `.ddev/commands/host/autocomplete/tryout` | The completion shim |
-| `.ddev/web-build/Dockerfile.tryout` | Builds git 2.53 into the web image. tryout needs it for relative worktree paths. |
+| `.ddev/web-build/Dockerfile.tryout` | Builds git into the web image (build arguments `TRYOUT_GIT_VERSION`, by default 2.53.0, and `TRYOUT_GIT_SHA256`). tryout needs git 2.48 or newer for relative worktree paths. |
+
+An update of the add-on also cleans up after older versions: it removes helper
+files that no longer exist and rewrites the PHP-FPM lines in
+`config.worktrees.yaml` to the current form.
 
 ## git
 
@@ -145,17 +158,17 @@ web container.
 |---|---|---|
 | `TRYOUT_BIN` | host / container | Run this binary instead of the shipped one, for example your own build |
 | `TRYOUT_CONTAINER_BIN` | host | Passed to the container as its `TRYOUT_BIN`: a `/var/www/html/...` path to a Linux build |
-| `TRYOUT_BRANCH` | host → container | The TYPO3 Core branch. Install clones this branch, and it takes priority over the root's branch. |
+| `TRYOUT_BRANCH` | host → container | The TYPO3 Core branch; it takes priority over the root's branch. For the clone at install time, put it in `.ddev/config.tryout*.yaml` (see [TYPO3 Core](/guide/typo3-core#choosing-the-branch)): the install reads only those files, not your shell. |
 | `TRYOUT_GERRIT_USER` | host → container | The Gerrit username for `cs setup` |
 | `TRYOUT_PATCHES` | web environment | Gerrit changes to apply on every start (`config.tryout-patches.yaml`) |
 | `TRYOUT_NO_RESTART` | host | `1` works like `--no-restart` on every verb that restarts DDEV |
 | `TRYOUT_EVENTS` | host → container | `1` adds the `@@tryout {…}` event lines (see [commands](/reference/commands#machine-readable-output)) |
-| `TRYOUT_GERRIT_API`, `TRYOUT_GERRIT_SSH_HOST` | both | Use another Gerrit server (for tests) |
+| `TRYOUT_GERRIT_API`, `TRYOUT_GERRIT_SSH_HOST` | host → container | Use another Gerrit server (for tests) |
 | `TRYOUT_FPM_RUN_DIR` | container | Where the PHP-FPM sockets go (default `/run/php`) |
 
 `ddev exec` does not pass your environment into the container. So tryout passes
-`TRYOUT_BRANCH`, `TRYOUT_GERRIT_USER`, `TRYOUT_PATCHES` and `TRYOUT_EVENTS` on
-itself.
+`TRYOUT_BRANCH`, `TRYOUT_GERRIT_USER`, `TRYOUT_PATCHES`, `TRYOUT_EVENTS`,
+`TRYOUT_GERRIT_API` and `TRYOUT_GERRIT_SSH_HOST` on itself.
 
 ### Set by tryout, for a site
 
@@ -166,6 +179,7 @@ server configuration) and in `ddev tryout exec`:
 |---|---|---|
 | `TRYOUT_SITE` | both | The site's name |
 | `TYPO3_DB_DBNAME` | core | The site's database (`db_<name>`) |
+| `TYPO3_DB_DRIVER`, `TYPO3_DB_DBNAME`, `TYPO3_DB_HOST`, `TYPO3_DB_PORT`, `TYPO3_DB_USERNAME`, `TYPO3_DB_PASSWORD` | project, type `typo3` | The site's database in the names TYPO3 projects commonly read in `additional.php`. Not set for SQLite. See [TYPO3 site projects](/frameworks/typo3). |
 | `TRYOUT_DB_DRIVER` | project | `mariadb`, `mysql`, `postgres` or `sqlite` |
 | `TRYOUT_DB_NAME` | project | `db_<name>`, or the SQLite file's path |
 | `TRYOUT_DB_HOST`, `TRYOUT_DB_PORT` | project | The site's server: `db` or `tryout-<type>-<version>`. Not set for SQLite. |
@@ -180,6 +194,5 @@ called `db_<name>`. Any character other than a letter, a digit or `_` becomes
 
 ### Set by tryout, internally
 
-`TRYOUT_IN_CONTAINER=1` tells the binary that it runs inside the web container.
 `TRYOUT_TUI_SESSION` is set in every shell the terminal UI starts. It names the
 session's socket.

@@ -30,6 +30,8 @@
 # minutes per test. That path is exercised deliberately in tests/lifecycle.bats;
 # here we are testing what installation puts on disk and how it behaves.
 
+export CI=true
+
 setup() { load setup.sh; }
 health_checks() { load health_checks.sh; }
 teardown() { load teardown.sh; }

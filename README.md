@@ -13,6 +13,7 @@
   <a href="https://addons.ddev.com"><img src="https://img.shields.io/badge/DDEV-Add--on_Registry-blue" alt="add-on registry"></a>
   <a href="https://github.com/bmack/tryout/actions/workflows/tests.yml?query=branch%3Amain"><img src="https://github.com/bmack/tryout/actions/workflows/tests.yml/badge.svg?branch=main" alt="tests"></a>
   <a href="https://github.com/bmack/tryout/releases/latest"><img src="https://img.shields.io/github/v/release/bmack/tryout" alt="release"></a>
+  <a href="https://github.com/bmack/tryout/commits"><img src="https://img.shields.io/github/last-commit/bmack/tryout" alt="last commit"></a>
 </p>
 
 tryout is a [DDEV](https://ddev.com) add-on. It gives every git worktree of your

@@ -20,10 +20,13 @@ bats_load_library bats-assert
 bats_load_library bats-file
 bats_load_library bats-support
 
-export DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." >/dev/null 2>&1 && pwd)"
-export PROJNAME="test-$(basename "${GITHUB_REPO}")"
+DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." >/dev/null 2>&1 && pwd)"
+export DIR
+PROJNAME="test-$(basename "${GITHUB_REPO}")"
+export PROJNAME
 mkdir -p "${HOME}/tmp"
-export TESTDIR="$(mktemp -d "${HOME}/tmp/${PROJNAME}.XXXXXX")"
+TESTDIR="$(mktemp -d "${HOME}/tmp/${PROJNAME}.XXXXXX")"
+export TESTDIR
 export DDEV_NONINTERACTIVE=true
 export DDEV_NO_INSTRUMENTATION=true
 ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1 || true

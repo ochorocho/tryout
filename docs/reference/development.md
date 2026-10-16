@@ -87,6 +87,12 @@ Good to know about the suites:
 
 `bash tests/ci.sh <suite>` runs a suite the same way CI does. The suites are
 `unit`, `install`, `project`, `project-<framework>`, `lifecycle` and `release`.
+It builds the Linux binary first, unless `TRYOUT_PREBUILT=1` is set and
+`tryout/bin/` already holds one (CI's build job sets this).
+
+The web image's git is built from source by `web-build/Dockerfile.tryout`. Its
+build arguments `TRYOUT_GIT_VERSION` (2.53.0) and `TRYOUT_GIT_SHA256` pin the
+tarball. To move to another git, change both.
 
 ## CI
 
