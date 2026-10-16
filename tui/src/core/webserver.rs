@@ -341,7 +341,46 @@ fn source_dir(ctx: &Ctx) -> PathBuf {
 /// result would not load: an invalid nginx config refuses to START, taking
 /// every site down.
 pub fn sync_and_reload(ctx: &Ctx) -> bool {
-    sync_into(ctx, &source_dir(ctx), &enabled_dir(ctx)) && valid(ctx) && reload(ctx)
+    let dst = enabled_dir(ctx);
+    let kept = our_files(&dst);
+    if !sync_into(ctx, &source_dir(ctx), &dst) {
+        return false;
+    }
+    if !valid(ctx) {
+        // The running server keeps serving; the one that starts next must
+        // not find this config on disk.
+        restore(&dst, &kept);
+        return false;
+    }
+    reload(ctx)
+}
+
+/// Our files in the webserver's directory — DDEV's own live there too.
+fn is_ours(name: &str) -> bool {
+    (name.starts_with("tryout-site-") && name.ends_with(".conf"))
+        || name == "tryout-server-names-hash.conf"
+}
+
+/// Our files in `dir`, with their contents, to put back after a failed sync.
+fn our_files(dir: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| is_ours(&e.file_name().to_string_lossy()))
+        .filter_map(|e| Some((e.path(), std::fs::read(e.path()).ok()?)))
+        .collect()
+}
+
+fn restore(dir: &std::path::Path, kept: &[(PathBuf, Vec<u8>)]) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if is_ours(&e.file_name().to_string_lossy()) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    for (path, bytes) in kept {
+        let _ = std::fs::write(path, bytes);
+    }
 }
 
 pub fn sync_into(ctx: &Ctx, src: &std::path::Path, dst: &std::path::Path) -> bool {
@@ -350,10 +389,7 @@ pub fn sync_into(ctx: &Ctx, src: &std::path::Path, dst: &std::path::Path) -> boo
     }
     // Our own stale copies only: DDEV's nginx-site.conf lives here too.
     for e in std::fs::read_dir(dst).into_iter().flatten().flatten() {
-        let n = e.file_name().to_string_lossy().into_owned();
-        if (n.starts_with("tryout-site-") && n.ends_with(".conf"))
-            || n == "tryout-server-names-hash.conf"
-        {
+        if is_ours(&e.file_name().to_string_lossy()) {
             let _ = std::fs::remove_file(e.path());
         }
     }

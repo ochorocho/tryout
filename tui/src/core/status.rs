@@ -46,7 +46,10 @@ pub fn body(ctx: &Ctx, patches: &str) -> Vec<String> {
         return l;
     }
 
-    let branch = git::out(core, &["branch", "--show-current"]).unwrap_or_else(|| "detached".into());
+    // Empty, not absent, on a detached HEAD.
+    let branch = git::out(core, &["branch", "--show-current"])
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| "detached".into());
     let head =
         git::out(core, &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into());
     let date = git::out(core, &["log", "-1", "--format=%cr"]).unwrap_or_default();

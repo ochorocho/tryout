@@ -331,10 +331,11 @@ removal_actions:
     rm -f config.worktrees.yaml apache/tryout-site-*.conf nginx_full/tryout-site-*.conf \
           nginx_full/tryout-server-names-hash.conf docker-compose.tryout-db.yaml
     # The extra database servers' data: with their compose file gone, nothing
-    # would ever remove these volumes, not even `ddev delete`.
+    # would ever remove these volumes, not even `ddev delete`. One per server
+    # and version: ddev-<project>-tryout-postgres-16, …-mariadb-10-11.
     if [ -n "${DDEV_SITENAME:-}" ] && command -v docker >/dev/null 2>&1; then
-      for e in mariadb mysql postgres; do
-        docker volume rm "ddev-${DDEV_SITENAME}-tryout-${e}" >/dev/null 2>&1 || true
+      for v in $(docker volume ls -q --filter "name=ddev-${DDEV_SITENAME}-tryout-" 2>/dev/null); do
+        docker volume rm "$v" >/dev/null 2>&1 || true
       done
     fi
 

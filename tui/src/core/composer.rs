@@ -237,9 +237,5 @@ fn valid_name(name: &str, alnum_first: bool) -> bool {
 }
 
 fn is_major_minor(v: &str) -> bool {
-    v.split_once('.').is_some_and(|(a, b)| {
-        [a, b]
-            .iter()
-            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-    })
+    super::vsort::is_major_minor(v)
 }

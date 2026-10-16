@@ -16,31 +16,45 @@ pub fn core_constraint(composer_json: &Path) -> Option<String> {
     (!c.is_empty()).then(|| c.to_string())
 }
 
-/// Does PHP `version` (major.minor) satisfy `constraint`? Every clause must hold;
-/// `^8.2` means `>=8.2 <9.0`, and a bare version means `>=`. Clauses of any other
-/// shape are ignored, exactly as before.
+/// Does PHP `version` (major.minor) satisfy `constraint`? `||` (or `|`) joins
+/// alternatives, any of which may hold; inside one, every clause must.
+/// `^8.2` means `>=8.2 <9.0`, and a bare version means `>=`. Clauses of any
+/// other shape are ignored, exactly as before.
 pub fn satisfies(constraint: &str, version: &str) -> bool {
     let v = format!("{version}.0");
-    constraint
-        .split(|c: char| c.is_whitespace() || c == ',')
-        .filter(|p| !p.is_empty())
-        .all(|part| {
-            if let Some((major, minor)) = caret(part) {
-                version_compare(&v, &format!("{major}.{minor}.0")) != Ordering::Less
-                    && version_compare(&v, &format!("{}.0.0", major + 1)) == Ordering::Less
-            } else if let Some((op, want)) = comparison(part) {
-                let o = version_compare(&v, want);
-                match op {
-                    ">=" => o != Ordering::Less,
-                    "<=" => o != Ordering::Greater,
-                    ">" => o == Ordering::Greater,
-                    "<" => o == Ordering::Less,
-                    _ => o == Ordering::Equal,
-                }
-            } else {
-                true
-            }
+    let alternatives = constraint.replace("||", "|");
+    let groups: Vec<Vec<&str>> = alternatives
+        .split('|')
+        .map(|g| {
+            g.split(|c: char| c.is_whitespace() || c == ',')
+                .filter(|p| !p.is_empty())
+                .collect()
         })
+        .filter(|g: &Vec<&str>| !g.is_empty())
+        .collect();
+    groups.is_empty()
+        || groups
+            .iter()
+            .any(|group| group.iter().all(|part| clause_holds(part, &v)))
+}
+
+/// One clause (`^8.2`, `>=8.1`, `8.2`) against a full `major.minor.patch`.
+fn clause_holds(part: &str, v: &str) -> bool {
+    if let Some((major, minor)) = caret(part) {
+        version_compare(v, &format!("{major}.{minor}.0")) != Ordering::Less
+            && version_compare(v, &format!("{}.0.0", major + 1)) == Ordering::Less
+    } else if let Some((op, want)) = comparison(part) {
+        let o = version_compare(v, want);
+        match op {
+            ">=" => o != Ordering::Less,
+            "<=" => o != Ordering::Greater,
+            ">" => o == Ordering::Greater,
+            "<" => o == Ordering::Less,
+            _ => o == Ordering::Equal,
+        }
+    } else {
+        true
+    }
 }
 
 /// `^(\d+)\.(\d+)` at the start of a clause (anything after it is ignored).
@@ -106,6 +120,23 @@ pub fn available_in(dir: &Path) -> Vec<String> {
     v
 }
 
+/// The PHP versions the web image provides. Only the container can look, so
+/// post-start leaves them in its state directory; before it has, DDEV's 8.x
+/// line-up stands in.
+pub fn installed(ctx: &super::ctx::Ctx) -> Vec<String> {
+    let snapshot = std::fs::read_to_string(super::poststart::state_dir(ctx).join("php-versions"))
+        .unwrap_or_default();
+    let v: Vec<String> = snapshot.split_whitespace().map(String::from).collect();
+    if v.is_empty() {
+        ["8.1", "8.2", "8.3", "8.4", "8.5"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        v
+    }
+}
+
 /// The versions in `available` that satisfy `constraint`, ascending.
 pub fn matching(constraint: &str, available: &[String]) -> Vec<String> {
     available
@@ -130,6 +161,15 @@ mod tests {
     fn caret_means_this_major() {
         assert_eq!(matching("^8.2", &all()), ["8.2", "8.3", "8.4", "8.5"]);
         assert!(!satisfies("^8.2", "9.0"));
+    }
+
+    #[test]
+    fn alternatives_pass_when_any_holds() {
+        // TYPO3 11.5's constraint; and the single-bar spelling.
+        assert_eq!(matching("^7.4.1 || ^8.0", &all()), all());
+        assert_eq!(matching(">=8.1 <8.3 | ^8.5", &all()), ["8.1", "8.2", "8.5"]);
+        assert_eq!(matching(">=8.2 <8.4 || ^9.0", &all()), ["8.2", "8.3"]);
+        assert!(!satisfies("^7.4 || ^8.0 <8.3", "8.4"));
     }
 
     #[test]

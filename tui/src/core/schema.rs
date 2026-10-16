@@ -126,10 +126,13 @@ fn file_stems(dir: &Path) -> BTreeSet<String> {
 
 /// Migrations the database ran that the code does not have.
 pub fn unknown(data: &[String], code: &BTreeSet<String>, what: &str) -> Option<String> {
-    if code.is_empty() {
-        return None;
-    }
-    let missing: Vec<&String> = data.iter().filter(|d| !code.contains(*d)).collect();
+    let newest = code.iter().next_back()?;
+    // Only what is newer than the newest the tree has: a migration a package
+    // ships from vendor/ is unknown to the tree, but not newer code.
+    let missing: Vec<&String> = data
+        .iter()
+        .filter(|d| !code.contains(*d) && d.as_str() > newest.as_str())
+        .collect();
     let first = missing.first()?;
     Some(format!(
         "its database ran {} {what} its code does not have (e.g. {first})",
@@ -180,5 +183,16 @@ mod tests {
         assert_eq!(unknown(&data[..1], &code, "migrations"), None);
         // No migration files at all: nothing to judge by.
         assert_eq!(unknown(&data, &BTreeSet::new(), "migrations"), None);
+    }
+
+    #[test]
+    fn a_migration_older_than_the_code_is_a_packages_not_newer_code() {
+        let code: BTreeSet<String> = ["2024_06_01_000000_add_orders".to_string()].into();
+        // Laravel's own, from vendor/: unknown to the tree, older than its newest.
+        let data = vec![
+            "2019_08_19_000000_create_failed_jobs_table".to_string(),
+            "2024_06_01_000000_add_orders".to_string(),
+        ];
+        assert_eq!(unknown(&data, &code, "migrations"), None);
     }
 }

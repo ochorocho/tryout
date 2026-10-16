@@ -174,11 +174,14 @@ exec bash "${{DDEV_APPROOT}}/.ddev/tryout/tryout" "$@"
     )
 }
 
-/// Write `host_command` into the project, when it says something new.
+/// Write `host_command` into the project, when it says something new. A copy
+/// without the `#ddev-generated` marker is the user's: left alone.
 pub fn write_host_command(ctx: &Ctx) -> std::io::Result<bool> {
     let file = ctx.root.join(".ddev/commands/host/tryout");
     let want = host_command(ctx);
-    if std::fs::read_to_string(&file).is_ok_and(|have| have == want) {
+    if let Ok(have) = std::fs::read_to_string(&file)
+        && (have == want || !have.contains("#ddev-generated"))
+    {
         return Ok(false);
     }
     std::fs::create_dir_all(file.parent().expect("has a directory"))?;
@@ -228,6 +231,20 @@ mod tests {
             },
         );
         (d, c)
+    }
+
+    #[test]
+    fn a_host_command_without_the_marker_is_the_users_and_stays() {
+        let (_d, c) = project("typo3");
+        let file = c.root.join(".ddev/commands/host/tryout");
+        assert!(write_host_command(&c).unwrap());
+        assert!(!write_host_command(&c).unwrap(), "unchanged: not rewritten");
+        std::fs::write(&file, "#!/usr/bin/env bash\n# mine\n").unwrap();
+        assert!(!write_host_command(&c).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "#!/usr/bin/env bash\n# mine\n"
+        );
     }
 
     #[test]

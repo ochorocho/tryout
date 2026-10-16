@@ -182,7 +182,7 @@ impl ProjectKind for GenericProject {
     }
 }
 
-/// The one kind today: a TYPO3 Core checkout.
+/// A TYPO3 Core checkout — the kind tryout was built for.
 pub struct Typo3Core;
 
 pub static TYPO3_CORE: Typo3Core = Typo3Core;

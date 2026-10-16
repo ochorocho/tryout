@@ -66,6 +66,22 @@ impl Line<'_> {
     fn on_line(&self, w: &str) -> bool {
         self.words.iter().any(|x| x == w)
     }
+    /// How many bare words follow the verb: not flags, not the value of a
+    /// flag in `valued`.
+    fn positionals(&self, valued: &[&str]) -> usize {
+        let mut value_next = false;
+        let mut n = 0;
+        for w in self.words.iter().skip(1) {
+            if value_next {
+                value_next = false;
+            } else if w.starts_with('-') {
+                value_next = valued.contains(&w.as_str());
+            } else {
+                n += 1;
+            }
+        }
+        n
+    }
 }
 
 pub fn candidates(ctx: &Ctx, argv: &[String]) -> String {
@@ -120,18 +136,27 @@ pub fn candidates(ctx: &Ctx, argv: &[String]) -> String {
                 "--site",
                 "pin the site, so only the branch is asked for",
             );
-            if l.pos <= 1 {
+            if l.prev == "--site" {
+                sites(ctx, &mut o)
+            } else if l.positionals(&["--site"]) == 0 {
                 branches(ctx, &mut o)
             } else {
                 sites(ctx, &mut o)
             }
         }
         "patch" => {
-            if l.pos <= 1 {
+            if l.prev == "--site" {
+                sites(ctx, &mut o);
+            } else if l.positionals(&["--site"]) == 0 {
                 o.hint("Gerrit change number, e.g. 56947 — or nothing to browse the open changes");
                 patch_numbers(ctx, &mut o);
             } else {
                 sites(ctx, &mut o);
+            }
+            o.flag(&l, "--site", "the site to patch (its Core)");
+            o.flag(&l, "--list", "list the open changes instead of applying");
+            if l.on_line("--list") {
+                o.flag(&l, "--json", "the list as JSON, for tools");
             }
             o.flag(
                 &l,
@@ -224,7 +249,8 @@ fn worktree(ctx: &Ctx, l: &Line, o: &mut Out) {
             }
         }
         "add" => {
-            if l.pos <= 2 {
+            // `add --pr 42`: a flag in first position is offered like any other.
+            if l.pos <= 2 && !l.wants_flag() {
                 o.hint("name for the new worktree (becomes worktrees/<name>)");
             } else if l.prev == "--php" {
                 php_versions(ctx, third, o);
@@ -319,6 +345,11 @@ fn worktree(ctx: &Ctx, l: &Line, o: &mut Out) {
                 };
                 o.hint(&format!("new name for {what}"));
             }
+            o.flag(
+                l,
+                "--no-restart",
+                "skip the DDEV restart that moves its hostname",
+            );
         }
         _ => {}
     }
@@ -372,10 +403,7 @@ enum Mode {
 }
 
 fn served_by_marker(ctx: &Ctx, name: &str) -> bool {
-    ctx.instances_dir()
-        .join(name)
-        .join(".tryout-site")
-        .is_file()
+    site::marker(ctx, name).is_file()
 }
 
 /// Names from the worktrees/ glob plus the root checkout — no `git status`.
@@ -461,13 +489,11 @@ fn engines(ctx: &Ctx, o: &mut Out) {
     }
 }
 
-/// The PHP versions DDEV ships for 8.x, narrowed to what the worktree's
-/// composer.json accepts; the last is marked as its default.
+/// The PHP versions the web image provides (post-start's note, else DDEV's
+/// 8.x line-up), narrowed to what the worktree's composer.json accepts; the
+/// last is marked as its default.
 fn php_versions(ctx: &Ctx, worktree: &str, o: &mut Out) {
-    let all: Vec<String> = ["8.1", "8.2", "8.3", "8.4", "8.5"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let all = crate::core::php::installed(ctx);
     let mut ok = all.clone();
     if !worktree.is_empty()
         && let Some(c) = ctx.kind().php_constraint(&ctx.core_worktree_dir(worktree))
@@ -489,23 +515,11 @@ fn php_versions(ctx: &Ctx, worktree: &str, o: &mut Out) {
 
 /// The change numbers configured for auto-apply.
 fn patch_numbers(ctx: &Ctx, o: &mut Out) {
-    let Ok(f) = std::fs::read_to_string(ctx.root.join(".ddev/config.tryout-patches.yaml")) else {
-        return;
-    };
-    for line in f.lines() {
-        let Some(rest) = line.trim_start().strip_prefix('-') else {
-            continue;
-        };
-        let Some(list) = rest.trim_start().strip_prefix("TRYOUT_PATCHES=") else {
-            continue;
-        };
-        for n in list
-            .split(',')
-            .map(|n| n.replace(' ', ""))
-            .filter(|n| !n.is_empty())
-        {
-            o.c(&n, "from config.tryout-patches.yaml");
-        }
+    for n in crate::core::patch::configured_in(&ctx.root)
+        .split(',')
+        .filter(|n| !n.is_empty())
+    {
+        o.c(n, "from config.tryout-patches.yaml");
     }
 }
 
@@ -718,7 +732,27 @@ mod tests {
         );
         assert_eq!(
             names(&ctx, "patch ''"),
-            ["56947", "12345", "--all-branches"]
+            ["56947", "12345", "--site", "--list", "--all-branches"]
+        );
+        // After `--site <x>` the next word is a change again, not a site.
+        assert_eq!(
+            names(&ctx, "patch --site v13 ''"),
+            ["56947", "12345", "--list", "--all-branches"]
+        );
+    }
+
+    #[test]
+    fn every_parsed_flag_is_offered() {
+        let (_d, ctx) = project();
+        let has = |line: &str, flag: &str| names(&ctx, line).iter().any(|n| n == flag);
+        assert!(has("patch --list --", "--json"));
+        // A flag in first position: `worktree add --pr 42`.
+        assert!(has("worktree add --", "--serve") && has("worktree add --", "--php"));
+        assert!(has("worktree rename a b --", "--no-restart"));
+        // `checkout --site x <TAB>` asks for the branch, not a site again.
+        assert_eq!(
+            names(&ctx, "checkout --site v13 ''"),
+            ["main", "13.4", "12.4"]
         );
     }
 

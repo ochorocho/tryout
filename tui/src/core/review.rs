@@ -69,18 +69,8 @@ pub fn fetch(root: &Path, number: u64) -> Result<String, Vec<String>> {
     let local = local_ref(number);
     for r in head_refs(forge(&url), number) {
         out::info(format!("Fetching {r} from origin..."));
-        if proc::quiet(
-            "git",
-            &[
-                "-C",
-                &root.to_string_lossy(),
-                "fetch",
-                "-q",
-                "origin",
-                &format!("+{r}:{local}"),
-            ],
-            None,
-        ) {
+        // Through `git::ok`: a shared-ref write holds .git/tryout.lock.
+        if git::ok(root, &["fetch", "-q", "origin", &format!("+{r}:{local}")]) {
             return Ok(local);
         }
     }

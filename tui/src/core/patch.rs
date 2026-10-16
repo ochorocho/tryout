@@ -53,9 +53,13 @@ pub fn ensure_gerrit_remote(core: &Path) {
     }
 }
 
-/// A change number's current patchset.
+/// A change number's current patchset. The id is one path segment: encoded,
+/// so `?`, `/` or `#` in it cannot rewrite the request.
 pub fn resolve(change: &str) -> Result<Resolved, gerrit::Error> {
-    let v = gerrit::get(&format!("/changes/{change}?o=CURRENT_REVISION"))?;
+    let v = gerrit::get(&format!(
+        "/changes/{}?o=CURRENT_REVISION",
+        gerrit::encode_keeping(change, b"~")
+    ))?;
     parse_resolved(&v)
 }
 
@@ -166,14 +170,7 @@ pub fn apply(core: &Path, branch: &str, change: &str) -> (Outcome, String) {
         }
     }
     out::info(format!("Cherry-picking change {change}..."));
-    let picked = std::process::Command::new("git")
-        .arg("-C")
-        .arg(core)
-        .args(["cherry-pick", "FETCH_HEAD"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
+    let picked = proc::git_no_stderr(core, &["cherry-pick", "FETCH_HEAD"]);
     if picked {
         out::success(format!("Applied change {change}: {}", r.subject));
         (Outcome::Applied, r.subject)
@@ -217,11 +214,38 @@ pub fn remembered(core: &Path) -> std::collections::HashMap<String, u64> {
 /// The configured patch list, TRYOUT_PATCHES, with its whitespace removed:
 /// `56947, 12345` → `56947,12345`. Empty when none is configured.
 pub fn configured() -> String {
-    std::env::var("TRYOUT_PATCHES")
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect()
+    normalize(&std::env::var("TRYOUT_PATCHES").unwrap_or_default())
+}
+
+/// The same list as the host sees it: from `.ddev/config.tryout-patches.yaml`
+/// (`- TRYOUT_PATCHES=…` under web_environment), which DDEV hands only to
+/// the container.
+pub fn configured_in(root: &Path) -> String {
+    let file = root.join(".ddev/config.tryout-patches.yaml");
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    normalize(list_in(&text).unwrap_or_default())
+}
+
+/// The value of the `- TRYOUT_PATCHES=` line in the patch list file.
+pub fn list_in(yaml: &str) -> Option<&str> {
+    yaml.lines().find_map(|l| {
+        l.trim_start()
+            .strip_prefix('-')
+            .map(str::trim_start)
+            .and_then(|r| r.strip_prefix("TRYOUT_PATCHES="))
+    })
+}
+
+fn normalize(list: &str) -> String {
+    list.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// A change as Gerrit names it: a number, or a `I…` Change-Id (40 hex digits).
+pub fn is_change_id(s: &str) -> bool {
+    let digits = !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let change_id =
+        s.len() == 41 && s.starts_with('I') && s[1..].bytes().all(|b| b.is_ascii_hexdigit());
+    digits || change_id
 }
 
 /// Apply TRYOUT_PATCHES in order, stopping at the first failure. Returns how

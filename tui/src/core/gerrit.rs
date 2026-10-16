@@ -75,7 +75,7 @@ impl Change {
 pub fn list_open(branch: &str, limit: u32) -> Result<Vec<Change>, Error> {
     let mut query = format!("project:{GERRIT_PROJECT}+status:open");
     if branch != "-" {
-        query.push_str(&format!("+branch:{branch}"));
+        query.push_str(&format!("+branch:{}", encode(branch)));
     }
     changes(&get(&format!(
         "/changes/?q={query}&n={limit}&o=LABELS&o=DETAILED_ACCOUNTS"
@@ -98,7 +98,7 @@ pub const PAGE_SIZE: u32 = 25;
 pub fn search_open(branch: &str, search: &str, page: u32) -> Result<Page, Error> {
     let mut query = format!("project:{GERRIT_PROJECT}+status:open");
     if branch != "-" {
-        query.push_str(&format!("+branch:{branch}"));
+        query.push_str(&format!("+branch:{}", encode(branch)));
     }
     for term in search_terms(search) {
         query.push('+');
@@ -146,12 +146,18 @@ pub fn search_terms(search: &str) -> Vec<String> {
 }
 
 /// Percent-encode a query term, leaving what Gerrit's query syntax needs.
-fn encode(s: &str) -> String {
+pub fn encode(s: &str) -> String {
+    encode_keeping(s, b":")
+}
+
+/// Percent-encode `s` for a URL, leaving the unreserved bytes and `keep`.
+pub fn encode_keeping(s: &str, keep: &[u8]) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b':' => {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 (b as char).to_string()
             }
+            _ if keep.contains(&b) => (b as char).to_string(),
             _ => format!("%{b:02X}"),
         })
         .collect()

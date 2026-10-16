@@ -108,34 +108,30 @@ pub fn query_account(query: &str) -> Result<Account, Lookup> {
 
 /// Percent-encode a query value (what curl --data-urlencode did).
 fn encode(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
+    super::gerrit::encode_keeping(s, b"")
 }
 
 fn config(core: &Path, key: &str) -> String {
     git::out(core, &["config", "--get", key]).unwrap_or_default()
 }
 
-/// The Gerrit username: the argument, TRYOUT_GERRIT_USER, the cached git
-/// config, a prompt — and cached for next time.
+/// The Gerrit username as far as it is known without asking: the argument,
+/// TRYOUT_GERRIT_USER, the cached git config. Empty when none says.
+pub fn known_user(core: &Path, given: &str) -> String {
+    if !given.is_empty() {
+        return given.to_string();
+    }
+    let env = std::env::var("TRYOUT_GERRIT_USER").unwrap_or_default();
+    if !env.is_empty() {
+        return env;
+    }
+    config(core, "tryout.gerritUser")
+}
+
+/// The Gerrit username (`known_user`), validated and cached for next time.
+/// Never asks: the host does, where a prompt can be answered.
 pub fn resolve_user(core: &Path, given: &str) -> Result<String, Failed> {
-    let mut user = given.to_string();
-    if user.is_empty() {
-        user = std::env::var("TRYOUT_GERRIT_USER").unwrap_or_default();
-    }
-    if user.is_empty() {
-        user = config(core, "tryout.gerritUser");
-    }
-    if user.is_empty() && super::prompt::have_tty() {
-        user =
-            super::prompt::ask_text("Gerrit username (review.typo3.org)", "").unwrap_or_default();
-    }
+    let user = known_user(core, given);
     if user.is_empty() {
         out::error("No Gerrit username provided.");
         out::error(
@@ -167,27 +163,26 @@ pub fn configure_author_identity(core: &Path, user: &str) {
         ));
         return;
     };
-    if acc.email.is_empty() {
+    // Network text: nothing unprintable reaches the terminal or git config.
+    let (email, name) = (out::printable(&acc.email), out::printable(&acc.name));
+    if email.is_empty() {
         out::warn(format!(
             "Gerrit account '{user}' exposes no preferred email — set one manually:"
         ));
         out::warn("  git config user.email <your-gerrit-email>");
         return;
     }
-    git::ok(core, &["config", "tryout.gerritEmail", &acc.email]);
+    git::ok(core, &["config", "tryout.gerritEmail", &email]);
     let current = git::out(core, &["config", "--local", "--get", "user.email"]).unwrap_or_default();
-    if current == acc.email {
-        out::success(format!("Author identity already set to {}", acc.email));
+    if current == email {
+        out::success(format!("Author identity already set to {email}"));
         return;
     }
-    git::ok(core, &["config", "user.email", &acc.email]);
-    if !acc.name.is_empty() {
-        git::ok(core, &["config", "user.name", &acc.name]);
+    git::ok(core, &["config", "user.email", &email]);
+    if !name.is_empty() {
+        git::ok(core, &["config", "user.name", &name]);
     }
-    out::success(format!(
-        "Author identity set to {} (repository-local)",
-        acc.email
-    ));
+    out::success(format!("Author identity set to {email} (repository-local)"));
     if !current.is_empty() {
         out::warn(format!(
             "Previous value was {current} — amend commits made before this with:"

@@ -77,38 +77,54 @@ pub fn validate_branch(branch: &str) -> Result<(), Vec<String>> {
 /// base and are on no branch, so it walks back from HEAD to the first commit a
 /// branch contains — the base is where the patches start.
 pub fn detect_detached_base_branch(dir: &Path, kind: &dyn ProjectKind) -> String {
-    for k in 0..=MAX_PATCHES_ON_TOP {
-        let rev = if k == 0 {
-            "HEAD".to_string()
-        } else {
-            format!("HEAD~{k}")
-        };
-        if !git::ok(dir, &["rev-parse", "--verify", "--quiet", &rev]) {
-            break;
-        }
-        let refs: Vec<String> = git::lines(
-            dir,
-            &[
-                "for-each-ref",
-                "--format=%(refname:short)",
-                "--contains",
-                &rev,
-                "refs/remotes/origin",
-            ],
-        )
-        .into_iter()
-        .map(|r| r.strip_prefix("origin/").map(String::from).unwrap_or(r))
-        .filter(|r| kind.is_base_branch(r))
-        .collect();
-        if refs.is_empty() {
-            continue;
-        }
-        let default = kind.default_branch();
-        let mut others: Vec<String> = refs.iter().filter(|r| *r != default).cloned().collect();
-        vsort::sort(&mut others);
-        return others.pop().unwrap_or_else(|| default.into());
+    let default = kind.default_branch();
+    // The base branches origin has, then one merge-base per candidate — a few
+    // git calls, not two per commit walked.
+    let bases: Vec<String> = git::lines(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/remotes/origin",
+        ],
+    )
+    .into_iter()
+    .filter_map(|r| r.strip_prefix("origin/").map(String::from))
+    .filter(|r| kind.is_base_branch(r))
+    .collect();
+    if bases.is_empty() {
+        return default.into();
     }
-    kind.default_branch().into()
+    let walked = git::lines(
+        dir,
+        &[
+            "rev-list",
+            &format!("--max-count={}", MAX_PATCHES_ON_TOP + 1),
+            "HEAD",
+        ],
+    );
+    // A branch contains HEAD~k exactly when the merge base is HEAD~k: the
+    // nearest such k wins, and among its branches the newest release.
+    let mut nearest: Option<(usize, Vec<String>)> = None;
+    for b in bases {
+        let Some(mb) = git::out(dir, &["merge-base", "HEAD", &format!("origin/{b}")]) else {
+            continue;
+        };
+        let Some(k) = walked.iter().position(|sha| *sha == mb) else {
+            continue;
+        };
+        match &mut nearest {
+            Some((at, refs)) if *at == k => refs.push(b),
+            Some((at, _)) if *at < k => {}
+            _ => nearest = Some((k, vec![b])),
+        }
+    }
+    let Some((_, refs)) = nearest else {
+        return default.into();
+    };
+    let mut others: Vec<String> = refs.into_iter().filter(|r| r != default).collect();
+    vsort::sort(&mut others);
+    others.pop().unwrap_or_else(|| default.into())
 }
 
 /// How far back the base is looked for: more patches than this on one checkout
@@ -117,11 +133,7 @@ const MAX_PATCHES_ON_TOP: usize = 30;
 
 /// `[0-9]+\.[0-9]+`
 pub fn is_release(b: &str) -> bool {
-    b.split_once('.').is_some_and(|(a, c)| {
-        [a, c]
-            .iter()
-            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-    })
+    vsort::is_major_minor(b)
 }
 
 /// The Core checkout a path sits in (anything inside it counts), or None.
@@ -786,7 +798,9 @@ pub fn vendor_core_mismatch(ctx: &Ctx) -> bool {
     else {
         return false;
     };
-    !resolved.starts_with(&expected) || resolved == expected
+    // Exactly the sysext, never "somewhere below the checkout": every nested
+    // worktree is below the root checkout.
+    resolved != expected.join("typo3/sysext/core")
 }
 
 // ─── Changing checkouts ─────────────────────────────────────────────────────
@@ -1054,7 +1068,7 @@ pub fn set_active(ctx: &Ctx, name: &str) -> Step {
     super::composer::use_core(ctx, target)
         .map(|_| ())
         .map_err(|e| {
-            eprintln!("{e}");
+            out::error(e);
             Failed
         })
 }

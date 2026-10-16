@@ -298,6 +298,14 @@ fake_project() {
   assert_success
 }
 
+@test "uninstall removes every extra database server's volume, whatever its version" {
+  set -eu -o pipefail
+  # ddev-<project>-tryout-postgres-16, …-mariadb-10-11: found by prefix, not
+  # by a fixed list of unversioned names.
+  run grep -qF 'docker volume ls -q --filter "name=ddev-${DDEV_SITENAME}-tryout-"' "${DIR}/install.yaml"
+  assert_success
+}
+
 @test "every PHP file the add-on ships is valid" {
   set -eu -o pipefail
   command -v php >/dev/null 2>&1 || skip 'php not available'

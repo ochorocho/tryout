@@ -221,6 +221,9 @@ fn patch(ctx: &Ctx, args: &[String]) -> Res {
             "--json" => json = true,
             "--site" => target = it.next().cloned().unwrap_or_default(),
             a if a.starts_with("--site=") => target = a["--site=".len()..].to_string(),
+            a if a.starts_with('-') => {
+                return unknown_option(a, "ddev tryout patch [<change-id>…] [--site <site>]");
+            }
             _ => rest.push(a.clone()),
         }
     }
@@ -245,23 +248,31 @@ fn patch(ctx: &Ctx, args: &[String]) -> Res {
         return Ok(());
     }
 
-    // `patch <id> <site>` keeps working; --site wins.
-    if let Some((id, more)) = rest.split_first() {
-        if target.is_empty() {
-            target = more.first().cloned().unwrap_or_default();
+    // Every word is a change — except `patch <id> <site>`, which keeps
+    // working: a last word that is no change names the site. --site wins.
+    if !rest.is_empty() {
+        let mut ids = rest;
+        if target.is_empty()
+            && ids.len() > 1
+            && !ids
+                .last()
+                .is_some_and(|w| crate::core::patch::is_change_id(w))
+        {
+            target = ids.pop().unwrap_or_default();
         }
         let target = site::for_name(ctx, &target);
         let mut a = vec!["patch"];
         if !target.is_empty() {
             a.extend(["--site", &target]);
         }
-        a.push(id);
+        a.extend(ids.iter().map(String::as_str));
         return delegate(ctx, &a);
     }
 
     let mut target = site::for_name(ctx, &target);
     // A configured list is a deliberate choice: apply it rather than asking.
-    let configured = !crate::core::patch::configured().is_empty();
+    // Read from the file: the container's environment is not the host's.
+    let configured = !crate::core::patch::configured_in(&ctx.root).is_empty();
     if configured || !prompt::have_tty() {
         let mut a = vec!["patch"];
         if !target.is_empty() {
@@ -336,14 +347,7 @@ fn persist_patches(ctx: &Ctx, ids: &[String]) -> Res {
         return Err(Exit(1));
     };
     let key = "TRYOUT_PATCHES=";
-    let current: String = text
-        .lines()
-        .find_map(|l| {
-            l.trim_start()
-                .strip_prefix('-')
-                .map(str::trim_start)
-                .and_then(|r| r.strip_prefix(key))
-        })
+    let current: String = crate::core::patch::list_in(&text)
         .unwrap_or_default()
         .chars()
         .filter(|c| !c.is_whitespace())
@@ -389,19 +393,62 @@ fn persist_patches(ctx: &Ctx, ids: &[String]) -> Res {
 
 // ─── download, checkout, reset, delete, exec ────────────────────────────────
 
+/// An unknown `-` word: refused, with the usage line. Never a site's name.
+fn unknown_option(flag: &str, usage: &str) -> Res {
+    out::error(format!("Unknown option: {flag}"));
+    out::error(format!("  → {usage}"));
+    Err(Exit(1))
+}
+
+/// `--site <x>`, `--site=<x>` or a bare word is the site; `known` flags are
+/// passed on; any other `-` word is refused.
+fn site_and_flags(
+    args: &[String],
+    known: &[&str],
+    usage: &str,
+) -> Result<(String, Vec<String>), Exit> {
+    let (mut site, mut flags) = (String::new(), Vec::new());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--site" => site = it.next().cloned().unwrap_or_default(),
+            a if a.starts_with("--site=") => site = a["--site=".len()..].to_string(),
+            a if known.contains(&a) => flags.push(a.to_string()),
+            a if a.starts_with('-') => return unknown_option(a, usage).map(|()| unreachable!()),
+            a => site = a.to_string(),
+        }
+    }
+    Ok((site, flags))
+}
+
+/// Where the name sits among `args`: the first word that is neither a flag
+/// nor the value of one in `valued`. A flag in first position is never a name.
+fn name_position(args: &[String], valued: &[&str]) -> Option<usize> {
+    let mut value_next = false;
+    for (i, a) in args.iter().enumerate() {
+        if value_next {
+            value_next = false;
+        } else if a.starts_with('-') {
+            value_next = valued.contains(&a.as_str());
+        } else {
+            return Some(i);
+        }
+    }
+    None
+}
+
 fn download(ctx: &Ctx, args: &[String]) -> Res {
-    let args: Vec<String> = args
-        .iter()
-        .map(|a| {
-            if a.starts_with('-') {
-                a.clone()
-            } else {
-                site::for_name(ctx, a)
-            }
-        })
-        .collect();
+    let (target, flags) = site_and_flags(
+        args,
+        &["--reset", "-r"],
+        "ddev tryout download [--reset] [<site>]",
+    )?;
+    let target = site::for_name(ctx, &target);
     let mut a = vec!["download"];
-    a.extend(args.iter().map(String::as_str));
+    a.extend(flags.iter().map(String::as_str));
+    if !target.is_empty() {
+        a.push(&target);
+    }
     delegate(ctx, &a)
 }
 
@@ -456,7 +503,7 @@ fn checkout(ctx: &Ctx, args: &[String]) -> Res {
 
 fn reset(ctx: &Ctx, args: &[String]) -> Res {
     require_core(ctx)?;
-    let mut target = args.first().cloned().unwrap_or_default();
+    let (mut target, _) = site_and_flags(args, &[], "ddev tryout reset [<site>]")?;
     // Several sites served: ask which one a reset rebuilds.
     if target.is_empty() && !site::served_names(ctx).is_empty() {
         match prompt::ask_site(ctx, "Reset which site?", &[]) {
@@ -657,20 +704,20 @@ fn exec(ctx: &Ctx, args: &[String]) -> Res {
 /// running before its TYPO3 setup: declare the service and restart DDEV first.
 /// Nothing to do when `--db` names no engine, the project's own, or one that is
 /// declared already.
-fn ensure_db_service(ctx: &Ctx, args: &[String], no_restart: bool) -> Res {
-    let mut value = None;
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        if a == "--db" {
-            value = it.next().cloned();
-        } else if let Some(v) = a.strip_prefix("--db=") {
-            value = Some(v.to_string());
-        }
-    }
+fn ensure_db_service(ctx: &Ctx, args: &[String], no_restart: bool, worktree: Option<&str>) -> Res {
+    let value = super::flag_value(args, "--db");
     // An unknown one is the container's to refuse, with the choices.
-    let Some(engine) = value.as_deref().and_then(Db::parse) else {
+    let Some(engine) = Db::parse(&value) else {
         return Ok(());
     };
+    // Before a restart for nothing: the worktree must exist.
+    if let Some(name) = worktree
+        && !ctx.core_worktree_dir(name).is_dir()
+    {
+        out::error(format!("No worktree '{name}'"));
+        out::error("  → ddev tryout worktree list");
+        return Err(Exit(1));
+    }
     let mut declared = webserver::declared_db_services(ctx);
     if !engine.needs_service(ctx) || declared.contains(&engine) {
         return Ok(());
@@ -684,7 +731,7 @@ fn ensure_db_service(ctx: &Ctx, args: &[String], no_restart: bool) -> Res {
         ));
         return Err(Exit(1));
     }
-    if no_restart || std::env::var("TRYOUT_NO_RESTART").as_deref() == Ok("1") {
+    if super::no_restart(no_restart) {
         out::error(format!(
             "The {} server is declared but runs only after a restart",
             engine.label()
@@ -735,7 +782,7 @@ fn restart_if_hosts_changed(ctx: &Ctx, before: &[String], no_restart: bool) -> R
     if webserver::restart_key(ctx) == before {
         return Ok(());
     }
-    if no_restart || std::env::var("TRYOUT_NO_RESTART").as_deref() == Ok("1") {
+    if super::no_restart(no_restart) {
         out::warn("Hostnames or database services changed — run 'ddev restart' to apply them.");
         return Ok(());
     }
@@ -773,8 +820,9 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
         "add" => worktree_add(ctx, rest),
         "use" => {
             require_core(ctx)?;
-            let name = match rest.first() {
-                Some(n) => n.clone(),
+            let pos = name_position(rest, &[]);
+            let name = match pos {
+                Some(i) => rest[i].clone(),
                 None => prompt::ask_worktree(
                     ctx,
                     "Point the primary site at which worktree?",
@@ -786,7 +834,12 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
                 })?,
             };
             let mut a = vec!["worktree", "use", name.as_str()];
-            a.extend(rest.iter().skip(1).map(String::as_str));
+            a.extend(
+                rest.iter()
+                    .enumerate()
+                    .filter(|(i, _)| Some(*i) != pos)
+                    .map(|(_, a)| a.as_str()),
+            );
             delegate(ctx, &a)
         }
         "remove" | "rm" => worktree_remove(ctx, rest),
@@ -805,8 +858,9 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
                     "ddev tryout worktree unserve <name> [--drop-db]",
                 )
             };
-            let name = match rest.first() {
-                Some(n) => n.clone(),
+            let pos = name_position(rest, &["--php", "--db", "--db-from"]);
+            let name = match pos {
+                Some(i) => rest[i].clone(),
                 None => prompt::ask_worktree(ctx, prompt_text, filter).ok_or_else(|| {
                     explain_missing(usage);
                     Exit(1)
@@ -817,12 +871,12 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
             let mut a = vec!["worktree", sub, name.as_str()];
             a.extend(
                 rest.iter()
-                    .skip(1)
-                    .filter(|a| *a != "--no-restart")
-                    .map(String::as_str),
+                    .enumerate()
+                    .filter(|(i, a)| Some(*i) != pos && *a != "--no-restart")
+                    .map(|(_, a)| a.as_str()),
             );
             if sub == "serve" {
-                ensure_db_service(ctx, rest, no_restart)?;
+                ensure_db_service(ctx, rest, no_restart, Some(&name))?;
             }
             let before = webserver::restart_key(ctx);
             delegate(ctx, &a)?;
@@ -830,17 +884,25 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
         }
         "rename" => {
             require_core(ctx)?;
-            let usage = "ddev tryout worktree rename <old> <new>";
-            let old = match rest.first() {
-                Some(n) => n.clone(),
+            let usage = "ddev tryout worktree rename <old> <new> [--no-restart]";
+            let no_restart = rest.iter().any(|a| a == "--no-restart");
+            if let Some(bad) = rest
+                .iter()
+                .find(|a| a.starts_with('-') && *a != "--no-restart")
+            {
+                return unknown_option(bad, usage);
+            }
+            let words: Vec<&String> = rest.iter().filter(|a| !a.starts_with('-')).collect();
+            let old = match words.first() {
+                Some(n) => (*n).clone(),
                 None => prompt::ask_worktree(ctx, "Rename which worktree?", prompt::Filter::All)
                     .ok_or_else(|| {
                         explain_missing(usage);
                         Exit(1)
                     })?,
             };
-            let new = match rest.get(1) {
-                Some(n) => n.clone(),
+            let new = match words.get(1) {
+                Some(n) => (*n).clone(),
                 None => prompt::ask_text(&format!("New name for {old}"), "").ok_or_else(|| {
                     explain_missing(usage);
                     Exit(1)
@@ -848,7 +910,7 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
             };
             let before = webserver::restart_key(ctx);
             delegate(ctx, &["worktree", "rename", &old, &new])?;
-            restart_if_hosts_changed(ctx, &before, false)
+            restart_if_hosts_changed(ctx, &before, no_restart)
         }
         _ => {
             out::error(format!("Unknown worktree command: {sub}"));
@@ -919,7 +981,7 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
             name = format!("pr-{number}");
         }
         flags.push(format!("--pr={number}"));
-        ensure_db_service(ctx, &flags, no_restart)?;
+        ensure_db_service(ctx, &flags, no_restart, None)?;
         let before = webserver::restart_key(ctx);
         let mut a = vec!["worktree", "add", name.as_str()];
         a.extend(flags.iter().map(String::as_str));
@@ -947,7 +1009,7 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
     let branch =
         prompt::ask_new_worktree_branch(ctx, &branch, "ddev tryout worktree add <name> [<branch>]")
             .ok_or(Exit(1))?;
-    ensure_db_service(ctx, &flags, no_restart)?;
+    ensure_db_service(ctx, &flags, no_restart, None)?;
     let before = webserver::restart_key(ctx);
     let mut a = vec!["worktree", "add", name.as_str()];
     if !branch.is_empty() {
@@ -962,15 +1024,21 @@ fn worktree_add(ctx: &Ctx, args: &[String]) -> Res {
 /// dirty tree is no longer the backstop. `--yes` is for a caller that asked.
 fn worktree_remove(ctx: &Ctx, args: &[String]) -> Res {
     require_core(ctx)?;
-    let name = match args.first() {
-        Some(n) => n.clone(),
+    let pos = name_position(args, &[]);
+    let name = match pos {
+        Some(i) => args[i].clone(),
         None => prompt::ask_worktree(ctx, "Remove which worktree?", prompt::Filter::NonPrimary)
             .ok_or_else(|| {
                 explain_missing("ddev tryout worktree remove <name> [--force]");
                 Exit(1)
             })?,
     };
-    let rest: Vec<&String> = args.iter().skip(1).collect();
+    let rest: Vec<&String> = args
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != pos)
+        .map(|(_, a)| a)
+        .collect();
     let yes = rest.iter().any(|a| *a == "--yes" || *a == "-y");
     let no_restart = rest.iter().any(|a| *a == "--no-restart");
     let passed: Vec<&str> = rest
@@ -1023,14 +1091,10 @@ fn cs(ctx: &Ctx, args: &[String]) -> Res {
             require_core(ctx)?;
             // The username is the one thing setup may ask for: resolve it here,
             // where a prompt can be answered.
-            let mut user = args.get(1).cloned().unwrap_or_default();
-            if user.is_empty() {
-                user = std::env::var("TRYOUT_GERRIT_USER").unwrap_or_default();
-            }
-            if user.is_empty() {
-                user = crate::core::git::out(&ctx.root, &["config", "--get", "tryout.gerritUser"])
-                    .unwrap_or_default();
-            }
+            let mut user = crate::core::contrib::known_user(
+                &ctx.root,
+                args.get(1).map(String::as_str).unwrap_or(""),
+            );
             if user.is_empty() {
                 user = prompt::ask_text("Gerrit username (review.typo3.org)", "").ok_or_else(
                     || {

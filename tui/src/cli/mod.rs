@@ -133,3 +133,24 @@ pub fn reject_args(cmd: &str, args: &[String]) -> Res {
     ));
     Err(Exit(1))
 }
+
+/// `--flag value` or `--flag=value` anywhere in the arguments; the last wins.
+/// Empty when absent.
+pub(crate) fn flag_value(args: &[String], flag: &str) -> String {
+    let mut value = String::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == flag {
+            value = it.next().cloned().unwrap_or_default();
+        } else if let Some(v) = a.strip_prefix(flag).and_then(|v| v.strip_prefix('=')) {
+            value = v.to_string();
+        }
+    }
+    value
+}
+
+/// Is the DDEV restart a verb would do skipped: `--no-restart` was given, or
+/// `TRYOUT_NO_RESTART=1` says so for every verb.
+pub(crate) fn no_restart(flag: bool) -> bool {
+    flag || std::env::var("TRYOUT_NO_RESTART").as_deref() == Ok("1")
+}

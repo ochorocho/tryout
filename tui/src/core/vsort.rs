@@ -120,8 +120,18 @@ fn verrevcmp(a: &[u8], b: &[u8]) -> Ordering {
     Ordering::Equal
 }
 
-/// The order a branch picker offers: main, then release branches newest first,
-/// then everything else (the legacy TYPO3_x-y refs) — `sort -rV` for both groups.
+/// `digits.digits` — a release branch (`13.4`), a PHP version (`8.3`).
+pub fn is_major_minor(v: &str) -> bool {
+    v.split_once('.').is_some_and(|(a, b)| {
+        [a, b]
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit()))
+    })
+}
+
+/// The order a branch picker offers: main (when there is one), then release
+/// branches newest first, then everything else (the legacy TYPO3_x-y refs) —
+/// `sort -rV` for both groups.
 pub fn picker_order(branches: &[String]) -> Vec<String> {
     let mut rest: Vec<String> = branches.iter().filter(|b| *b != "main").cloned().collect();
     sort(&mut rest);
@@ -129,7 +139,10 @@ pub fn picker_order(branches: &[String]) -> Vec<String> {
     let (numeric, other): (Vec<_>, Vec<_>) = rest
         .into_iter()
         .partition(|b| b.as_bytes().first().is_some_and(u8::is_ascii_digit));
-    let mut out = vec!["main".to_string()];
+    let mut out = Vec::new();
+    if branches.iter().any(|b| b == "main") {
+        out.push("main".to_string());
+    }
     out.extend(numeric);
     out.extend(other);
     out
@@ -203,5 +216,14 @@ mod tests {
             picker_order(&v),
             ["main", "14.3", "13.4", "12.4", "9.5", "TYPO3_8-7"]
         );
+    }
+
+    #[test]
+    fn the_picker_offers_main_only_when_there_is_one() {
+        let v: Vec<String> = ["develop", "master", "1.0"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(picker_order(&v), ["1.0", "master", "develop"]);
     }
 }

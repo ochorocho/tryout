@@ -189,7 +189,7 @@ pub fn sync_composer(instance: &Path, core: &Path) -> bool {
             true
         }
         Err(e) => {
-            eprintln!("{e}");
+            out::error(e);
             false
         }
     }
@@ -476,13 +476,7 @@ pub fn serve_since(
         return Err(Failed);
     }
     // It names a binary, a socket and a vhost line: digits and one dot only.
-    let valid_php = |v: &str| {
-        v.split_once('.').is_some_and(|(a, b)| {
-            [a, b]
-                .iter()
-                .all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit()))
-        })
-    };
+    let valid_php = super::vsort::is_major_minor;
     if !php_version.is_empty() && !valid_php(php_version) {
         out::error(format!("Invalid PHP version '{php_version}'"));
         out::error(format!("  → ddev tryout worktree serve {name} --php 8.4"));
@@ -523,15 +517,20 @@ pub fn serve_since(
         db::wait_until_ready(ctx, &server)?;
     }
 
-    // The marker IS "served"; it only stands if we get to the end.
+    // The marker IS "served"; it only stands if we get to the end. A site
+    // served before this run keeps what it had.
     let marker = site::marker(ctx, name);
-    let _ = site::write_marker(ctx, name, &php, &server);
+    let previous = std::fs::read_to_string(&marker).ok();
+    if let Err(e) = site::write_marker(ctx, name, &php, &server) {
+        out::error(format!("Could not write {}: {e}", marker.display()));
+        return Err(Failed);
+    }
     let result = match ctx.mode() {
         Mode::Core => build_site(ctx, name, &php, &core, &dir),
         Mode::Project => build_project_site(ctx, name, &php, &dir, seed),
     };
     if result.is_err() {
-        let _ = std::fs::remove_file(&marker);
+        roll_back(ctx, name, previous);
         return result;
     }
 
@@ -648,7 +647,7 @@ fn build_site(ctx: &Ctx, name: &str, php: &str, core: &Path, dir: &Path) -> Step
         "Generating TYPO3-Instances/{name}/composer.tryout.json..."
     ));
     if let Err(e) = composer::site_overlay(ctx, name, php) {
-        eprintln!("{e}");
+        out::error(e);
         out::error(format!(
             "Failed to generate the Composer overlay for {name}"
         ));
@@ -704,7 +703,14 @@ pub fn unserve(ctx: &Ctx, name: &str, keep_db: bool) -> Step {
     }
     let saved = saved_settings(ctx, name);
     let settings = site::dir(ctx, name).join("config/system/settings.php");
-    if keep_db && settings.is_file() {
+    if keep_db && !settings.is_file() {
+        // Setup never finished, so there is nothing to save with it — but
+        // "keep" means keep: it is never dropped behind the caller's back.
+        out::warn(format!(
+            "Keeping database {} — '{name}' has no settings.php to save with it",
+            site::database(name)
+        ));
+    } else if keep_db {
         // The kept database is useless without it: stop before deleting anything.
         let kept = saved
             .parent()
@@ -780,6 +786,28 @@ fn unserve_project(ctx: &Ctx, name: &str, keep_db: bool) -> Step {
 }
 
 /// The vhost and hostname go; the webserver stops answering for the site.
+/// After a failed build nothing may claim the site is served as it is not:
+/// a site served before goes back to its old marker (and the vhost to its
+/// PHP), a new one loses marker and vhost; the worktree config follows.
+fn roll_back(ctx: &Ctx, name: &str, previous: Option<String>) {
+    let marker = site::marker(ctx, name);
+    match previous {
+        Some(old) => {
+            let _ = std::fs::write(&marker, old);
+            let _ = webserver::write_vhost(ctx, name, &site::php_version(ctx, name));
+        }
+        None => {
+            let _ = std::fs::remove_file(&marker);
+            let _ = std::fs::remove_file(webserver::vhost_file(ctx, name));
+        }
+    }
+    if let Err(e) = webserver::write_worktree_config(ctx) {
+        out::warn(format!(
+            "Could not rewrite .ddev/config.worktrees.yaml: {e}"
+        ));
+    }
+}
+
 fn stop_serving(ctx: &Ctx, name: &str) {
     let _ = std::fs::remove_file(webserver::vhost_file(ctx, name));
     if let Err(e) = webserver::write_worktree_config(ctx) {

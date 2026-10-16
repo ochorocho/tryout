@@ -7,9 +7,11 @@ use super::ctx::{CONTAINER_ROOT, Ctx};
 use super::out;
 
 /// The environment the container needs from the host; DDEV forwards nothing.
-const FORWARDED: [&str; 4] = [
+const FORWARDED: [&str; 6] = [
     "TRYOUT_BRANCH",
     "TRYOUT_GERRIT_USER",
+    "TRYOUT_GERRIT_API",
+    "TRYOUT_GERRIT_SSH_HOST",
     "TRYOUT_PATCHES",
     "TRYOUT_EVENTS",
 ];
@@ -98,7 +100,6 @@ pub fn on_path(name: &str) -> bool {
     })
 }
 
-/// `ddev restart`, its output shown.
 /// Remove a Docker volume; true when it is gone (or never was). Host side.
 pub fn remove_volume(name: &str) -> bool {
     let exists = Command::new("docker")
@@ -116,6 +117,7 @@ pub fn remove_volume(name: &str) -> bool {
             .is_ok_and(|s| s.success())
 }
 
+/// `ddev restart`, its output shown.
 pub fn restart() -> bool {
     Command::new("ddev")
         .arg("restart")

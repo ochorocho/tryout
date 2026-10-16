@@ -57,18 +57,7 @@ fn context(root: &Path) -> Ctx {
 /// post-start leaves them in its state directory; before it has, DDEV's 8.x
 /// line-up stands in.
 fn php_versions(ctx: &Ctx) -> Vec<String> {
-    let snapshot =
-        std::fs::read_to_string(crate::core::poststart::state_dir(ctx).join("php-versions"))
-            .unwrap_or_default();
-    let v: Vec<String> = snapshot.split_whitespace().map(String::from).collect();
-    if v.is_empty() {
-        ["8.1", "8.2", "8.3", "8.4", "8.5"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    } else {
-        v
-    }
+    crate::core::php::installed(ctx)
 }
 
 /// Every checkout with its state, read in-process with the host's git. A few

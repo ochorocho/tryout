@@ -121,7 +121,7 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
         }
         "remove" | "rm" => {
             let name = rest.first().map(String::as_str).unwrap_or("");
-            let force = rest.get(1).map(String::as_str) == Some("--force");
+            let force = rest.iter().skip(1).any(|a| a == "--force");
             if name.is_empty() {
                 return usage("ddev tryout worktree remove <name> [--force]");
             }
@@ -171,7 +171,7 @@ fn worktree(ctx: &Ctx, args: &[String]) -> Res {
         }
         "unserve" => {
             let name = rest.first().map(String::as_str).unwrap_or("");
-            let keep_db = rest.get(1).map(String::as_str) != Some("--drop-db");
+            let keep_db = !rest.iter().skip(1).any(|a| a == "--drop-db");
             if name.is_empty() {
                 return usage("ddev tryout worktree unserve <name> [--drop-db]");
             }
@@ -208,19 +208,7 @@ fn usage(line: &str) -> Res {
     Err(Exit(1))
 }
 
-/// `--flag value` or `--flag=value` anywhere in the arguments; the last wins.
-fn flag_value(args: &[String], flag: &str) -> String {
-    let mut value = String::new();
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        if a == flag {
-            value = it.next().cloned().unwrap_or_default();
-        } else if let Some(v) = a.strip_prefix(flag).and_then(|v| v.strip_prefix('=')) {
-            value = v.to_string();
-        }
-    }
-    value
-}
+use super::flag_value;
 
 /// `--db <type>[:<version>]`: None when not given, an error naming the
 /// choices when it is not one.
