@@ -155,6 +155,19 @@ impl Form {
             filter: String::new(),
             selected: 0,
         };
+        // A change picker, its first page asked for straight away.
+        let choose = |label| Field::Choose {
+            label,
+            options: None,
+            filter: String::new(),
+            selected: 0,
+            chosen: Vec::new(),
+            page: 0,
+            more: false,
+            pending: Some((Instant::now(), String::new(), 0)),
+            asked: None,
+            in_list: false,
+        };
         let (title, fields, confirm) = match &kind {
             FormKind::NewWorktree => (
                 "New worktree".to_string(),
@@ -200,7 +213,10 @@ impl Form {
                 format!("Unserve {n} and drop its database?"),
                 vec![],
                 vec![
-                    format!("Its site stops, and the database db_{n} is dropped."),
+                    format!(
+                        "Its site stops, and the database {} is dropped.",
+                        crate::core::site::database(n)
+                    ),
                     "The checkout stays.".into(),
                 ],
             ),
@@ -239,35 +255,12 @@ impl Form {
             ),
             FormKind::PullRequest => (
                 "Open a pull request as a served worktree".to_string(),
-                vec![Field::Choose {
-                    label: "Open pull requests of origin",
-                    options: None,
-                    filter: String::new(),
-                    selected: 0,
-                    chosen: Vec::new(),
-                    page: 0,
-                    more: false,
-                    pending: Some((Instant::now(), String::new(), 0)),
-                    asked: None,
-                    in_list: false,
-                }],
+                vec![choose("Open pull requests of origin")],
                 vec![],
             ),
             FormKind::Patch(n) => (
                 format!("Apply Gerrit changes to {n}"),
-                vec![Field::Choose {
-                    label: "Open changes on its branch",
-                    options: None,
-                    filter: String::new(),
-                    selected: 0,
-                    chosen: Vec::new(),
-                    page: 0,
-                    more: false,
-                    // The first page, asked for straight away.
-                    pending: Some((Instant::now(), String::new(), 0)),
-                    asked: None,
-                    in_list: false,
-                }],
+                vec![choose("Open changes on its branch")],
                 vec![],
             ),
         };
@@ -399,18 +392,36 @@ impl Form {
         self.fields.is_empty()
     }
 
-    /// The branch list arrived: newest first, the default preselected.
+    /// The branch list arrived: newest first, the default preselected — among
+    /// the ones a filter typed meanwhile still shows.
     pub fn set_branches(&mut self, branches: &[String]) {
         let sorted = order_branches(branches);
         let default = self.default_branch.as_str();
         for f in &mut self.fields {
-            if let Field::Pick {
-                options, selected, ..
-            } = f
-            {
-                *selected = sorted.iter().position(|b| b == default).unwrap_or(0);
+            if let Field::Pick { options, .. } = f {
                 *options = Some(sorted.clone());
             }
+            let at = f.visible().iter().position(|b| *b == default);
+            if let Field::Pick { selected, .. } = f {
+                *selected = at.unwrap_or(0);
+            }
+        }
+    }
+
+    /// Pasted text goes into the field that has the focus, a character at a
+    /// time: a newline never submits, and nothing reaches the list's keys.
+    pub fn paste(&mut self, text: &str) {
+        for c in text.chars().filter(|c| !c.is_control()) {
+            self.edit(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+
+    /// A drop-database confirmation for a site whose database is a file.
+    pub fn names_database_file(&mut self) {
+        if let FormKind::DropDb(_) = self.kind
+            && let Some(first) = self.confirm.first_mut()
+        {
+            *first = "Its site stops, and its database file is deleted.".into();
         }
     }
 
@@ -444,9 +455,13 @@ impl Form {
     }
 
     fn edit(&mut self, key: KeyEvent) {
+        // A confirmation has no field to edit: the wheel over it is nothing.
+        let Some(field) = self.fields.get_mut(self.focus) else {
+            return;
+        };
         self.error = None;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match &mut self.fields[self.focus] {
+        match field {
             Field::Text { value, .. } => match key.code {
                 KeyCode::Backspace => {
                     value.pop();
@@ -664,9 +679,10 @@ impl Form {
                     .copied()
                     .or_else(|| field.visible_changes().get(*selected).map(|c| c.number))
                     .ok_or("pick a pull request")?;
+                let name = self.valid_new_name(format!("pr-{number}"))?;
                 job(
                     format!("Open pull request #{number}"),
-                    format!("worktree add pr-{number} --pr {number}"),
+                    format!("worktree add {name} --pr {number}"),
                 )
             }
             FormKind::Patch(n) => {
@@ -707,25 +723,30 @@ impl Form {
         })
     }
 
-    /// The add-on's own rule (validate_worktree_name), checked before a job
-    /// exists — the add-on still has the last word.
+    /// The add-on's own rules (`worktree::validate_name`, one database per
+    /// name), checked before a job exists — the add-on still has the last word.
     fn valid_new_name(&self, name: String) -> Result<String, String> {
         if name.is_empty() {
             return Err("a name is needed".into());
         }
-        if name.starts_with('-') {
-            return Err("a name cannot start with '-'".into());
-        }
-        if name == "."
-            || name == ".."
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-        {
-            return Err("letters, digits, . _ - only".into());
-        }
+        crate::core::worktree::validate_name(&name).map_err(|lines| {
+            let first = lines.into_iter().next().unwrap_or_default();
+            // "Invalid worktree name 'x' (why)" → "why"; the name is on screen.
+            first
+                .rsplit_once(" (")
+                .map(|(_, why)| why.trim_end_matches(')').to_string())
+                .unwrap_or(first)
+        })?;
         if self.taken.contains(&name) {
             return Err(format!("{name} already exists"));
+        }
+        let db = crate::core::site::database(&name);
+        if let Some(other) = self
+            .taken
+            .iter()
+            .find(|t| crate::core::site::database(t) == db)
+        {
+            return Err(format!("{other} already has the database {db}"));
         }
         Ok(name)
     }
@@ -877,14 +898,20 @@ mod tests {
 
     #[test]
     fn a_bad_or_taken_name_is_refused_before_anything_runs() {
+        let long = "x".repeat(61);
         for (name, why) in [
             ("", "needed"),
             ("-x", "'-'"),
-            ("a b", "only"),
-            ("..", "only"),
+            ("a b", "letters, digits"),
+            ("..", "Invalid"),
             ("main", "exists"),
+            ("primary", "primary"),
+            (long.as_str(), "60"),
+            // The add-on maps feat-x, feat.x and feat_x to one database.
+            ("feat.x", "database db_feat_x"),
         ] {
-            let mut f = Form::new(FormKind::NewWorktree, vec!["main".into()], "main");
+            let taken = vec!["main".into(), "feat-x".into()];
+            let mut f = Form::new(FormKind::NewWorktree, taken, "main");
             f.set_branches(&branches());
             typing(&mut f, name);
             assert_eq!(key(&mut f, KeyCode::Enter), Outcome::Stay, "{name:?}");
@@ -1166,6 +1193,16 @@ mod tests {
         f.changes_failed(&search, page, "Gerrit could not be reached".into());
         assert_eq!(f.error.as_deref(), Some("Gerrit could not be reached"));
         assert!(f.fields[0].visible_changes().is_empty());
+    }
+
+    #[test]
+    fn the_wheel_over_a_confirmation_does_nothing() {
+        let mut f = Form::new(FormKind::Remove("v13".into()), vec![], "main");
+        f.move_selection(1);
+        f.move_selection(-1);
+        f.turn_page(1);
+        assert!(f.is_confirmation());
+        assert_eq!(f.error, None);
     }
 
     #[test]

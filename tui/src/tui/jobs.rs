@@ -71,11 +71,44 @@ pub struct Job {
     pub progressed: bool,
     /// What it needs to itself while it runs.
     pub claim: Claim,
+    /// Lines ever added to `log`, dropped ones included — so a view fed
+    /// incrementally knows how many fell off the front.
+    pub appended: usize,
 }
 
 impl Job {
+    /// A job about to run `args`, queued.
+    fn queued(
+        id: u64,
+        label: String,
+        args: Vec<String>,
+        reveal: bool,
+        changes_worktrees: bool,
+        claim: Claim,
+    ) -> Self {
+        Self {
+            id,
+            label,
+            args,
+            state: JobState::Queued,
+            log: VecDeque::new(),
+            last_error: None,
+            changes_worktrees,
+            reveal,
+            waiting: None,
+            progressed: false,
+            claim,
+            appended: 0,
+        }
+    }
+
     pub fn command_line(&self) -> String {
         format!("ddev tryout {}", self.args.join(" "))
+    }
+
+    /// How many lines fell off the front of `log` so far.
+    pub fn dropped(&self) -> usize {
+        self.appended - self.log.len()
     }
 }
 
@@ -169,21 +202,22 @@ impl Jobs {
 
     /// Queue a command. It starts on the next `tick` if nothing else runs.
     pub fn enqueue(&mut self, action: &Action, reveal: bool) -> u64 {
+        self.enqueue_claiming(action, reveal, Claim::of(&action.args))
+    }
+
+    /// Queue a command with a claim worked out by the caller (one that keys
+    /// worktrees by directory, say).
+    pub fn enqueue_claiming(&mut self, action: &Action, reveal: bool, claim: Claim) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.list.push(Job {
+        self.list.push(Job::queued(
             id,
-            label: action.label.trim().to_string(),
-            args: action.args.clone(),
-            state: JobState::Queued,
-            log: VecDeque::new(),
-            last_error: None,
-            changes_worktrees: action.changes_worktrees(),
+            action.label.trim().to_string(),
+            action.args.clone(),
             reveal,
-            waiting: None,
-            progressed: false,
-            claim: Claim::of(&action.args),
-        });
+            action.changes_worktrees(),
+            claim,
+        ));
         self.sort();
         id
     }
@@ -238,19 +272,8 @@ impl Jobs {
         );
         let new = self.next_id;
         self.next_id += 1;
-        self.list.push(Job {
-            id: new,
-            label,
-            args,
-            state: JobState::Queued,
-            log: VecDeque::new(),
-            last_error: None,
-            changes_worktrees: changes,
-            reveal,
-            waiting: None,
-            progressed: false,
-            claim,
-        });
+        self.list
+            .push(Job::queued(new, label, args, reveal, changes, claim));
         self.sort();
         Some(new)
     }
@@ -411,6 +434,7 @@ fn take_line(job: &mut Job, line: String) {
         return;
     }
     job.log.push_back(line);
+    job.appended += 1;
     while job.log.len() > LOG_LINES {
         job.log.pop_front();
     }
@@ -942,11 +966,13 @@ fi
             waiting: None,
             progressed: false,
             claim: Claim::Alone,
+            appended: 0,
         };
         for i in 0..LOG_LINES + 10 {
             take_line(&mut job, format!("line {i}"));
         }
         assert_eq!(job.log.len(), LOG_LINES);
         assert_eq!(job.log.back().unwrap(), &format!("line {}", LOG_LINES + 9));
+        assert_eq!(job.dropped(), 10);
     }
 }

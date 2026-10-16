@@ -214,6 +214,13 @@ pub struct App {
     /// A job stopped at a password prompt (sudo, for DDEV's hosts file), and
     /// what has been typed for it so far.
     pub password: Option<PasswordPrompt>,
+    /// Keys are ignored until then: the popup closed under the user's fingers
+    /// (the job moved on), and the rest of a password must not land anywhere.
+    keys_muted_until: Option<std::time::Instant>,
+    /// TYPO3 Core or a project of the user's own, and its sites' admin path
+    /// — read once: neither changes while the session runs.
+    kind: &'static dyn crate::core::kind::ProjectKind,
+    backend: Option<&'static str>,
     /// Commands queued, running (side by side where they do not conflict) and
     /// done, in the Activity panel.
     pub jobs: Jobs,
@@ -254,9 +261,15 @@ impl App {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "tryout".into());
+        let kind = crate::core::kind::for_mode(crate::core::kind::detect_mode(&root));
+        let backend =
+            crate::core::ctx::Ctx::new(&root, crate::core::ctx::DdevEnv::default()).backend_path();
         Self {
             root,
             project,
+            kind,
+            backend,
+            keys_muted_until: None,
             worktrees: Vec::new(),
             listing: Listing::Loading,
             selected: 0,
@@ -336,6 +349,9 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
+        if self.keys_muted() {
+            return Effect::None;
+        }
         self.notice = None;
         // A job waiting for a password comes before everything: it is blocked.
         if self.password.is_some() {
@@ -412,13 +428,68 @@ impl App {
             .and_then(Workspace::active_tab_mut)
         {
             Some(tab) if tab.pane.is_alive() => {
-                if let Some(bytes) = keys::to_bytes(key) {
+                let app_cursor = tab.pane.with_screen(vt100::Screen::application_cursor);
+                if let Some(bytes) = keys::to_bytes(key, app_cursor) {
                     tab.pane.write(&bytes);
                 }
             }
             _ => self.focus = Focus::List,
         }
         Effect::None
+    }
+
+    /// Keys are being swallowed: a password popup just closed by itself.
+    fn keys_muted(&self) -> bool {
+        self.keys_muted_until
+            .is_some_and(|until| std::time::Instant::now() < until)
+    }
+
+    /// Pasted text, whole: into the popup or form field that has the focus,
+    /// or the pane — marked as a paste when its program asked for that. Never
+    /// into the list, where letters are commands.
+    pub fn paste(&mut self, text: &str) {
+        if self.keys_muted() {
+            return;
+        }
+        let typed = |c: &char| !c.is_control();
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        if self.password.is_some() {
+            for c in text.chars().filter(typed) {
+                self.password_key(key(c));
+            }
+        } else if self.rename.is_some() {
+            for c in text.chars().filter(typed) {
+                self.rename_key(key(c));
+            }
+        } else if let Some(form) = self.form.as_mut() {
+            form.paste(text);
+        } else if self.focus == Focus::Pane
+            && let Some(tab) = self
+                .selected_workspace_mut()
+                .and_then(Workspace::active_tab_mut)
+            && tab.pane.is_alive()
+        {
+            let bracketed = tab.pane.with_screen(vt100::Screen::bracketed_paste);
+            if bracketed {
+                tab.pane.write(b"\x1b[200~");
+            }
+            tab.pane.write(text.as_bytes());
+            if bracketed {
+                tab.pane.write(b"\x1b[201~");
+            }
+        }
+    }
+
+    /// Queue a job, its claim keyed by checkout directory: the root is named
+    /// after its branch, and two jobs on it must conflict whatever it is called.
+    pub fn enqueue(&mut self, action: &Action, reveal: bool) -> u64 {
+        let claim = actions::Claim::of(&action.args).keyed(|name| {
+            self.worktrees
+                .iter()
+                .find(|w| w.name == name)
+                .map(|w| w.checkout_dir(&self.root).to_string_lossy().into_owned())
+        });
+        self.jobs.enqueue_claiming(action, reveal, claim)
     }
 
     /// Make tab `index` of the selected worktree active and focus it.
@@ -665,7 +736,13 @@ impl App {
                 });
             }
             (Some(p), waiting) if waiting.as_ref().is_none_or(|w| w.0 != p.job) => {
-                self.password = None
+                // Closed under the user's fingers: the rest of what they were
+                // typing must not reach a shell or the list.
+                self.password = None;
+                self.keys_muted_until =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+                self.notice =
+                    Some("the password prompt went away — what was typed is dropped".into());
             }
             _ => {}
         }
@@ -813,19 +890,8 @@ impl App {
 
     /// Run the open log's command again and follow the new run.
     pub fn retry_log(&mut self) {
-        let Some(id) = self.log_view else { return };
-        match self.jobs.retry(id) {
-            Some(new) => {
-                let label = self
-                    .jobs
-                    .get(new)
-                    .map(|j| j.label.clone())
-                    .unwrap_or_default();
-                self.notice = Some(format!("↻ {label} — queued again"));
-                self.log_view = Some(new);
-                self.log_scroll = 0;
-            }
-            None => self.notice = Some("still running — retry once it has finished".into()),
+        if let Some(id) = self.log_view {
+            self.retry(id);
         }
     }
 
@@ -1042,7 +1108,20 @@ impl App {
             _ => base(self.selected().map(|w| w.name.as_str())),
         };
         let wants = kind.wants_branches();
+        // A site on SQLite has a database file, not one on a server.
+        let sqlite = match &kind {
+            FormKind::DropDb(n) => self
+                .worktrees
+                .iter()
+                .find(|w| &w.name == n)
+                .and_then(|w| w.db_engine.as_deref())
+                .is_some_and(|e| e.starts_with("sqlite")),
+            _ => false,
+        };
         let mut form = Form::new(kind, taken, &default);
+        if sqlite {
+            form.names_database_file();
+        }
         self.menu = None;
         if wants && let Some(b) = &self.branches {
             form.set_branches(b);
@@ -1236,12 +1315,12 @@ impl App {
     /// The admin path this project's sites have, for "Open backend": TYPO3's
     /// in a Core checkout, the project type's (from .ddev/config.yaml) otherwise.
     pub fn backend_path(&self) -> Option<&'static str> {
-        crate::core::ctx::Ctx::new(&self.root, crate::core::ctx::DdevEnv::default()).backend_path()
+        self.backend
     }
 
     /// TYPO3 Core or a project of the user's own: what the menus offer.
     pub fn kind(&self) -> &'static dyn crate::core::kind::ProjectKind {
-        crate::core::kind::for_mode(crate::core::kind::detect_mode(&self.root))
+        self.kind
     }
 
     /// The project's own database server: the primary's, as the list reports it.
@@ -1376,6 +1455,67 @@ pub mod tests {
         let mut a = App::new(PathBuf::from("/p/demo"));
         a.set_worktrees(Ok(fixture()));
         a
+    }
+
+    #[test]
+    fn a_popup_that_closes_by_itself_swallows_the_keys_still_coming() {
+        let mut a = app();
+        a.password = Some(PasswordPrompt {
+            job: 99,
+            prompt: "Password:".into(),
+            label: "Serve v13".into(),
+            value: "sec".into(),
+        });
+        // The job moved on: nothing waits any more.
+        a.tick();
+        assert!(a.password.is_none());
+        assert!(a.notice.as_deref().unwrap().contains("went away"));
+        // The rest of the password: `q` would detach, a paste would type.
+        assert_eq!(
+            a.handle_key(KeyEvent::new(KeyCode::Char('q'), M::NONE)),
+            Effect::None
+        );
+        a.paste("ret\n");
+        assert!(a.notice.is_some(), "the notice stays while keys are muted");
+        assert_eq!(a.focus, Focus::List);
+    }
+
+    #[test]
+    fn jobs_on_the_root_checkout_conflict_whatever_its_branch_calls_it() {
+        let mut a = app();
+        let job = |args: &str| Action {
+            label: args.into(),
+            hint: String::new(),
+            args: args.split_whitespace().map(String::from).collect(),
+            run: Run::Job { reveal: false },
+        };
+        let first = a.enqueue(&job("checkout --site main 13.4"), false);
+        // The checkout renamed the root in the list: it is `13.4` now.
+        let mut renamed = fixture();
+        renamed.iter_mut().find(|w| w.dir == ".").unwrap().name = "13.4".into();
+        a.set_worktrees(Ok(renamed));
+        let second = a.enqueue(&job("reset 13.4"), false);
+        // A worktree that is not in the list yet keeps its name as the key.
+        let fresh = a.enqueue(&job("worktree add feat main"), false);
+        let claim = |id| a.jobs.get(id).unwrap().claim.clone();
+        assert_eq!(claim(first), actions::Claim::Site("/p/demo".into()));
+        assert!(claim(first).conflicts(&claim(second)));
+        assert_eq!(claim(fresh), actions::Claim::Site("feat".into()));
+    }
+
+    #[test]
+    fn a_paste_types_into_the_open_form_and_never_into_the_list() {
+        let mut a = app();
+        a.open_form(FormKind::NewWorktree);
+        a.paste("feat\nq");
+        let form = a.form.as_ref().expect("a newline does not submit");
+        assert!(
+            matches!(&form.fields[0], crate::tui::forms::Field::Text { value, .. } if value == "featq")
+        );
+        a.form = None;
+        // `q` on the list detaches — a pasted one must not.
+        a.paste("q");
+        assert_eq!(a.focus, Focus::List);
     }
 
     #[test]

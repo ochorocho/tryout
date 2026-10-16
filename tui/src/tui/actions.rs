@@ -86,10 +86,11 @@ impl Claim {
             ["status", ..] => Claim::Free,
             ["patch" | "checkout", ..] => flagged(),
             ["reset" | "download" | "delete" | "exec", rest @ ..] => site(rest.first()),
-            // Adding touches only the new checkout — unless it serves it too.
+            // Adding touches only the new checkout — unless it serves it too
+            // (a pull request always is).
             ["worktree", "add", rest @ ..]
                 if !rest.iter().any(|x| {
-                    ["--serve", "--php", "--db"]
+                    ["--serve", "--php", "--db", "--pr"]
                         .iter()
                         .any(|f| x.starts_with(f))
                 }) =>
@@ -97,6 +98,16 @@ impl Claim {
                 site(rest.first())
             }
             _ => Claim::Alone,
+        }
+    }
+
+    /// The same claim keyed by what `key` makes of a worktree's name — its
+    /// directory: the root checkout is named after its branch, which a
+    /// checkout changes, and two jobs on it must still see one worktree.
+    pub fn keyed(self, key: impl Fn(&str) -> Option<String>) -> Self {
+        match self {
+            Claim::Site(n) => Claim::Site(key(&n).unwrap_or(n)),
+            other => other,
         }
     }
 
@@ -646,6 +657,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_pull_request_worktree_is_served_so_it_runs_alone() {
+        assert_eq!(claim("worktree add pr-42 --pr 42"), Claim::Alone);
+        assert_eq!(claim("worktree add feat main"), Claim::Site("feat".into()));
+    }
+
+    #[test]
+    fn a_claim_is_keyed_by_what_the_caller_makes_of_the_name() {
+        let dir = |n: &str| (n == "main").then(|| "/p/demo".to_string());
+        assert_eq!(
+            Claim::Site("main".into()).keyed(dir),
+            Claim::Site("/p/demo".into())
+        );
+        assert_eq!(
+            Claim::Site("v13".into()).keyed(dir),
+            Claim::Site("v13".into())
+        );
+        assert_eq!(Claim::Alone.keyed(dir), Claim::Alone);
     }
 
     #[test]

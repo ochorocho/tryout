@@ -18,7 +18,7 @@ use super::proto::{self, ClientMsg, ServerMsg, VERSION};
 use super::wire::WireBackend;
 use crate::tui::actions::{Action, Run};
 use crate::tui::agents;
-use crate::tui::app::{App, Effect, Focus};
+use crate::tui::app::{App, Effect};
 use crate::tui::pane::Pane;
 use crate::tui::ui;
 use crate::tui::worktrees::{self, Worktree};
@@ -33,6 +33,8 @@ const TICK: Duration = Duration::from_millis(16);
 /// The same with nobody attached: jobs still start and finish, and tabs are
 /// still reaped, but nothing is drawn, so there is no need to hurry.
 const IDLE_TICK: Duration = Duration::from_millis(250);
+/// How long a frame may wait on a client that is not reading.
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// How often the agents pane asks `ps` what each tab is running.
 const AGENT_POLL: Duration = Duration::from_secs(1);
@@ -225,6 +227,9 @@ impl Server {
                 let _ = self.terminal.resize(Rect::new(0, 0, cols, rows));
                 // A newcomer has nothing on screen: send it everything.
                 let _ = self.terminal.clear();
+                // A client that stops reading (stopped, in a debugger) must not
+                // stop the loop with it: a write that hangs drops the client.
+                let _ = stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT));
                 self.client = Some(Client { id, stream });
                 self.redraw = true;
                 Next::Go
@@ -413,7 +418,7 @@ impl Server {
             }
             Effect::Run(action) => match action.run {
                 Run::Job { reveal } => {
-                    self.app.jobs.enqueue(&action, reveal);
+                    self.app.enqueue(&action, reveal);
                 }
                 Run::Form(kind) => {
                     let effect = self.app.open_form(kind);
@@ -434,19 +439,11 @@ impl Server {
                 let effect = self.app.handle_key(key);
                 return self.apply(effect);
             }
+            // A paste is text for whatever takes typing — a popup, a form's
+            // field, the pane — and never a run of list commands.
             Event::Paste(text) => {
-                let target = match app.focus {
-                    Focus::Pane => {
-                        let name = app.selected().map(|w| w.name.clone());
-                        name.and_then(|n| app.workspaces.get_mut(&n))
-                            .and_then(|ws| ws.tabs.get_mut(ws.active))
-                            .map(|t| &mut t.pane)
-                    }
-                    _ => None,
-                };
-                if let Some(pane) = target {
-                    pane.write(text.as_bytes());
-                }
+                self.redraw = true;
+                app.paste(&text);
             }
             // On press: selecting is instant and harmless, so there is no drag to
             // guard against the way a click that RUNS something would need.
@@ -585,6 +582,7 @@ impl Server {
 }
 
 fn bye(stream: &mut UnixStream, reason: &str) {
+    let _ = stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT));
     let _ = proto::write_msg(
         stream,
         &ServerMsg::Bye {

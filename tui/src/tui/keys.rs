@@ -3,9 +3,15 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// The bytes for a key, or None for keys a terminal has no encoding for.
-pub fn to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
+/// `app_cursor`: the program switched the cursor keys to application mode
+/// (less, vim, htop do), and expects SS3 (`ESC O A`) rather than CSI for them.
+pub fn to_bytes(key: KeyEvent, app_cursor: bool) -> Option<Vec<u8>> {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let cursor = |c: u8| {
+        let lead = if app_cursor { b'O' } else { b'[' };
+        vec![0x1b, lead, c]
+    };
     let mut bytes = match key.code {
         KeyCode::Char(c) if ctrl => ctrl_byte(c).map(|b| vec![b])?,
         KeyCode::Char(c) => c.to_string().into_bytes(),
@@ -15,12 +21,12 @@ pub fn to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
         KeyCode::Tab => vec![b'\t'],
         KeyCode::BackTab => b"\x1b[Z".to_vec(),
         KeyCode::Esc => vec![0x1b],
-        KeyCode::Up => b"\x1b[A".to_vec(),
-        KeyCode::Down => b"\x1b[B".to_vec(),
-        KeyCode::Right => b"\x1b[C".to_vec(),
-        KeyCode::Left => b"\x1b[D".to_vec(),
-        KeyCode::Home => b"\x1b[H".to_vec(),
-        KeyCode::End => b"\x1b[F".to_vec(),
+        KeyCode::Up => cursor(b'A'),
+        KeyCode::Down => cursor(b'B'),
+        KeyCode::Right => cursor(b'C'),
+        KeyCode::Left => cursor(b'D'),
+        KeyCode::Home => cursor(b'H'),
+        KeyCode::End => cursor(b'F'),
         KeyCode::PageUp => b"\x1b[5~".to_vec(),
         KeyCode::PageDown => b"\x1b[6~".to_vec(),
         KeyCode::Delete => b"\x1b[3~".to_vec(),
@@ -56,7 +62,17 @@ mod tests {
     use super::*;
 
     fn key(code: KeyCode, m: KeyModifiers) -> Option<Vec<u8>> {
-        to_bytes(KeyEvent::new(code, m))
+        to_bytes(KeyEvent::new(code, m), false)
+    }
+
+    #[test]
+    fn application_cursor_mode_sends_ss3_for_the_cursor_keys() {
+        let app = |code| to_bytes(KeyEvent::new(code, KeyModifiers::NONE), true);
+        assert_eq!(app(KeyCode::Up), Some(b"\x1bOA".to_vec()));
+        assert_eq!(app(KeyCode::End), Some(b"\x1bOF".to_vec()));
+        // Only the cursor keys change; PgUp and the F keys do not.
+        assert_eq!(app(KeyCode::PageUp), Some(b"\x1b[5~".to_vec()));
+        assert_eq!(app(KeyCode::F(5)), Some(b"\x1b[15~".to_vec()));
     }
 
     #[test]

@@ -9,7 +9,9 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use crossterm::execute;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::buffer::Cell;
@@ -42,17 +44,18 @@ pub fn attach(stream: UnixStream) -> Result<String> {
         }
     });
 
-    // init() installs a panic hook that restores the terminal; mouse reporting is
-    // ours to turn on and, even on a panic, off again.
+    // init() installs a panic hook that restores the terminal; mouse reporting
+    // and bracketed paste (a paste arrives whole, never as keys) are ours to
+    // turn on and, even on a panic, off again.
     let _ = ratatui::init();
-    execute!(io::stdout(), EnableMouseCapture)?;
+    execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(io::stdout(), DisableMouseCapture);
+        let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
         hook(info);
     }));
     let result = run(&mut writer, &rx);
-    let _ = execute!(io::stdout(), DisableMouseCapture);
+    let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
     ratatui::restore();
     result
 }

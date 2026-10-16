@@ -229,7 +229,7 @@ fn change_row(
         vec![vote("CR"), Span::styled(" ", base), vote("V")]
     } else {
         vec![Span::styled(
-            format!("{:<11}", truncate(&c.scores, 11)),
+            pad(&truncate(&c.scores, 11), 11),
             if on { base } else { theme::dim() },
         )]
     };
@@ -244,9 +244,9 @@ fn change_row(
 fn tail(c: &crate::tui::forms::Change, base: Style, on: bool, room: usize) -> Vec<Span<'static>> {
     const OWNER: usize = 20;
     vec![
-        Span::styled(format!("{:<room$}", truncate(&c.subject, room)), base),
+        Span::styled(pad(&truncate(&c.subject, room), room), base),
         Span::styled(
-            format!("  {:<OWNER$}", truncate(&c.owner, OWNER)),
+            format!("  {}", pad(&truncate(&c.owner, OWNER), OWNER)),
             if on { base } else { theme::dim() },
         ),
     ]
@@ -702,8 +702,8 @@ fn menu_line<'a>(
         (theme::text().bold(), theme::dim())
     };
     ListItem::new(Line::from(vec![
-        Span::styled(format!(" {label:<label_w$}  "), l),
-        Span::styled(format!("{hint:<hint_w$} "), h),
+        Span::styled(format!(" {}  ", pad(label, label_w)), l),
+        Span::styled(format!("{} ", pad(hint, hint_w)), h),
         Span::styled(if sub { "▸ " } else { "  " }, l),
     ]))
 }
@@ -973,7 +973,7 @@ fn draw_activity(f: &mut Frame, app: &App, area: Rect) {
             // through the logs shows where you are.
             if app.log_view == Some(j.id) {
                 let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-                Line::styled(format!("{text:<width$}"), theme::selected())
+                Line::styled(pad(&text, width), theme::selected())
             } else {
                 Line::from(spans)
             }
@@ -996,24 +996,23 @@ pub fn log_inner(screen: Rect, app: &App) -> Rect {
     )
 }
 
-/// A job's log run through a terminal emulator the size of `inner`.
-fn log_parser(job: &crate::tui::jobs::Job, inner: Rect) -> vt100::Parser {
-    let mut parser = vt100::Parser::new(inner.height.max(1), inner.width.max(1), 4000);
-    for line in &job.log {
-        parser.process(line.as_bytes());
-        parser.process(b"\r\n");
-    }
-    parser
+/// The open log run through a terminal emulator the size of the pane, fed
+/// only the lines that arrived since the last frame: a running job's spinner
+/// redraws ten times a second, and a log is up to 3000 lines.
+struct LogCache {
+    job: u64,
+    width: u16,
+    height: u16,
+    /// Lines the job had dropped off the front when parsing started: once more
+    /// go, the screen is parsed anew.
+    dropped: usize,
+    /// Lines fed so far, counted the way `Job::appended` counts.
+    fed: usize,
+    parser: vt100::Parser,
 }
 
-/// What a parsed log is valid for: the job, the size, and the log's ends (it
-/// only ever grows at the back, and drops lines at the front once full).
-type LogKey = (u64, u16, u16, usize, Option<String>, Option<String>);
-
 thread_local! {
-    /// The open log, parsed once rather than on every frame: a running job's
-    /// spinner redraws ten times a second, and a log is up to 3000 lines.
-    static LOG_CACHE: std::cell::RefCell<Option<(LogKey, vt100::Parser)>> =
+    static LOG_CACHE: std::cell::RefCell<Option<LogCache>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -1024,21 +1023,32 @@ fn with_log_screen<R>(
     scroll: usize,
     f: impl FnOnce(&vt100::Screen) -> R,
 ) -> R {
-    let key: LogKey = (
-        job.id,
-        inner.width,
-        inner.height,
-        job.log.len(),
-        job.log.front().cloned(),
-        job.log.back().cloned(),
-    );
     LOG_CACHE.with_borrow_mut(|cache| {
-        if cache.as_ref().is_none_or(|(k, _)| *k != key) {
-            *cache = Some((key, log_parser(job, inner)));
+        let current = cache.as_ref().is_some_and(|c| {
+            c.job == job.id
+                && c.width == inner.width
+                && c.height == inner.height
+                && c.dropped == job.dropped()
+                && c.fed <= job.appended
+        });
+        if !current {
+            *cache = Some(LogCache {
+                job: job.id,
+                width: inner.width,
+                height: inner.height,
+                dropped: job.dropped(),
+                fed: job.dropped(),
+                parser: vt100::Parser::new(inner.height.max(1), inner.width.max(1), 4000),
+            });
         }
-        let parser = &mut cache.as_mut().expect("just filled").1;
-        parser.screen_mut().set_scrollback(scroll);
-        f(parser.screen())
+        let c = cache.as_mut().expect("just filled");
+        for line in job.log.iter().skip(c.fed - c.dropped) {
+            c.parser.process(line.as_bytes());
+            c.parser.process(b"\r\n");
+        }
+        c.fed = job.appended;
+        c.parser.screen_mut().set_scrollback(scroll);
+        f(c.parser.screen())
     })
 }
 
@@ -1207,7 +1217,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             }
             let name_room = width.saturating_sub(3 + badges.chars().count());
             let name = truncate(&w.name, name_room);
-            let pad = name_room.saturating_sub(name.chars().count());
+            let gap = " ".repeat(name_room.saturating_sub(cols(&name)));
             let badge_style = if selected {
                 base
             } else {
@@ -1216,7 +1226,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let first = Line::from(vec![
                 Span::styled(format!(" {mark} "), mark_style),
                 Span::styled(name, base.add_modifier(Modifier::BOLD)),
-                Span::styled(" ".repeat(pad), base),
+                Span::styled(gap, base),
                 Span::styled(badges, badge_style),
             ]);
             // Where it is: the branch it is on, or for a detached checkout the
@@ -1234,7 +1244,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 truncate(&place, width)
             };
-            let second = Line::styled(format!("{place:<width$}"), sub);
+            let second = Line::styled(pad(&place, width), sub);
             // How it is served: its PHP and database type.
             let config = if w.served() {
                 let mut c = format!("   PHP {}", w.php.as_deref().unwrap_or("?"));
@@ -1249,8 +1259,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 "   not served".to_string()
             };
-            let config = truncate(&config, width);
-            let third = Line::styled(format!("{config:<width$}"), sub);
+            let third = Line::styled(pad(&truncate(&config, width), width), sub);
             ListItem::new(vec![first, second, third])
         })
         .collect();
@@ -1595,7 +1604,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         _ if app.form.is_some() => &[("y", "go ahead"), ("", "any other key cancels")],
         _ if app.log_retryable() => &[
             ("esc", "close the log"),
-            ("↑↓ wheel", "scroll"),
+            ("↑↓", "other logs"),
+            ("k j wheel", "scroll"),
             ("r", "retry"),
         ],
         _ if app.log_view.is_some() => &[
@@ -1655,6 +1665,14 @@ fn cols(s: &str) -> usize {
     Span::raw(s).width()
 }
 
+/// `s` padded with spaces to `width` columns — `{:<w$}` pads by characters,
+/// which leaves a CJK or emoji name wider than its column.
+fn pad(s: &str, width: usize) -> String {
+    let mut out = s.to_string();
+    out.extend(std::iter::repeat_n(' ', width.saturating_sub(cols(s))));
+    out
+}
+
 /// At most `max` columns, an ellipsis marking what was cut.
 fn truncate(s: &str, max: usize) -> String {
     if cols(s) <= max {
@@ -1681,6 +1699,13 @@ mod tests {
     use crate::tui::app::tests::fixture;
     use ratatui::{Terminal, backend::TestBackend};
     use std::path::PathBuf;
+
+    #[test]
+    fn padding_counts_screen_columns_not_characters() {
+        assert_eq!(pad("ab", 4), "ab  ");
+        assert_eq!(pad("日本", 5), "日本 ");
+        assert_eq!(pad("abcdef", 4), "abcdef");
+    }
 
     #[test]
     fn truncation_counts_screen_columns_not_characters() {
