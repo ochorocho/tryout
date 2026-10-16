@@ -86,7 +86,11 @@ pub const MATRIX: &[(&str, Support, &str)] = &[
     ),
     ("silverstripe", Support::Env, "SS_DATABASE_*, SS_BASE_URL"),
     ("symfony", Support::Env, "DATABASE_URL"),
-    ("typo3", Support::Settings, "config/system/additional.php"),
+    (
+        "typo3",
+        Support::Settings,
+        "config/system/additional.php; TYPO3_DB_*",
+    ),
     (
         "wordpress",
         Support::Settings,
@@ -456,6 +460,16 @@ fn resolve(ctx: &Ctx, rel: &str) -> String {
     r.trim_start_matches('/').replace("//", "/")
 }
 
+/// Does a settings file of the worktree's own read the database name from
+/// the variables the site's vhost and `exec` set (`appenv::vars`)?
+fn reads_site_env(project_type: &str, settings: &str) -> bool {
+    let own = match project_type {
+        "typo3" => "TYPO3_DB_DBNAME",
+        _ => "",
+    };
+    settings.contains("TRYOUT_DB_NAME") || (!own.is_empty() && settings.contains(own))
+}
+
 /// Give a project site of a settings-file type its copy of DDEV's settings,
 /// pointed at its own database, and the local files it lacks. A file the
 /// worktree has of its own (committed) is left as it is, and said so.
@@ -488,9 +502,17 @@ pub fn write_settings(ctx: &Ctx, name: &str, dir: &Path) {
     let target = dir.join(&rel);
     let own = std::fs::read_to_string(&target).unwrap_or_default();
     if target.exists() && !own.contains(MARKER) {
-        out::warn(format!(
-            "'{name}' has its own {rel} (committed?) — left as it is; its database is db"
-        ));
+        // A committed file that reads the names its vhost sets is wired already.
+        if reads_site_env(&ctx.env.project_type, &own) {
+            out::info(format!(
+                "'{name}' has its own {rel}, reading the site's environment — its database is {}",
+                super::site::database(name)
+            ));
+        } else {
+            out::warn(format!(
+                "'{name}' has its own {rel} (committed?) — left as it is; its database is db"
+            ));
+        }
         return;
     }
     let Ok(ddev) = std::fs::read_to_string(ctx.root.join(&rel)) else {
@@ -632,6 +654,35 @@ mod tests {
         assert!(!older_than(Some((11, 4)), Some((11, 4))));
         assert!(!older_than(Some((11, 5)), Some((11, 4))));
         assert!(!older_than(None, Some((11, 4))));
+    }
+
+    #[test]
+    fn a_committed_settings_file_that_reads_the_site_env_is_wired_already() {
+        assert!(reads_site_env(
+            "typo3",
+            "'dbname' => getenv('TYPO3_DB_DBNAME'),"
+        ));
+        assert!(reads_site_env("drupal", "getenv('TRYOUT_DB_NAME')"));
+        assert!(!reads_site_env("typo3", "'dbname' => 'db',"));
+
+        let d = crate::core::ctx::tests::project_repo();
+        let ctx = Ctx::new(
+            d.path(),
+            crate::core::ctx::DdevEnv {
+                project_type: "typo3".into(),
+                ..Default::default()
+            },
+        );
+        let own = "<?php\n$x = getenv('TYPO3_DB_DBNAME');\n";
+        let worktree = d.path().join("worktrees/feat");
+        for (root, text) in [(d.path(), "<?php // ddev\n"), (worktree.as_path(), own)] {
+            let f = root.join("config/system/additional.php");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, text).unwrap();
+        }
+        write_settings(&ctx, "feat", &worktree);
+        let kept = std::fs::read_to_string(worktree.join("config/system/additional.php")).unwrap();
+        assert_eq!(kept, own, "left as it is");
     }
 
     #[test]

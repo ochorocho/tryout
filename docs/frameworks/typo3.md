@@ -84,6 +84,38 @@ primary does not get them, so DDEV's settings still apply there. DDEV's
 `trustedHostsPattern` (`.*.*`) comes along in the copy, so the backend answers
 at the worktree's URL.
 
+Each site also gets the names many TYPO3 projects read themselves:
+`TYPO3_DB_DRIVER` (`mysqli` or `pdo_pgsql`), `TYPO3_DB_DBNAME`, `TYPO3_DB_HOST`,
+`TYPO3_DB_PORT`, `TYPO3_DB_USERNAME` and `TYPO3_DB_PASSWORD`. They are not set
+for a SQLite site.
+
+## A committed additional.php
+
+Some projects commit their own `config/system/additional.php`. The
+[TYPO3 GitLab project template](https://gitlab.com/gitlab-org/project-templates/typo3-distribution)
+is one of them: its file reads the database from `TYPO3_DB_*`, and
+`.ddev/.env` sets those to DDEV's database `db`.
+
+tryout never changes a file your worktree has of its own. Instead, it sets the
+`TYPO3_DB_*` variables for each site, and a site's own variables win over the
+ones in `.ddev/.env`. So the committed file finds the site's database without
+any change on your side. When tryout serves such a worktree, it says so:
+
+```text
+  'feat' has its own config/system/additional.php; it reads TYPO3_DB_* → its database is db_feat
+```
+
+If the committed file reads neither `TYPO3_DB_*` nor `TRYOUT_DB_*`, tryout
+warns instead, and that site uses the primary's database `db`. Add one of the
+two to the file, or let tryout write the file by not committing it.
+
+For the GitLab template, two things are still yours to do in each worktree:
+
+- **Frontend assets.** The Vite build output is not committed. Run
+  `ddev tryout exec feat npm ci` and `ddev tryout exec feat npm run build:production`.
+- **Site configuration.** `config/sites/` must be committed. Otherwise the
+  pages copied with the database have no site, and the frontend shows an error.
+
 ## Commands in this project
 
 Your framework's own tool is a tryout command: `ddev tryout typo3 <site> …`
@@ -131,8 +163,10 @@ see [Databases](/guide/sites#databases).
   `https://<project>.ddev.site/`. Then the frontend of a worktree still points
   to the primary. The backend (`/typo3/`) works at the worktree's URL. A
   relative `base` should avoid the problem, but this is not tested yet.
-- If the worktree has its own committed `additional.php`, tryout does not
-  touch it and shows a warning. That site then uses the primary's database.
+- If the worktree has its own committed `additional.php` that reads neither
+  `TYPO3_DB_*` nor `TRYOUT_DB_*`, tryout does not touch it and shows a warning.
+  That site then uses the primary's database. See
+  [A committed additional.php](#a-committed-additional-php).
 
 ## Is it tested?
 

@@ -75,6 +75,23 @@ pub fn vars(project_type: &str, site: &SiteDb, url: &str) -> Vec<(&'static str, 
         }
         "shopware6" => v.push(("APP_URL", url.to_string())),
         "cakephp" => v.push(("APP_FULL_BASE_URL", url.to_string())),
+        // The names a committed additional.php reads (the GitLab project
+        // template, for one); DDEV's own file gets the snippet instead.
+        "typo3" if !sqlite => {
+            let driver = if db.engine == Engine::Postgres {
+                "pdo_pgsql"
+            } else {
+                "mysqli"
+            };
+            v.extend([
+                ("TYPO3_DB_DRIVER", driver.to_string()),
+                ("TYPO3_DB_DBNAME", site.name.to_string()),
+                ("TYPO3_DB_HOST", site.host.to_string()),
+                ("TYPO3_DB_PORT", port),
+                ("TYPO3_DB_USERNAME", "db".to_string()),
+                ("TYPO3_DB_PASSWORD", "db".to_string()),
+            ]);
+        }
         // Laravel's names, without a connection type.
         "asterios" if !sqlite => v.extend([
             ("DB_HOST", site.host.to_string()),
@@ -210,6 +227,23 @@ mod tests {
         let craft = vars("craftcms", &site, url);
         assert_eq!(get(&craft, "CRAFT_DB_DATABASE"), Some("db_one"));
         assert_eq!(get(&craft, "PRIMARY_SITE_URL"), Some(url));
+
+        let typo3 = vars("typo3", &site, url);
+        assert_eq!(get(&typo3, "TYPO3_DB_DRIVER"), Some("mysqli"));
+        assert_eq!(get(&typo3, "TYPO3_DB_DBNAME"), Some("db_one"));
+        assert_eq!(get(&typo3, "TYPO3_DB_HOST"), Some("db"));
+        assert_eq!(get(&typo3, "TYPO3_DB_PORT"), Some("3306"));
+        assert_eq!(get(&typo3, "TYPO3_DB_USERNAME"), Some("db"));
+        let pg = Db::parse("postgres:16").unwrap();
+        let on_pg = SiteDb {
+            db: &pg,
+            host: "tryout-postgres-16",
+            name: "db_one",
+        };
+        assert_eq!(
+            get(&vars("typo3", &on_pg, url), "TYPO3_DB_DRIVER"),
+            Some("pdo_pgsql")
+        );
 
         // Every type gets tryout's own names.
         let php = vars("php", &site, url);

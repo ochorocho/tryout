@@ -67,7 +67,7 @@ Click a type to see the details.
 | `shopware6` | environment | [DATABASE_URL, APP_URL; storefront domain updated](/frameworks/shopware) |
 | `silverstripe` | environment | [SS_DATABASE_*, SS_BASE_URL](/frameworks/silverstripe) |
 | `symfony` | environment | [DATABASE_URL](/frameworks/symfony) |
-| `typo3` | settings file | [config/system/additional.php](/frameworks/typo3) |
+| `typo3` | settings file | [config/system/additional.php; TYPO3_DB_*](/frameworks/typo3) |
 | `wordpress` | settings file | [wp-config-ddev.php (MariaDB/MySQL only)](/frameworks/wordpress) |
 | `wp-bedrock` | environment | [DB_*, WP_HOME](/frameworks/wp-bedrock) |
 
