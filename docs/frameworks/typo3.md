@@ -102,7 +102,7 @@ ones in `.ddev/.env`. So the committed file finds the site's database without
 any change on your side. When tryout serves such a worktree, it says so:
 
 ```text
-  'feat' has its own config/system/additional.php; it reads TYPO3_DB_* → its database is db_feat
+  'feat' has its own config/system/additional.php, reading the site's environment — its database is db_feat
 ```
 
 If the committed file reads neither `TYPO3_DB_*` nor `TRYOUT_DB_*`, tryout
@@ -112,7 +112,8 @@ two to the file, or let tryout write the file by not committing it.
 For the GitLab template, two things are still yours to do in each worktree:
 
 - **Frontend assets.** The Vite build output is not committed. Run
-  `ddev tryout exec feat npm ci` and `ddev tryout exec feat npm run build:production`.
+  `ddev tryout exec feat npm install` and `ddev tryout exec feat npm run build:production`.
+  The template has no lockfile, so `npm ci` does not work.
 - **Site configuration.** `config/sites/` must be committed. Otherwise the
   pages copied with the database have no site, and the frontend shows an error.
 
