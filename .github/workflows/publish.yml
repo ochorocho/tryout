@@ -1,17 +1,22 @@
-# Render the documentation and publish it to GitHub Pages.
+# Build the documentation (VitePress, in docs/) and publish it to GitHub Pages:
+# https://bmack.github.io/tryout/
 #
-# Two jobs, because they need different permissions: the first turns documents
-# into a site and uploads it, the second is the only thing allowed to deploy.
-#
-# Nothing in the repository itself is needed to build this — the renderer is
-# installed on the runner and thrown away with it, so `docs/` holds documents
-# and no PHP manifest at all.
+# Two jobs, because they need different permissions: the first builds the site
+# and uploads it, the second is the only thing allowed to deploy. Pull requests
+# build (a dead link fails the build) but never deploy.
 name: Documentation
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/ddev-addon-ddev-subfolder]
+    paths:
+      - "docs/**"
+      - ".github/workflows/publish.yml"
   pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/publish.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,70 +28,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  render:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: docs
     steps:
       - uses: actions/checkout@v4
-
-      - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.4'
-          coverage: none
+          # lastUpdated on every page comes from git history.
+          fetch-depth: 0
 
-      # The finishing step is one bundled file with no dependencies, but it is
-      # Node, and the version is named rather than inherited.
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
 
-      # The renderer, built where it is used. The theme brings phpDocumentor
-      # Guides, the highlighter and the frontend with it, so this one
-      # `require` is the whole dependency.
-      - name: The renderer
-        env:
-          RENDERER: ${{ runner.temp }}/renderer
-        run: |
-          mkdir -p "$RENDERER"
-          cd "$RENDERER"
-          composer init --no-interaction \
-            --name=typo3/tryout-documentation \
-            --author="Benni Mack <benni@typo3.org>"
-          composer require --no-interaction --no-progress typo3/soul-guides-theme:dev-main
+      - name: Install
+        run: npm ci
 
-      # `--fail-on-error` catches a render that cannot finish. A reference that
-      # does not resolve is only a warning and still exits 0, so the output is
-      # read as well — otherwise a dead link publishes itself quietly.
-      - name: Render the documents
-        run: |
-          set -o pipefail
-          ${{ runner.temp }}/renderer/vendor/bin/guides docs \
-            --output=.site -c docs --fail-on-error 2>&1 | tee render.log
-          if grep -q 'app\.WARNING' render.log; then
-            grep -o 'app\.WARNING:.*' render.log | while read -r line; do
-              echo "::error::${line}"
-            done
-            exit 1
-          fi
-
-      # Everything between a render and a site: the drop-in copied to the site
-      # root, every element drawn so the pages read with no script, and the
-      # search index written.
-      - name: Finish the site
-        run: node ${{ runner.temp }}/renderer/vendor/typo3/soul-guides-theme/resources/dist/soul-finish.js .site
-
-      # Pages serves this artifact as it stands, but a repository switched to
-      # the branch-based build runs Jekyll, which drops every path starting
-      # with an underscore — including `_search.json` and `_images/`.
-      - run: touch .site/.nojekyll
+      - name: Build
+        run: npm run docs:build
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: .site
+          path: docs/.vitepress/dist
 
   publish:
-    needs: render
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    needs: build
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/ddev-addon-ddev-subfolder')
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pages: write

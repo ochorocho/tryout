@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#ddev-generated
+# Runs the tryout binary built for this machine. The add-on ships one per
+# platform in bin/ — macOS (universal) and Linux (x86_64, aarch64) — and the host
+# and the web container reach the same directory, so both come through here.
+# TRYOUT_BIN runs a local build instead.
+set -euo pipefail
+
+if [ -n "${TRYOUT_BIN:-}" ]; then
+    exec "${TRYOUT_BIN}" "$@"
+fi
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+os="$(uname -s 2>/dev/null || echo "${OSTYPE:-}")"
+arch="$(uname -m 2>/dev/null || echo unknown)"
+case "${os}" in
+    Darwin|darwin*) bin="tryout-macos-universal" ;;
+    Linux|linux*)
+        case "${arch}" in
+            x86_64|amd64)  bin="tryout-linux-x86_64" ;;
+            aarch64|arm64) bin="tryout-linux-aarch64" ;;
+            *) bin="" ;;
+        esac ;;
+    *) bin="" ;;
+esac
+
+if [ -z "${bin}" ]; then
+    echo "tryout: no build for ${os} ${arch} (macOS and Linux only)" >&2
+    exit 69
+fi
+bin="${here}/bin/${bin}"
+if [ ! -f "${bin}" ]; then
+    echo "tryout: ${bin} is missing" >&2
+    echo "  → ddev add-on get <tryout release>, or build one: tui/scripts/stage-bins.sh" >&2
+    exit 69
+fi
+# A file sync (Mutagen) or an unpacked archive can lose the executable bit.
+[ -x "${bin}" ] || chmod +x "${bin}" 2>/dev/null || true
+exec "${bin}" "$@"

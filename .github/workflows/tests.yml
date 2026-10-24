@@ -1,0 +1,251 @@
+name: tests
+on:
+  pull_request:
+    # `labeled` too: adding the full-ci label starts the slow jobs below.
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore:
+      - "**.md"
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - "**.md"
+
+  schedule:
+    - cron: '25 08 * * *'
+
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: Enable remote debugging session
+        required: false
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The tryout binary, built once for every job below: compiling it is the same
+  # minute in each of them. The jobs install the add-on with this build (the
+  # source of this commit), not with the committed one.
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: tui
+          key: musl
+      - run: tui/scripts/build-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tryout-linux
+          path: tryout/bin/tryout-linux-*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Fast suites: pure helpers, then install/config/removal. Every test in the
+  # install suite costs a full DDEV project lifecycle, so the slow tests that
+  # clone TYPO3 Core are sharded into their own job below.
+  tests:
+    name: ${{ matrix.suite }} (${{ matrix.ddev_version }}, ${{ matrix.os }})
+    strategy:
+      matrix:
+        # More runners (e.g. ubuntu-24.04-arm) are one word away: the build step
+        # makes the binary for whatever architecture it runs on.
+        os: [ubuntu-24.04]
+        ddev_version: [stable, HEAD]
+        suite: [unit, install, project]
+      fail-fast: false
+
+    runs-on: ${{ matrix.os }}
+    needs: build
+    env:
+      # tests/ci.sh installs the binary the build job made, instead of building.
+      TRYOUT_PREBUILT: "1"
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tryout-linux
+          path: tryout/bin
+      - run: chmod +x tryout/bin/tryout-linux-*
+      - uses: ddev/github-action-add-on-test@v2
+        with:
+          ddev_version: ${{ matrix.ddev_version }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          debug_enabled: ${{ github.event.inputs.debug_enabled }}
+          # Checked out above, with the binary in tryout/bin/.
+          disable_checkout_action: "true"
+          # The action runs test_command as plain words (no shell), so each
+          # suite is a case in tests/ci.sh. `install` leaves the release test
+          # out; the nightly job below covers it.
+          test_command: bash tests/ci.sh ${{ matrix.suite }}
+
+  # Slow: clones TYPO3 Core, runs composer install and sets up a real TYPO3.
+  # Minutes per test, so it is kept off the every-push path (see `if:` below).
+  # No `name:` on the jobs that `if:` can skip: GitHub renders a skipped job's
+  # name without expanding the matrix, so `${{ matrix.* }}` would show as is.
+  # Without one it is the job id, and GitHub appends the matrix values itself.
+  lifecycle:
+    # Slow, so not on every push: nightly, by hand, or on a PR labelled full-ci.
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    strategy:
+      matrix:
+        ddev_version: [stable, HEAD]
+        # The 16 journeys in four parallel jobs of about 15 minutes each:
+        # tests/lifecycle.bats tags each test with its shard.
+        shard: [shard1, shard2, shard3, shard4]
+      fail-fast: false
+
+    runs-on: ubuntu-24.04
+    needs: build
+    env:
+      # tests/ci.sh installs the binary the build job made, instead of building.
+      TRYOUT_PREBUILT: "1"
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tryout-linux
+          path: tryout/bin
+      - run: chmod +x tryout/bin/tryout-linux-*
+      - uses: ddev/github-action-add-on-test@v2
+        with:
+          ddev_version: ${{ matrix.ddev_version }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          debug_enabled: ${{ github.event.inputs.debug_enabled }}
+          disable_checkout_action: "true"
+          test_command: bash tests/ci.sh lifecycle-${{ matrix.shard }}
+
+  # Project mode per framework: each installs a real app with its own tools
+  # (composer create-project, drush, wp-cli, typo3 setup) and serves worktrees
+  # of it. Minutes each and network-heavy, so gated like lifecycle.
+  frameworks:
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    strategy:
+      matrix:
+        framework: [laravel, symfony, drupal, wordpress, typo3, shopware]
+      fail-fast: false
+
+    runs-on: ubuntu-24.04
+    needs: build
+    env:
+      # tests/ci.sh installs the binary the build job made, instead of building.
+      TRYOUT_PREBUILT: "1"
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tryout-linux
+          path: tryout/bin
+      - run: chmod +x tryout/bin/tryout-linux-*
+      - uses: ddev/github-action-add-on-test@v2
+        with:
+          ddev_version: stable
+          token: ${{ secrets.GITHUB_TOKEN }}
+          debug_enabled: ${{ github.event.inputs.debug_enabled }}
+          disable_checkout_action: "true"
+          test_command: bash tests/ci.sh project-${{ matrix.framework }}
+
+  # Browser tests: does each served worktree URL really render a frontend and log
+  # into its backend? A URL returning 200 does not prove either. Gated like
+  # lifecycle — nightly, by hand, or with full-ci — because it clones Core, provisions a
+  # project and downloads a browser. The bats suites are the every-push gate.
+  #
+  # Self-provisioned rather than via the add-on-test action: the browser suite lives
+  # in tests/e2e (not shipped into a project), so the checkout is the working dir
+  # and the project is created here, the same way tests/lifecycle.bats does.
+  e2e:
+    name: browser e2e
+    # Slow, so not on every push: nightly, by hand, or on a PR labelled full-ci.
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-24.04
+    needs: build
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tryout-linux
+          path: tryout/bin
+      - run: chmod +x tryout/bin/tryout-linux-*
+
+      - name: Install DDEV
+        run: |
+          curl -fsSL https://ddev.com/install.sh | bash
+          mkcert -install 2>/dev/null || true
+
+      - name: Provision a project with two served worktrees
+        run: |
+          set -e
+          PROJECT="$RUNNER_TEMP/tryout-e2e"
+          mkdir -p "$PROJECT" && cd "$PROJECT"
+          ddev config --project-name=tryout-e2e --project-tld=ddev.site \
+            --project-type=typo3 --docroot=TYPO3-Instances/primary/public --php-version=8.5
+          ddev add-on get "$GITHUB_WORKSPACE"
+          ddev start -y
+          # A 13.4 secondary: renders a styleguide frontend and logs in, so the
+          # multi-site checks have two real URLs to compare.
+          ddev tryout worktree add v13 13.4
+          ddev tryout worktree serve v13   # restarts DDEV for the new hostname
+          echo "TRYOUT_PROJECT=$PROJECT" >> "$GITHUB_ENV"
+
+      - name: Provision a project of its own with two served worktrees
+        run: |
+          set -e
+          APP="$RUNNER_TEMP/tryout-app"
+          mkdir -p "$APP" && cd "$APP"
+          ddev config --project-name=tryout-app --project-tld=ddev.site \
+            --project-type=php --docroot=public
+          bash "$GITHUB_WORKSPACE/tests/fixture-app.sh"
+          ddev add-on get "$GITHUB_WORKSPACE"
+          ddev start -y
+          ddev tryout worktree add one feature --serve
+          ddev tryout worktree add two main --serve --db sqlite
+          echo "TRYOUT_APP_PROJECT=$APP" >> "$GITHUB_ENV"
+
+      - name: Run the browser suite
+        working-directory: tests/e2e
+        run: |
+          set -e
+          npm ci
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+  # The published release, checked nightly so a broken tag is caught even when
+  # nobody pushes.
+  install-from-release:
+    # Slow, so not on every push: nightly, by hand, or on a PR labelled full-ci.
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    strategy:
+      matrix:
+        ddev_version: [stable, HEAD]
+      fail-fast: false
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: ddev/github-action-add-on-test@v2
+        with:
+          ddev_version: ${{ matrix.ddev_version }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          debug_enabled: ${{ github.event.inputs.debug_enabled }}
+          addon_repository: ${{ env.GITHUB_REPOSITORY }}
+          addon_ref: ${{ env.GITHUB_REF }}
+          test_command: bash tests/ci.sh release

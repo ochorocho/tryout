@@ -1,0 +1,42 @@
+name: tui
+# Checks the tryout binary in tui/. Its release builds come from
+# release.yml; this only proves every change still builds, lints and tests
+# on both platforms it ships for.
+on:
+  pull_request:
+    paths: [ "tui/**", "tryout/VERSION", ".github/workflows/tui.yml" ]
+  push:
+    branches: [ main ]
+    paths: [ "tui/**", "tryout/VERSION", ".github/workflows/tui.yml" ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: tui
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, macos-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: tui
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # The PTY tests spawn /bin/sh on a real pseudo-terminal: both runners have one.
+      - run: cargo test

@@ -1,0 +1,14 @@
+#ddev-generated
+## Provided by the tryout add-on: https://github.com/bmack/tryout
+## Remove the line above if you want to own and edit this file yourself.
+##
+## Project-level settings (name, type, docroot, php_version, database) are
+## deliberately NOT set here — they belong in your own .ddev/config.yaml,
+## created by `ddev config`. On a TYPO3 Core checkout the install adds
+## config.tryout-core.yaml with the TYPO3 and Composer environment.
+
+hooks:
+  post-start:
+    # Runs inside the web container: on a Core checkout the clone, the patches,
+    # composer and the TYPO3 setup; on a project, only tryout's own state.
+    - exec: .ddev/tryout/tryout __post-start

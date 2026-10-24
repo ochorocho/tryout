@@ -1,36 +1,19 @@
-# TYPO3 Core clone (managed by ddev tryout download)
-/typo3-core/
+# This repository is a DDEV add-on. The payload at the root (install.yaml,
+# commands/, tryout/, config.tryout*.yaml, web-build/) is copied into a
+# project's .ddev/ by `ddev add-on get`; nothing below is part of it.
+#
+# tryout/bin/ is tracked: `ddev add-on get` of a branch or checkout installs
+# working binaries without a Rust toolchain (tui/scripts/stage-bins.sh rebuilds).
+#
+# A tryout project's root is the TYPO3 Core clone itself, so this checkout is
+# never one: try changes in a scratch project (see README → Contributing), and
+# the test suites build theirs under ~/tmp.
 
-# Composer artifacts
-/vendor/
-/public/
-/var/
-composer.lock
-
-# TYPO3 generated config
-/config/sites/
-/config/system/settings.php
-
-# DDEV local overrides (for worktrees / personal settings)
-/.ddev/config.local.yaml
-/.ddev/.tryout-version
-/.ddev/.webimageBuild/
-/.ddev/.homeadditions/
-/.ddev/db_snapshots/
-/.ddev/.ddev-docker-compose-full.yaml
-
-# Documentation: the renderer and the rendered site (managed by ddev docs).
-# Both are dot-directories so it is obvious at a glance that they are
-# generated and never edited by hand.
-/.renderer/
-/.site/
-
-# Composer auth (may contain tokens)
-/auth.json
-
-# Custom extensions are user-managed
-/packages/*
-!/packages/.gitkeep
+# Local tooling
+/.mcp.json
+/.agents/
+/.claude/
+/.typo3-dev-companion/
 
 # OS files
 .DS_Store
@@ -41,3 +24,8 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# The docs site: dependencies and build output (docs/package-lock.json is tracked).
+/docs/node_modules/
+/docs/.vitepress/dist/
+/docs/.vitepress/cache/

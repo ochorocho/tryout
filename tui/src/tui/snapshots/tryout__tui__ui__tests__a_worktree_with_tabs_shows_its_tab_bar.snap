@@ -1,0 +1,17 @@
+---
+source: src/tui/ui.rs
+assertion_line: 2342
+expression: "render(&a, 80, 12).backend()"
+---
+" tryout  demo                                                       3 worktrees "
+"╭ Worktrees ────────────── + new ╮╭ main https://demo.ddev.site ───────────────╮"
+"│ ● main                       ▶2││ 1 shell   2 shell   +                      │"
+"│   main · 32d1f51               ││█                                           │"
+"│   PHP 8.4 · MariaDB 11.8       ││                                            │"
+"│ ◆ v13                         ±││                                            │"
+"│   13.4 #91234 +1 · 32d1f51     ││                                            │"
+"│   PHP 8.4 · MariaDB 11.8       ││                                            │"
+"│                                ││                                            │"
+"│                                ││                                            │"
+"╰────────────────────────────────╯╰────────────────────────────────────────────╯"
+" ^G back to the list   every other key goes to the shell                        "

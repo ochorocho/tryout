@@ -1,0 +1,109 @@
+name: release
+# Releases the add-on. `ddev add-on get <owner>/tryout` installs the source
+# tarball of the latest release, and the tryout binaries are part of the
+# payload (tryout/bin/, picked per machine by tryout/tryout) — so they have to be
+# IN the tagged tree. The branches carry committed builds too, but a release
+# must not trust them to match its source: this builds all three afresh, commits
+# them onto a release-only commit on top of the chosen ref, tags that commit, and
+# publishes the release with the binaries attached too.
+#
+# Run it from the Actions tab with the version to release, e.g. v1.4.0.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Tag to create, e.g. v1.4.0
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - name: Build both architectures and join them into one universal file
+        working-directory: tui
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p ../dist
+          lipo -create -output ../dist/tryout-macos-universal \
+            target/aarch64-apple-darwin/release/tryout \
+            target/x86_64-apple-darwin/release/tryout
+          # DDEV manages a file only when it carries the marker — each slice must.
+          for arch in arm64 x86_64; do
+            lipo ../dist/tryout-macos-universal -thin "$arch" -output "/tmp/slice-$arch"
+            grep -q '#ddev-generated' "/tmp/slice-$arch"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos
+          path: dist/
+
+  linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            asset: tryout-linux-x86_64
+          - target: aarch64-unknown-linux-musl
+            asset: tryout-linux-aarch64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+      - run: cargo install --locked cargo-zigbuild --version 0.23.4
+      - name: Build a static binary
+        working-directory: tui
+        run: |
+          cargo zigbuild --release --locked --target ${{ matrix.target }}
+          mkdir -p ../dist
+          cp target/${{ matrix.target }}/release/tryout ../dist/${{ matrix.asset }}
+          file ../dist/${{ matrix.asset }} | tee /dev/stderr | grep -q 'statically linked'
+          grep -q '#ddev-generated' ../dist/${{ matrix.asset }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/
+
+  release:
+    needs: [ macos, linux ]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: tryout/bin
+          merge-multiple: true
+      - name: Commit the binaries onto a release-only commit and tag it
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          chmod +x tryout/bin/tryout-*
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f tryout/bin
+          # --allow-empty: the fresh builds may equal the committed ones.
+          git commit --allow-empty -m "[RELEASE] ${VERSION} — with the tryout binaries"
+          git tag "${VERSION}"
+          git push origin "refs/tags/${VERSION}"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          (cd tryout/bin && for f in tryout-*; do sha256sum "$f" > "../../$f.sha256"; done)
+          gh release create "${VERSION}" tryout/bin/tryout-* tryout-*.sha256 \
+            --repo "${GITHUB_REPOSITORY}" --title "tryout ${VERSION}" --generate-notes
