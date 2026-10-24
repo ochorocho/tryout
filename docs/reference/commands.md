@@ -347,9 +347,11 @@ A copy only works between MariaDB and MySQL, or from Postgres to Postgres. In al
 other cases the site starts empty, and tryout tells you so. `--switch` and
 `rename` copy the site's own old database.
 
-**Restarts.** A new hostname needs a DDEV restart, and tryout does it for you.
-Serving a site again, for example to change the PHP version, only reloads the web
-server. With `--no-restart`, or with `TRYOUT_NO_RESTART=1`, tryout skips the
+**Restarts.** A new site's URL is covered by the project's wildcard hostname
+(`*.<project>.ddev.site`), so serving it only reloads the web server. DDEV
+restarts for a new database server, for a project that has not registered the
+wildcard yet (once, after an upgrade), and when `*.ddev.site` does not resolve
+through DNS. See [URLs and restarts](/guide/sites#urls-and-restarts). With `--no-restart`, or with `TRYOUT_NO_RESTART=1`, tryout skips the
 restart and you run `ddev restart` later.
 
 There is one exception. When `--db` names a server that is not running yet,

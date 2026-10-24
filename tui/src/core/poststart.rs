@@ -40,6 +40,7 @@ pub fn run(ctx: &Ctx) -> Step {
     }
 
     note_php_versions(ctx);
+    super::webserver::note_registered_hostnames(ctx);
 
     let patches = patch::configured();
     if patches.is_empty() {
@@ -102,6 +103,7 @@ pub fn run(ctx: &Ctx) -> Step {
 /// what the web image provides and keeps its own files out of git status.
 fn run_for_project(ctx: &Ctx) -> Step {
     note_php_versions(ctx);
+    super::webserver::note_registered_hostnames(ctx);
     worktree::ensure_excludes(ctx);
     worktree::ensure_relative_paths(ctx);
     Ok(())

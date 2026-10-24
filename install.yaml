@@ -107,6 +107,13 @@ post_install_actions:
     tryout/tryout __host-command .. >/dev/null 2>&1 || true
 
   - |
+    #ddev-description:Register the project's wildcard hostname
+    # `*.<project>` in config.worktrees.yaml, so the `ddev restart` that follows
+    # this install already routes every site's hostname: serving a worktree
+    # later needs no restart. Without a build, the first serve restarts once.
+    tryout/tryout __register-hosts .. >/dev/null 2>&1 || true
+
+  - |
     #ddev-description:Set the TYPO3 and Composer environment (TYPO3 Core only)
     # A project keeps its own: COMPOSER=composer.tryout.json would point its
     # `ddev composer` at a file it does not have. Ours is replaced on update; one
@@ -329,6 +336,7 @@ removal_actions:
   - |
     #ddev-description:Remove generated worktree config, vhosts and database services
     rm -f config.worktrees.yaml apache/tryout-site-*.conf nginx_full/tryout-site-*.conf \
+          apache/tryout-unserved.conf nginx_full/tryout-unserved.conf \
           nginx_full/tryout-server-names-hash.conf docker-compose.tryout-db.yaml
     # The extra database servers' data: with their compose file gone, nothing
     # would ever remove these volumes, not even `ddev delete`. One per server

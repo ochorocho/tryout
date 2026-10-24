@@ -532,9 +532,15 @@ table_count() {
   set -eu -o pipefail
   addon_start
 
-  # --serve creates a hostname, and the command restarts DDEV for it by itself.
+  # --serve creates a hostname. The project's wildcard (registered at install)
+  # already routes it, so DDEV is not restarted — where DNS answers for it;
+  # without DNS the command restarts DDEV to write /etc/hosts.
   run ddev tryout worktree add side 13.4 --serve --php 8.4
   assert_success
+  if { getent hosts "${PROJNAME}.ddev.site" || dscacheutil -q host -a name "${PROJNAME}.ddev.site"; } 2>/dev/null | grep -q '127.0.0.1'; then
+    refute_output --partial "Restarting DDEV"
+    assert_output --partial "Applied without a restart"
+  fi
   assert_backend_loads "https://side.${PROJNAME}.ddev.site/typo3/"
 
   run ddev tryout checkout 12.4 --site side

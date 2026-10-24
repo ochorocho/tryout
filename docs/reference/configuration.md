@@ -15,7 +15,7 @@ keep your changes, delete that line: the file is then yours.
 | `.ddev/config.tryout.yaml` | both | the add-on (shipped) | The post-start hook `exec: .ddev/tryout/tryout __post-start`, and nothing else |
 | `.ddev/config.tryout-core.yaml` | core | install, from `tryout/config.tryout-core.yaml` | The TYPO3 and Composer environment (below) |
 | `.ddev/config.tryout-patches.yaml` | core | install, once, from `tryout/patches.yaml` | `TRYOUT_PATCHES=`, your Gerrit patch list |
-| `.ddev/config.worktrees.yaml` | both | `worktree serve` / `unserve` | Served sites' hostnames and extra PHP-FPM daemons |
+| `.ddev/config.worktrees.yaml` | both | install, `worktree serve` / `unserve` | The wildcard `*.<project>`, served sites' hostnames and extra PHP-FPM daemons |
 | `.ddev/docker-compose.tryout-db.yaml` | both | `worktree serve --db`, on the host | Extra database servers |
 | `.ddev/config.local.yaml` | both | you | Your personal overrides. DDEV reads all `config.*.yaml` files in alphabetical order. |
 
@@ -65,7 +65,8 @@ the list without a restart in between.
 
 ```yaml
 additional_hostnames:
-  - v13.my-project          # DDEV appends .ddev.site
+  - "*.my-project"          # DDEV appends .ddev.site; covers every site's URL
+  - v13.my-project
 web_extra_daemons:
   - name: tryout-php-8.2
     command: "/var/www/html/.ddev/tryout/tryout __fpm 8.2"
@@ -119,6 +120,7 @@ If there is no `db=` line, the site uses the project's own database server.
 | `.ddev/tryout/.version` | The number from `VERSION`, written at install. `status` compares it with the number in the binary that runs, and warns when they differ. A missing file is never reported. |
 | `.ddev/tryout/.mode` | `core` or `project`, decided at install |
 | `.ddev/tryout/.state/php-versions` | The PHP versions the web image has, written by post-start for the host |
+| `.ddev/tryout/.state/hostnames` | The hostnames DDEV registered at its last start (from `config.worktrees.yaml`); a new site needs a restart only when its URL is not among them or under the wildcard |
 | `.ddev/tryout/additional.php` | Core mode: the template for `config/system/additional.php` |
 | `.ddev/tryout/composer.tryout.json` | Core mode: the template for the Composer overlay |
 | `.ddev/tryout/config.tryout-core.yaml` | Core mode: the template for `.ddev/config.tryout-core.yaml` |

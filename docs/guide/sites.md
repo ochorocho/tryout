@@ -136,13 +136,30 @@ protect you. `--yes` skips the question, for scripts.
 
 ## URLs and restarts
 
-DDEV manages the routing and the TLS certificate for all URLs of a project. When
-the list of URLs changes, DDEV must restart. So `serve`, `unserve`, `rename`,
-`add --serve` and `remove` **restart DDEV for you** when a URL is added or
-removed.
+DDEV manages the routing and the TLS certificate for all URLs of a project, and
+it only reads the list of URLs when it starts. tryout therefore registers one
+wildcard, `*.<project>.ddev.site`, in `.ddev/config.worktrees.yaml`. It covers
+every site's URL (`<name>.<project>.ddev.site`), so serving a new worktree needs
+**no restart**: the web server reloads and the URL works at once.
 
-Serving a site again that already has its URL (for example to change `--php`)
-takes effect at once. The web server reloads, and the other sites keep running.
+DDEV restarts only in these cases:
+
+- **Once after an upgrade** from a version without the wildcard, at the first
+  `serve` (a fresh install registers it before its first restart).
+- **A new database server.** The first site on a server (`--db postgres`)
+  needs DDEV to start that server.
+- **No DNS.** A wildcard cannot go into `/etc/hosts` (see below), so without
+  working `*.ddev.site` DNS a new URL needs a restart to be written there.
+- **A name with a dot.** The wildcard covers one label, so `a.b` is not
+  covered.
+
+A name under the wildcard that no site serves answers 404 (410 on Apache), so an
+unserved site does not show the primary. Hostnames you add yourself under
+`<anything>.<project>.ddev.site` need their own vhost for the same reason.
+
+`serve`, `unserve`, `rename`, `add --serve` and `remove` do that restart for you
+when it is needed. Serving a site again that already has its URL (for example to
+change `--php`) takes effect at once.
 
 To serve several worktrees and restart only once:
 

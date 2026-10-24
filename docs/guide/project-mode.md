@@ -78,7 +78,7 @@ When you serve a worktree, tryout does these steps:
    `<name>.<project>.ddev.site`, a PHP process for its PHP version, and passes
    the site's database settings to it.
 
-A new URL needs a DDEV restart. tryout does it for you. See
+A new URL needs no DDEV restart (a wildcard hostname covers it), except in a few cases tryout handles for you. See
 [served sites](/guide/sites) for PHP versions, database servers, restarts and
 `/etc/hosts`.
 

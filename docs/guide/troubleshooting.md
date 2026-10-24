@@ -128,7 +128,9 @@ The branch's `composer.json` does not allow that PHP version. → For a site:
 
 **A new site's URL does not answer**
 
-A new URL needs a DDEV restart. `serve` restarts DDEV for you, unless you used
+Normally a new URL needs no restart: the wildcard `*.<project>.ddev.site` covers
+it. It does need one after an upgrade (once), without working `*.ddev.site` DNS,
+or for a name with a dot. `serve` restarts DDEV for you, unless you used
 `--no-restart` (or set `TRYOUT_NO_RESTART=1`). → `ddev restart`.
 
 If `*.ddev.site` does not work through DNS on your computer, DDEV writes the URL

@@ -57,6 +57,18 @@ pub fn main(args: Vec<String>) -> i32 {
                 }
             }
         }
+        // The install writes .ddev/config.worktrees.yaml (the wildcard hostname)
+        // before the restart that follows it, so no later serve needs one.
+        Some("__register-hosts") => {
+            let root = args
+                .get(1)
+                .map(PathBuf::from)
+                .or_else(approot)
+                .unwrap_or_else(|| PathBuf::from("."));
+            let ctx = crate::core::ctx::Ctx::from_env(root);
+            let _ = crate::core::webserver::write_worktree_config(&ctx);
+            0
+        }
         // What the install asks before it touches anything: `core` or `project`.
         Some("__mode") => {
             let root = args

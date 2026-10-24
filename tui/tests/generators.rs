@@ -129,7 +129,10 @@ fn the_worktree_config_lists_hosts_and_one_daemon_per_extra_php() {
         .unwrap();
     }
     webserver::write_worktree_config(&ctx).unwrap();
-    assert!(!ctx.worktree_config().exists());
+    // The wildcard stays, so the next site needs no restart; the rest goes.
+    let kept = read(ctx.worktree_config());
+    assert!(kept.contains("  - \"*.parity\"\n"), "{kept}");
+    assert!(!kept.contains("a.parity") && !kept.contains("web_extra_daemons"));
     assert!(!webserver::hash_config_file(&ctx).exists());
 }
 
