@@ -70,12 +70,22 @@ pub fn load(root: &Path) -> Result<Vec<Worktree>> {
     Ok(worktree::infos(&ctx, &php_versions(&ctx)))
 }
 
-/// The branches a worktree can be based on. Fetches the branch list the first
-/// time (the clone carries one branch), so off-thread.
-pub fn load_branches(root: &Path) -> Result<Vec<String>> {
+/// The branches a worktree can be based on, handed to `send`: the ones already
+/// known at once, then — only when the clone carries a single branch and a day
+/// has passed since the last try — the list after a fetch. Off-thread.
+pub fn load_branches(root: &Path, send: impl Fn(Result<Vec<String>>)) {
     let ctx = context(root);
-    worktree::ensure_branch_refs_quiet(&ctx);
-    Ok(ctx.local_core_branches())
+    let known = ctx.local_core_branches();
+    if !known.is_empty() {
+        send(Ok(known.clone()));
+    }
+    if worktree::fetch_branch_refs_due(&ctx) {
+        worktree::ensure_branch_refs_quiet(&ctx);
+        let fresh = ctx.local_core_branches();
+        if fresh != known || known.is_empty() {
+            send(Ok(fresh));
+        }
+    }
 }
 
 /// One page of the open Gerrit changes on a site's branch that match `search`.

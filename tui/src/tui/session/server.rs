@@ -413,7 +413,9 @@ impl Server {
             Effect::LoadBranches => {
                 let (root, tx) = (self.app.root.clone(), self.branches.0.clone());
                 thread::spawn(move || {
-                    let _ = tx.send(worktrees::load_branches(&root));
+                    worktrees::load_branches(&root, |r| {
+                        let _ = tx.send(r);
+                    });
                 });
             }
             Effect::Run(action) => match action.run {

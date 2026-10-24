@@ -771,20 +771,40 @@ pub fn ensure_branch_refs(ctx: &Ctx) -> bool {
 }
 
 /// `ensure_branch_refs` with its notices silenced, for output a tool parses.
+/// Remembers the try, so a repository with one real branch is not fetched on
+/// every call.
 pub fn ensure_branch_refs_quiet(ctx: &Ctx) {
-    let n = git::lines(&ctx.root, &["for-each-ref", "refs/remotes/origin"]).len();
-    if n <= 1 {
-        git::ok(
-            &ctx.root,
-            &[
-                "fetch",
-                "--depth",
-                "1",
-                "origin",
-                "+refs/heads/*:refs/remotes/origin/*",
-            ],
-        );
+    if !fetch_branch_refs_due(ctx) {
+        return;
     }
+    let _ = std::fs::write(branch_stamp(ctx), "");
+    git::ok(
+        &ctx.root,
+        &[
+            "fetch",
+            "--depth",
+            "1",
+            "origin",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+    );
+}
+
+fn branch_stamp(ctx: &Ctx) -> std::path::PathBuf {
+    ctx.core_git_dir().join("tryout-branches-fetched")
+}
+
+/// True when the clone carries one branch or less and the last try is over a
+/// day old (or there was none).
+pub fn fetch_branch_refs_due(ctx: &Ctx) -> bool {
+    if git::lines(&ctx.root, &["for-each-ref", "refs/remotes/origin"]).len() > 1 {
+        return false;
+    }
+    std::fs::metadata(branch_stamp(ctx))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_none_or(|age| age > std::time::Duration::from_secs(24 * 3600))
 }
 
 /// True when the primary's vendor/ was built from another Core than the one it

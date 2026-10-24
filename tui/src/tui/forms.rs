@@ -398,10 +398,20 @@ impl Form {
         let sorted = order_branches(branches);
         let default = self.default_branch.as_str();
         for f in &mut self.fields {
+            // A refreshed list keeps what the person already picked.
+            let kept = match &*f {
+                Field::Pick {
+                    options: Some(_),
+                    selected,
+                    ..
+                } => f.visible().get(*selected).map(|b| b.to_string()),
+                _ => None,
+            };
             if let Field::Pick { options, .. } = f {
                 *options = Some(sorted.clone());
             }
-            let at = f.visible().iter().position(|b| *b == default);
+            let want = kept.as_deref().unwrap_or(default);
+            let at = f.visible().iter().position(|b| *b == want);
             if let Field::Pick { selected, .. } = f {
                 *selected = at.unwrap_or(0);
             }
@@ -959,6 +969,20 @@ mod tests {
         assert_eq!(
             args(key(&mut f, KeyCode::Enter)),
             "checkout --site v13 12.4"
+        );
+    }
+
+    #[test]
+    fn a_refreshed_branch_list_keeps_the_pick() {
+        let mut f = Form::new(FormKind::Checkout("v13".into()), vec![], "13.4");
+        f.set_branches(&["main".into(), "13.4".into()]);
+        key(&mut f, KeyCode::Up);
+        let mut more = branches();
+        more.push("11.5".into());
+        f.set_branches(&more);
+        assert_eq!(
+            args(key(&mut f, KeyCode::Enter)),
+            "checkout --site v13 main"
         );
     }
 
